@@ -16,10 +16,11 @@
  * secondes. La recherche passe par HTTP, comme sur le site de KaraFun.
  * Serveur WebSocket minimal (RFC 6455) écrit avec la bibliothèque standard de Node,
  * sans dépendance, sur la boucle locale seulement. Il tourne dans le processus de la
- * démo : un client maladroit ou hostile (page web, valeur piégée, options imbriquées
- * sans fin) est refusé, jamais une exception qui ferait tomber la démo ; les options
- * d'un titre sont recopiées champ par champ, avec leur type. Rien ne limite en
- * revanche la longueur de la file ni le nombre de connexions.
+ * démo : un client maladroit ou hostile (page web, valeur piégée, identifiant
+ * illisible, options imbriquées sans fin) est refusé, jamais une exception qui
+ * ferait tomber la démo ; les options d'un titre sont recopiées champ par champ,
+ * avec leur type. Rien ne limite en revanche la longueur de la file ni le nombre
+ * de connexions.
  */
 const http = require('http');
 const crypto = require('crypto');
@@ -206,7 +207,8 @@ const CONFIGURATION = Object.freeze({ pitchStep: 1, pitchMin: -6, pitchMax: 6, t
 
 // Options d'un titre : au plus 16 niveaux d'objets ou de listes, comptés sans
 // récursion ; celles de KaraFun en ont quatre (mode d'une Battle). Au-delà, la
-// demande est refusée par une erreur, plutôt que tronquée sans bruit.
+// demande est refusée par une erreur : seul un client fautif en envoie. En deçà,
+// optionsFrom ne garde que les champs connus.
 const MAX_DEPTH = 16;
 function tooDeep(value) {
   for (const pending = [[value, 1]]; pending.length;) {
@@ -321,13 +323,17 @@ function startFakeKaraFun({ port = 4001, code = '123456', songSeconds = 30, auto
   const numberOf = value => (Number.isFinite(value) ? value
     : typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value)) ? Number(value) : null);
   const objectOf = value => (value && typeof value === 'object' && !Array.isArray(value) ? value : null);
+  // Identifiant d'une demande : un entier, comme ceux du pont et de KaraFun, ou un texte court. Tout
+  // autre identifiant ne pourrait pas être renvoyé dans la réponse.
+  const idOk = id => id === undefined || Number.isSafeInteger(id) || (typeof id === 'string' && id.length <= 64);
 
   // Demandes du client. Chaque commande reçoit sa réponse (<Nom>Response, même
   // identifiant) avant les événements, comme AddToQueueResponse le 6 novembre.
   function receive(client, text) {
     let message;
     try { message = JSON.parse(text); } catch { client.ws.close(1002); return; }
-    if (!message || typeof message.type !== 'string') { client.ws.close(1002); return; }
+    // Demande illisible (sans type, ou avec un identifiant illisible) : refusée avant tout changement.
+    if (!message || typeof message.type !== 'string' || !idOk(message.id)) { client.ws.close(1002); return; }
     const { id, type } = message, p = objectOf(message.payload) || {};
     const reply = () => send(client, type.replace(/Request$/, 'Response'), {}, id);
     const refuse = reason => send(client, 'Error', { type: 1, message: reason }, id);

@@ -465,15 +465,17 @@ const freePort = () => new Promise(resolve => {
   const probe = net.createServer().listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
 });
 // Client KCS minimal sur le WebSocket de Node, comme kcs-transport.js : il
-// répond aux PingRequest. `next` attend le prochain message de ce type qui
-// convient, arrivé après l'appel.
+// répond aux PingRequest et garde les autres messages, dans l'ordre (`received`).
+// `next` attend le prochain message de ce type qui convient, arrivé après
+// l'appel ; au bout de 8 s, il échoue en nommant ce type, au lieu de bloquer.
 async function kcsClient(base, code) {
   const ws = new WebSocket(`${base.replace(/^http/, 'ws')}/kcs/${code}`, 'kcpj~v3+emuping');
-  const waiters = [];
+  const waiters = [], received = [];
   let nextId = 0;
   ws.addEventListener('message', event => {
     const message = JSON.parse(String(event.data));
     if (message.type === 'core.PingRequest') { ws.send(JSON.stringify({ id: message.id, type: 'core.PingResponse', payload: {} })); return; }
+    received.push(message);
     for (const waiter of [...waiters]) {
       if (message.type !== waiter.type || !waiter.accept(message.payload)) continue;
       waiters.splice(waiters.indexOf(waiter), 1);
@@ -485,7 +487,16 @@ async function kcsClient(base, code) {
     ws.addEventListener('error', () => reject(new Error('WebSocket du faux KaraFun refusé')), { once: true });
   });
   return {
-    next: (type, accept = () => true) => new Promise(resolve => waiters.push({ type, accept, resolve })),
+    received,
+    next: (type, accept = () => true, ms = 8000) => new Promise((resolve, reject) => {
+      const waiter = { type, accept, resolve: message => { clearTimeout(timer); resolve(message); } };
+      const timer = setTimeout(() => {
+        if (waiters.includes(waiter)) waiters.splice(waiters.indexOf(waiter), 1);
+        reject(new Error(`délai dépassé : ${type}`));
+      }, ms);
+      timer.unref();
+      waiters.push(waiter);
+    }),
     send: (type, payload = {}) => { const id = ++nextId; ws.send(JSON.stringify({ id, type, payload })); return id; },
     close: () => ws.close(),
   };
@@ -495,7 +506,7 @@ async function kcsClient(base, code) {
 // tonalité, tempo et voix du titre en cours) ; fails_when=une option perdue ou fusionnée au lieu d'être remplacée,
 // un titre joué sans être d'abord annoncé (état 1), un réglage non appliqué ; no_claim=que le vrai KaraFun
 // réponde ainsi aux réglages (jamais observé, karafun.js:228-233) : seul le faux est essayé, par le vrai WebSocket.
-test('faux KaraFun : options d’ajout, options d’un titre de la file et réglages du titre en cours', async t => {
+test('faux KaraFun : options d’ajout, options d’un titre de la file et réglages du titre en cours', { timeout: 30000 }, async t => {
   const port = await freePort();
   const fake = await startFakeKaraFun({ port, code: '123456', songSeconds: 60, autoplay: false });
   t.after(() => fake.close());
@@ -519,15 +530,19 @@ test('faux KaraFun : options d’ajout, options d’un titre de la file et régl
   [item] = items(await queued);
   assert.deepEqual(item.song.options, { singer: 'Léa · T1', pitch: 1, tempo: 10, tracks: [{ track: { type: 5 }, volume: 50 }] });
   // Lecture : comme KaraFun, le titre est d'abord annoncé sans être chargé
-  // (état 1, pistes vides, réglages d'origine), puis ses options deviennent
-  // l'état en direct (état 4).
-  const status = state => kf.next('remote.StatusEvent', p => p.status.state === state && p.status.current);
-  const announced = status(1);
-  let playing = status(4);
+  // (état 1, pistes vides, réglages d'origine), puis il se charge (2), est prêt
+  // (3) et joue (4) avec ses options. Ce sont les états qui suivent la réponse à
+  // PlayRequest, dans l'ordre : un état 1 diffusé avant la lecture ne compte pas.
+  const start = kf.received.length;
+  let playing = kf.next('remote.StatusEvent', p => p.status.state === 4 && p.status.current);
   kf.send('remote.PlayRequest');
-  const early = (await announced).payload.status;
-  assert.deepEqual([early.current.id, early.pitch, early.tempo, early.tracks], [item.id, 0, 0, []]);
   let live = (await playing).payload.status;
+  const afterPlay = kf.received.slice(start);
+  const replied = afterPlay.findIndex(m => m.type === 'remote.PlayResponse');
+  assert.notEqual(replied, -1, 'réponse à PlayRequest');
+  const states = afterPlay.slice(replied + 1).filter(m => m.type === 'remote.StatusEvent').map(m => m.payload.status);
+  assert.deepEqual(states.map(s => s.state), [1, 2, 3, 4], 'annoncé, chargement, prêt, lecture');
+  assert.deepEqual([states[0].current.id, states[0].pitch, states[0].tempo, states[0].tracks], [item.id, 0, 0, []]);
   assert.equal(live.pitch, 1);
   assert.equal(live.tempo, 10);
   assert.equal(live.tracks.find(row => row.track.type === 5).volume, 50, 'voix guide du titre appliquée au démarrage');

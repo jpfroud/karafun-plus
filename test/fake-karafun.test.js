@@ -6,11 +6,15 @@
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const net = require('node:net');
-const { test } = require('node:test');
+const { test: nodeTest } = require('node:test');
 const { startFakeKaraFun } = require('../fake-karafun');
 const { KcsTransport } = require('../kcs-transport');
 const { KaraFunBridge } = require('../karafun');
 
+// Chaque essai a son délai : une attente qui ne vient jamais (une régression du faux) le
+// fait échouer en le nommant, au lieu de bloquer la suite hors ligne, qui lance chaque
+// fichier sans délai.
+const test = (name, fn) => nodeTest(name, { timeout: 30000 }, fn);
 const CODE = '123456';
 const SUBPROTOCOL = 'kcpj~v3+emuping';
 const freePort = () => new Promise(resolve => {
@@ -23,40 +27,50 @@ const until = async (check, what, ms = 8000) => {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
 };
+// Attente bornée d'une promesse (une fermeture, par exemple) : ce qui ne vient pas fait
+// échouer l'essai en nommant ce qu'il attendait.
+const within = (promise, what, ms = 5000) => Promise.race([promise, new Promise((resolve, reject) => {
+  setTimeout(() => reject(new Error(`délai dépassé : ${what}`)), ms).unref();
+})]);
 async function fake(t, options = {}) {
   const port = options.port ?? await freePort();
   const kf = await startFakeKaraFun({ port, code: CODE, songSeconds: 60, autoplay: false, ...options });
   t.after(() => kf.close());
   return { ...kf, port, url: (code = CODE) => `ws://127.0.0.1:${port}/kcs/${code}` };
 }
-// WebSocket de Node : messages reçus dans l'ordre, ouverture et fermeture attendues.
+// WebSocket de Node : messages reçus dans l'ordre, ouverture et fermeture attendues. Une
+// connexion refusée ou coupée avant son ouverture fait échouer `opened` tout de suite
+// (Node 26 signale alors une erreur puis la fermeture 1006, Node 23 l'erreur seulement).
 function open(url, protocols = SUBPROTOCOL) {
   const ws = new WebSocket(url, protocols);
   const received = [];
   ws.addEventListener('message', event => received.push(JSON.parse(String(event.data))));
-  const opened = new Promise(resolve => ws.addEventListener('open', () => resolve(true), { once: true }));
-  const closed = new Promise(resolve => ws.addEventListener('close', event => resolve(event.code), { once: true }));
-  // Poignée de main refusée : Node 26 signale une erreur puis la fermeture 1006,
-  // Node 23 l'erreur seulement.
-  const failed = new Promise(resolve => {
-    ws.addEventListener('error', () => resolve('erreur'), { once: true });
-    ws.addEventListener('close', event => resolve(`fermé ${event.code}`), { once: true });
+  const opened = new Promise((resolve, reject) => {
+    ws.addEventListener('open', () => resolve(true), { once: true });
+    ws.addEventListener('error', () => reject(new Error(`connexion refusée : ${url}`)), { once: true });
+    ws.addEventListener('close', event => reject(new Error(`connexion fermée avant son ouverture (${event.code})`)), { once: true });
   });
-  return { ws, received, opened, closed, failed, send: message => ws.send(JSON.stringify(message)) };
+  opened.catch(() => { /* rejet lu par l'essai qui attend l'ouverture */ });
+  const closed = new Promise(resolve => ws.addEventListener('close', event => resolve(event.code), { once: true }));
+  return { ws, received, opened, closed, send: message => ws.send(JSON.stringify(message)) };
 }
 
-// protects=la poignée de main KCS (sous-protocole kcpj~v3+emuping renvoyé par le faux) ; fails_when=le faux
-// accepte un client sans le sous-protocole, ou ne le renvoie pas et le WebSocket de Node refuse ;
-// no_claim=la poignée de main du vrai KaraFun (wss, jeton dans l'adresse), que seul l'essai réel montre.
+// protects=la poignée de main KCS (sous-protocole kcpj~v3+emuping renvoyé par le faux) et le refus (400) d'une
+// demande sans lui ; fails_when=le faux ne renvoie pas le sous-protocole (le WebSocket de Node refuse alors), ou
+// accepte (101) un client sans lui ; no_claim=la poignée de main du vrai KaraFun (wss, jeton dans l'adresse), que
+// seul l'essai réel montre.
 test('poignée de main : sous-protocole KCS négocié, refus sans lui', async t => {
   const kf = await fake(t);
   const good = open(kf.url());
   assert.equal(await good.opened, true);
   assert.equal(good.ws.protocol, SUBPROTOCOL);
   good.ws.close();
-  const bad = open(kf.url(), []);
-  const outcome = await Promise.race([bad.opened.then(() => 'ouvert'), bad.failed]);
-  assert.match(outcome, /^(erreur|fermé 1006)$/, 'sans sous-protocole : 400, jamais ouvert');
+  // Demande brute : le WebSocket de Node refuserait de lui-même une réponse 101 qui lui impose
+  // un sous-protocole qu'il n'a pas demandé, et cacherait ainsi un faux trop accueillant.
+  const bad = await rawRequest(kf.port, `GET /kcs/${CODE} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n`
+    + `Sec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+  bad.socket.destroy();
+  assert.match(bad.status, /^HTTP\/1\.1 400 /, 'sans sous-protocole : 400, jamais 101');
 });
 
 // protects=l'ordre des premiers messages du vrai KaraFun (journal du 6 novembre 2026) et leurs valeurs ;
@@ -75,7 +89,9 @@ test('ordre des premiers messages : celui du vrai KaraFun', async t => {
     'remote.PreferencesUpdateEvent', 'remote.ConfigurationUpdateEvent', 'remote.UsernameUpdateEvent', 'remote.UpdateUsernameResponse']);
   assert.deepEqual(after[0].payload, { status: { state: 1, pitch: 0, tempo: 0, tracks: [] } }, 'file vide : état 1 sans titre');
   assert.deepEqual(after[1].payload, { queue: { items: [] } });
-  assert.equal(after[2].payload.permissions.shownTypes.battle, true);
+  assert.deepEqual(after[2].payload, { permissions: { manageQueue: true, viewQueue: true, addToQueue: true, managePlayback: true,
+    manageVolumes: true, sendPhotos: true, shownTypes: { karaoke: true, community: false, quiz: false, battle: true } } });
+  assert.deepEqual(after[3].payload, { preferences: { askOptions: false, singerRotation: false } });
   assert.deepEqual(after[4].payload.configuration, { pitchStep: 1, pitchMin: -6, pitchMax: 6, tempoStep: 5, tempoMin: -50,
     tempoMax: 50, compatibleMods: { battle: [1, 2] } });
   assert.deepEqual(after[5].payload, { username: 'FileKaraoke-0001' });
@@ -120,7 +136,7 @@ test('messages de plus de 65 535 octets : aller et retour', async t => {
 test('mauvais code : fermeture 4404', async t => {
   const kf = await fake(t);
   const c = open(kf.url('000000'));
-  assert.equal(await c.closed, 4404);
+  assert.equal(await within(c.closed, 'fermeture 4404'), 4404);
 });
 
 // Poignée de main à la main, sur un socket TCP : trames que le WebSocket de Node n'enverrait jamais.
@@ -171,9 +187,11 @@ const masked = text => {
 // réaction exacte du vrai KaraFun à ces trames.
 test('trames refusées : non masquée (1002), fragmentée (1002), plus de 1 Mio (1009)', async t => {
   const kf = await fake(t);
+  // Vraie demande dans le fragment : seul le refus de la fragmentation peut répondre 1002.
+  const request = JSON.stringify({ id: 1, type: 'remote.UpdateUsernameRequest', payload: { username: 'FileKaraoke-0001' } });
   const cases = [
     ['non masquée', frame(0x81, 2, Buffer.from('{}')), 1002],
-    ['fragmentée', frame(0x01, 0x80 | 2, masked('{}')), 1002],
+    ['fragmentée', frame(0x01, 0x80 | Buffer.byteLength(request), masked(request)), 1002],
     ['plus de 1 Mio', (() => { const length = Buffer.alloc(8); length.writeBigUInt64BE(2n * 1024n * 1024n); return frame(0x81, 0x80 | 127, length); })(), 1009],
   ];
   for (const [name, bytes, code] of cases) {
@@ -182,7 +200,7 @@ test('trames refusées : non masquée (1002), fragmentée (1002), plus de 1 Mio 
     assert.match(head, /^HTTP\/1\.1 101 /, name);
     assert.match(head, new RegExp(`Sec-WebSocket-Protocol: ${SUBPROTOCOL.replace(/[+~]/g, '\\$&')}`), name);
     socket.write(bytes);
-    assert.equal(await closeCode, code, name);
+    assert.equal(await within(closeCode, `${name} : fermeture ${code}`), code, name);
   }
 });
 
@@ -254,10 +272,10 @@ test('données piégées : nom refusé, volume ignoré, la démo ne tombe pas', 
   await stillAlive(kf);
 });
 
-// protects=la démo et le pont du même processus face à des options imbriquées sans fin, envoyées par un programme
-// local : refusées à l'entrée, avant tout changement ; fails_when=le faux les garde puis tombe au changement de titre
-// (JSON.stringify), ou les relaie et le pont tombe (structuredClone de karafun.js) ; no_claim=la profondeur que le
-// vrai KaraFun accepte, ni ce qu'il relaie d'une autre télécommande.
+// protects=le refus, à l'entrée, d'options imbriquées sans fin envoyées par un programme local : une Error au même
+// identifiant, rien de changé, et la démo comme le pont du même processus tiennent ; fails_when=le faux accepte ces
+// options sans le dire (pas d'Error), change la file ou les options, ou tombe ; no_claim=la profondeur que le vrai
+// KaraFun accepte, ni ce qu'il relaie d'une autre télécommande.
 test('options imbriquées sans fin : refusées à l’entrée, la démo et le pont tiennent', async t => {
   const kf = await fake(t, { autoplay: true, songSeconds: 2 });
   const bridge = new KaraFunBridge({ bases: [kf.base] });
@@ -272,9 +290,8 @@ test('options imbriquées sans fin : refusées à l’entrée, la démo et le po
   bridge.add(70003, 'Essai · T2', 99999, {});
   await until(() => kf.state().queue.length === 2 && kf.state().state === 'playing', 'deux titres, le premier joue');
   const next = kf.state().queue[1], before = structuredClone(next.options);
-  // Mesures : JSON.stringify déborde vers 1 700 niveaux sous Node 22 (CI, image), jamais sous Node 26 avec ces
-  // clés ; structuredClone vers 1 350 partout. Sans le refus, le faux tomberait au changement de titre sous Node 22,
-  // et le pont sur la Battle sous Node 26. Moins de 1 Mio par message.
+  // Moins de 1 Mio par message. Sans le refus, optionsFrom ne garderait de toute façon que les champs connus, sur
+  // quatre niveaux au plus : le refus dit au client que sa demande est illisible, au lieu de la tronquer sans bruit.
   const deep = n => '{"a":'.repeat(n) + '1' + '}'.repeat(n);
   c.ws.send(`{"id":2,"type":"remote.SetQueueItemOptionsRequest","payload":{"queueItemId":"${next.queueId}","options":${deep(100000)}}}`);
   c.ws.send(`{"id":3,"type":"remote.SetQueueItemOptionsRequest","payload":{"queueItemId":"${next.queueId}",`
@@ -322,6 +339,24 @@ test('options mal typées : recopiées champ par champ, le pont tient jusqu’à
   }
 });
 
+// protects=la démo face à une demande dont l'identifiant est illisible (ni entier ni texte court), envoyée par un
+// programme local : connexion fermée (1002) avant tout changement ; fails_when=la demande est appliquée puis sa
+// réponse échoue (titre ajouté sans diffusion, fermeture 1011), ou la démo tombe ; no_claim=les identifiants que
+// le vrai KaraFun accepte : le pont, comme KaraFun le 6 novembre, n'envoie que des entiers.
+test('identifiant illisible : connexion fermée (1002) avant tout changement', async t => {
+  const kf = await fake(t);
+  const c = open(kf.url());
+  await c.opened;
+  c.send({ id: 1, type: 'remote.UpdateUsernameRequest', payload: { username: 'FileKaraoke-0001' } });
+  await until(() => c.received.some(m => m.type === 'remote.UpdateUsernameResponse'), 'nom accepté');
+  // Identifiant imbriqué sur 100 000 niveaux, moins de 1 Mio : sa réponse ne pourrait pas être écrite.
+  const id = '['.repeat(100000) + ']'.repeat(100000);
+  c.ws.send(`{"id":${id},"type":"remote.AddToQueueRequest","payload":{"song":{"type":1,"id":70002},"position":99999}}`);
+  assert.equal(await within(c.closed, 'fermeture 1002'), 1002);
+  assert.equal(kf.state().queue.length, 0, 'rien d’ajouté');
+  await stillAlive(kf);
+});
+
 // protects=la mémoire du faux après une fermeture ; fails_when=un pair qui garde la connexion ouverte et
 // continue d'envoyer est gardé, et ses données avec, sans limite ; no_claim=le délai exact (1 s ici).
 test('après sa fermeture, le faux coupe un client qui ne ferme pas', async t => {
@@ -332,7 +367,7 @@ test('après sa fermeture, le faux coupe un client qui ne ferme pas', async t =>
   const length = Buffer.alloc(8);
   length.writeBigUInt64BE(2n * 1024n * 1024n);
   socket.write(frame(0x81, 0x80 | 127, length));
-  assert.equal(await closeCode, 1009);
+  assert.equal(await within(closeCode, 'fermeture 1009'), 1009);
   const flood = setInterval(() => { if (!socket.destroyed) socket.write(Buffer.alloc(64 * 1024)); }, 20);
   t.after(() => clearInterval(flood));
   const outcome = await Promise.race([ended, new Promise(resolve => setTimeout(() => resolve('toujours ouvert'), 2500))]);
@@ -374,6 +409,21 @@ test('pont local avec un mauvais code : refus 4404, relance prévue, puis prêt 
   bridge.connect(CODE);
   await until(() => bridge.ready, 'prêt avec le bon code');
   assert.equal(bridge.protocol, 'kcs');
+});
+
+// protects=la connexion locale quand le WebSocket de Node manque (Node trop ancien) : un nouvel essai prévu et un
+// message clair ; fails_when=connect() lève ou laisse une promesse rejetée sans suite, ou le pont ne prévoit rien ;
+// no_claim=un vrai Node sans WebSocket (le global est retiré ici, puis remis), ni le calendrier des essais.
+test('pont local sans WebSocket de Node : nouvel essai prévu, message clair', async t => {
+  const saved = globalThis.WebSocket;
+  globalThis.WebSocket = undefined;
+  t.after(() => { globalThis.WebSocket = saved; });
+  const bridge = new KaraFunBridge({ bases: ['http://127.0.0.1:9'] });
+  t.after(() => bridge.disconnect());
+  bridge.connect(CODE);
+  await until(() => bridge.connectionState().phase === 'retry', 'nouvel essai prévu');
+  assert.equal(bridge.ready, false);
+  assert.match(bridge.lastError, /WebSocket indisponible.*Node 22/);
 });
 
 // protects=le vrai pont (karafun.js → kcs-transport.js → WebSocket de Node) avec le faux, comme la démo
