@@ -2164,7 +2164,9 @@ test('filet de la synchronisation : une erreur dans sync() n’arrête pas le se
   await tick();
   bridge.emit('change');
   await tick();
-  assert.deepEqual(errors(), ['La mise à jour avec KaraFun a échoué (Cannot convert object to primitive value). La file continue ; vérifie la file dans KaraFun.']);
+  assert.deepEqual(errors(), ['La mise à jour avec KaraFun a échoué (Cannot convert object to primitive value) : la file ne pilote plus KaraFun et réessaie seule. Pilote dans KaraFun en attendant.']);
+  assert.match(f.logs.find(line => line.startsWith('Synchronisation avec KaraFun interrompue')), /\(song-settings-server\.test\.js:\d+\)$/,
+    'fichier et ligne seulement, sans le dossier d’installation');
   assert.equal(f.logs.filter(line => line.startsWith('Synchronisation avec KaraFun interrompue : Cannot convert object to primitive value')).length, 1,
     'une ligne pour la panne, pas une par essai');
   fail = false;
@@ -2240,10 +2242,54 @@ test('filet de la synchronisation : panne qui dure, une ligne par minute ; retou
 
 // Deuxième tour de la relecture — main() ne tourne pas dans le banc d'essai :
 // rien n'essayait que la minuterie de 2 s passe par le filet, alors que deux
-// relances l'avaient déjà oublié. Aucune minuterie n'appelle sync() sans lui.
+// relances l'avaient déjà oublié. Aucune minuterie n'appelle sync() sans lui,
+// même dans une fonction fléchée (tour 3).
 test('filet de la synchronisation : aucune minuterie n’appelle sync() sans le filet', () => {
   const main = source.slice(source.indexOf('async function main()'), source.lastIndexOf('main().catch('));
   assert.match(main, /setInterval\(\(\) => \{[^}]*\bsafeSync\(\);\s*\}, 2000\)/, 'minuterie de 2 s');
-  assert.doesNotMatch(source, /set(?:Timeout|Immediate|Interval)\(\s*sync\b/, 'aucune minuterie sur sync() nu');
+  const offenders = [];
+  for (const { index } of source.matchAll(/\bset(?:Timeout|Interval|Immediate)\(/g)) {
+    const open = source.indexOf('(', index);
+    let depth = 0, end = open;
+    for (; end < source.length; end++) {
+      if ('([{'.includes(source[end])) depth++;
+      else if (')]}'.includes(source[end]) && --depth === 0) break;
+    }
+    if (/(?<![\w.$])sync\b/.test(source.slice(open, end + 1))) offenders.push(source.slice(0, index).split('\n').length);
+  }
+  assert.deepEqual(offenders, [], 'lignes de server.js où une minuterie appelle sync() nu');
   assert.match(source, /b\.on\('change', \(\) => setImmediate\(safeSync\)\)/, 'événements du pont');
+});
+
+// Regression: tour 3 de la relecture — avec une file de KaraFun illisible,
+// l'ajout d'un titre n'y était jamais vu : « J'ai vérifié la file KaraFun :
+// reprendre » concluait qu'il n'était pas parti et l'envoyait une seconde fois.
+// La reprise est refusée tant que la file est illisible ; à la file lisible
+// suivante, l'envoi est retrouvé.
+test('valeurs imprévues : file de KaraFun illisible, la reprise d’un envoi interrompu est refusée', async t => {
+  let now = Date.parse('2026-11-12T21:00:00.000Z');
+  const Real = Date;
+  class Clock extends Real {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  }
+  const f = harness({ Date: Clock });
+  const { frames } = replayBridge(t, f);
+  const lea = singer(f, openTable(f, '1'), 'Léa');
+  f.sched.chooseSong(lea.person, { songId: 12458, title: 'Titre 12458', artist: 'Artiste' });
+  f.settings.auto = true;
+  const [add] = frames();
+  f.settings.auto = false;
+  assert.equal(add.type, 'remote.AddToQueueRequest');
+  const item = isoItem('A-id', 12458, add.payload.options);
+  // KaraFun ajoute le titre, mais sa file arrive avec un titre illisible.
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(item, null));
+  now += 16000;
+  frames();
+  assert.match(notes(f).at(-1), /^KaraFun n'a pas confirmé « Titre 12458 »/);
+  await assert.rejects(f.call('POST /api/staff/reconcile-pending'), /^Error: La file de KaraFun est illisible/);
+  assert.ok(f.pending(), 'rien n’est renvoyé');
+  frames(queueEvent(item));
+  assert.equal(f.pending(), null, 'file lisible : envoi retrouvé');
+  assert.equal(f.tracked().map(tr => tr.queueId).join(), 'A-id');
 });

@@ -264,9 +264,9 @@ Chaque étape (connexion ouverte, code accepté, nom accepté ou encore pris, co
 
 Un message de KaraFun que la file ne sait pas lire ne l'arrête pas :
 - une valeur secondaire d'un type imprévu (un nom de chanteur, une piste, un volume) est ignorée, et le reste du message sert ;
-- un titre illisible, dans la file ou sur scène, fait ignorer tout le message. La file garde ce qu'elle savait mais n'agit plus : le bandeau de la page du bar passe en rouge (« Message de KaraFun illisible »), jusqu'à la prochaine file ou au prochain état lisibles. Pilote alors dans KaraFun ;
+- un titre illisible, dans la file ou sur scène, ou une file ou un état mal formés font ignorer tout le message. La file garde ce qu'elle savait, mais ne voit plus ces changements de KaraFun : la page du bar affiche une alerte rouge (« Message de KaraFun illisible ») jusqu'à la prochaine file ou au prochain état lisibles. Vérifie alors l'ordre dans KaraFun. Tant que la file de KaraFun est illisible, « J'ai vérifié la file KaraFun : reprendre » est refusé : la file ne pourrait pas y retrouver le titre, et l'enverrait une seconde fois ;
 - tout message ignoré est noté dans `journal/serveur-<date>.log` (« KaraFun : message … ignoré », une ligne par minute au plus). La connexion continue.
 
-Si la mise à jour de la file avec KaraFun échoue quand même, la page du bar l'affiche une fois (« La mise à jour avec KaraFun a échoué ») : la file continue, et réessaie toutes les 2 secondes et à chaque message de KaraFun. Vérifie alors l'ordre dans KaraFun.
+Si la mise à jour de la file avec KaraFun échoue quand même, la page du bar l'affiche une fois (« La mise à jour avec KaraFun a échoué »). Le serveur continue, mais la file ne pilote plus KaraFun tant que la mise à jour échoue ; elle réessaie toutes les 2 secondes et à chaque message de KaraFun. Pilote alors dans KaraFun.
 
 La connexion à KaraFun utilise la Télécommande et un protocole qui n'est pas une API publique garantie pour ce projet. Une mise à jour de KaraFun peut donc imposer des ajustements. Pendant le service, vérifie toujours l'ordre réel dans KaraFun avant de compter sur l'envoi automatique, et garde la possibilité de piloter directement depuis KaraFun.

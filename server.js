@@ -1006,11 +1006,12 @@ function shielded(label, run) {
 // Filet de la synchronisation avec KaraFun lancée hors d'une requête
 // (événements du pont, minuterie de 2 s, relance 300 ms après une commande du
 // bar ou « Connecter ») : une valeur imprévue qui ferait échouer sync() ne
-// doit jamais arrêter la file. Une panne est notée une fois pour le bar et
-// dans le journal du serveur, avec l'endroit du code (puis une ligne par
-// minute au plus) ; la synchronisation suivante réessaie. Son retour n'est
-// noté qu'après une mise à jour complète : pas quand sync() s'arrête tôt
-// (KaraFun pas prêt, mise à jour du serveur en cours).
+// doit jamais arrêter le serveur. Pendant la panne, la file ne pilote plus
+// KaraFun. Elle est notée une fois pour le bar et dans le journal du serveur,
+// avec l'endroit du code (fichier et ligne, sans le dossier d'installation),
+// puis une ligne par minute au plus ; la synchronisation suivante réessaie.
+// Son retour n'est noté qu'après une mise à jour complète : pas quand sync()
+// s'arrête tôt (KaraFun pas prêt, mise à jour du serveur en cours).
 let syncFailure = null; // { count, loggedAt } pendant une panne
 function safeSync() {
   try {
@@ -1019,9 +1020,10 @@ function safeSync() {
     const reason = errorReason(error), now = Date.now();
     if (!syncFailure) {
       syncFailure = { count: 1, loggedAt: now };
-      const where = typeof error?.stack === 'string' ? error.stack.split('\n').find(line => /^\s+at /.test(line))?.trim() : null;
+      const frame = typeof error?.stack === 'string' ? error.stack.split('\n').find(line => /^\s+at /.test(line)) : null;
+      const where = frame?.match(/([\w.-]+\.js:\d+)/)?.[1];
       appLog(`Synchronisation avec KaraFun interrompue : ${reason}${where ? ` (${where})` : ''}`);
-      sched.note(`La mise à jour avec KaraFun a échoué (${reason}). La file continue ; vérifie la file dans KaraFun.`, 'error');
+      sched.note(`La mise à jour avec KaraFun a échoué (${reason}) : la file ne pilote plus KaraFun et réessaie seule. Pilote dans KaraFun en attendant.`, 'error');
     } else {
       syncFailure.count++;
       if (now - syncFailure.loggedAt >= 60000) {
@@ -5845,6 +5847,11 @@ const handlers = {
   'POST /api/staff/reconcile-pending': async () => {
     if (!recoveredPending) throw new Error('Aucun envoi interrompu à vérifier.');
     if (!bridge?.ready) throw new Error('Attends la reconnexion à KaraFun pour vérifier sa file.');
+    // File de KaraFun illisible : l'envoi n'y serait pas retrouvé et partirait
+    // une seconde fois.
+    if (bridge.queueUnreadable) {
+      throw new Error('La file de KaraFun est illisible : cet envoi n’est pas vérifiable. Vérifie la file dans KaraFun, puis réessaie quand l’alerte KaraFun aura disparu.');
+    }
     if (bridge.permissions?.addToQueue === false) throw new Error('Donne d’abord au compte FileKaraoke le droit d’ajouter des titres.');
     sync();
     if (pending) {

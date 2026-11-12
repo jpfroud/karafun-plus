@@ -8,13 +8,26 @@ const EventEmitter = require('events');
 // 2026). Au-delà de 32, le message n'est pas lu : copier ou écrire un objet
 // aussi imbriqué épuiserait la pile (structuredClone, JSON.stringify).
 const MAX_DEPTH = 32;
+// Seuls les objets et les listes vont sur la pile, sans copie ni paire par
+// valeur : une trame très large ne coûte pas plus de mémoire que ses propres
+// objets (une mémoire épuisée arrêterait le serveur, aucun filet n'y peut rien).
 function deeperThan(value, limit) {
-  const stack = [[value, 1]];
-  while (stack.length) {
-    const [item, depth] = stack.pop();
+  const items = [value], depths = [1];
+  while (items.length) {
+    const item = items.pop(), depth = depths.pop();
     if (item === null || typeof item !== 'object') continue;
     if (depth > limit) return true;
-    for (const child of Object.values(item)) stack.push([child, depth + 1]);
+    if (Array.isArray(item)) {
+      for (let i = 0; i < item.length; i++) {
+        const child = item[i];
+        if (child !== null && typeof child === 'object') { items.push(child); depths.push(depth + 1); }
+      }
+    } else {
+      for (const key in item) {
+        const child = item[key];
+        if (child !== null && typeof child === 'object') { items.push(child); depths.push(depth + 1); }
+      }
+    }
   }
   return false;
 }
@@ -59,11 +72,14 @@ class KcsTransport extends EventEmitter {
         try { this.emit('message', message); } catch (error) { this._ignore(message.type, error); }
       }
       if (this.closed) return;
+      // Connexion déjà en train de se fermer : plus de réponse possible, et ce
+      // n'est pas un message illisible.
+      const open = this.ws.readyState === WebSocket.OPEN;
       try {
         if (message.type === 'core.PingRequest') {
-          this._send('core.PingResponse', {}, id);
+          if (open) this._send('core.PingResponse', {}, id);
         } else if (message.type === 'core.TimestampRequest') {
-          this._send('core.TimestampResponse', { timestamp: { _type: 'timestamp', value: new Date().toISOString() } }, id);
+          if (open) this._send('core.TimestampResponse', { timestamp: { _type: 'timestamp', value: new Date().toISOString() } }, id);
         } else if (this.pending.has(id)) {
           // Réponse (ou Error) portant l'identifiant d'une demande : elle est
           // rattachée à cette demande, pour que le pont sache laquelle a réussi.
