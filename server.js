@@ -926,13 +926,15 @@ function battleHoldsQueue(reserved = !!sched.reservedNext) {
 
 // Ce qui retient l'envoi du prochain titre de la file vers KaraFun (sync()),
 // en dehors de la file de KaraFun elle-même et des délais, ou null :
-// KaraFun déconnecté, relance, vidage, envoi interrompu à vérifier, Battle
+// KaraFun déconnecté, message de KaraFun illisible (la file ne voit plus ce
+// qu'elle enverrait), relance, vidage, envoi interrompu à vérifier, Battle
 // qui garde la file, droit d'ajout retiré par KaraFun, envoi automatique
 // coupé (par le bar, après une sauvegarde impossible ou un envoi en échec).
 // Le retrait d'un titre chargé pour une priorité (priorityPullCheck) suit la
 // même règle avec `reserved` : sans envoi ensuite, KaraFun resterait vide.
 function sendStop(reserved = !!sched.reservedNext) {
   if (!bridge?.ready) return 'offline';
+  if (bridge.unreadable) return 'unreadable';
   if (restartOp) return 'restart';
   if (settings.queueClearPending) return 'clear';
   if (recoveredPending) return 'unconfirmed';
@@ -1008,10 +1010,13 @@ function shielded(label, run) {
 // bar ou « Connecter ») : une valeur imprévue qui ferait échouer sync() ne
 // doit jamais arrêter le serveur. Pendant la panne, la file ne pilote plus
 // KaraFun. Elle est notée une fois pour le bar et dans le journal du serveur,
-// avec l'endroit du code (fichier et ligne, sans le dossier d'installation),
-// puis une ligne par minute au plus ; la synchronisation suivante réessaie.
-// Son retour n'est noté qu'après une mise à jour complète : pas quand sync()
-// s'arrête tôt (KaraFun pas prêt, mise à jour du serveur en cours).
+// avec l'endroit du code (fichier et ligne, sans le dossier d'installation :
+// la première ligne de la pile qui en a, pas une fonction de Node comme
+// Number()), puis une ligne par minute au plus ; la synchronisation suivante
+// réessaie. Son retour est annoncé au bar, qui pilotait KaraFun à la main, et
+// noté dans le journal, après une mise à jour complète seulement : pas quand
+// sync() s'arrête tôt (KaraFun pas prêt, mise à jour du serveur en cours).
+const SYNC_FAILURE_LOG_EVERY_MS = 60000;
 let syncFailure = null; // { count, loggedAt } pendant une panne
 function safeSync() {
   try {
@@ -1020,13 +1025,13 @@ function safeSync() {
     const reason = errorReason(error), now = Date.now();
     if (!syncFailure) {
       syncFailure = { count: 1, loggedAt: now };
-      const frame = typeof error?.stack === 'string' ? error.stack.split('\n').find(line => /^\s+at /.test(line)) : null;
-      const where = frame?.match(/([\w.-]+\.js:\d+)/)?.[1];
+      const lines = typeof error?.stack === 'string' ? error.stack.split('\n') : [];
+      const where = lines.map(line => /^\s+at .*?([\w.-]+\.js:\d+)/.exec(line)?.[1]).find(Boolean);
       appLog(`Synchronisation avec KaraFun interrompue : ${reason}${where ? ` (${where})` : ''}`);
       sched.note(`La mise à jour avec KaraFun a échoué (${reason}) : la file ne pilote plus KaraFun et réessaie seule. Pilote dans KaraFun en attendant.`, 'error');
     } else {
       syncFailure.count++;
-      if (now - syncFailure.loggedAt >= 60000) {
+      if (now - syncFailure.loggedAt >= SYNC_FAILURE_LOG_EVERY_MS) {
         syncFailure.loggedAt = now;
         appLog(`Synchronisation avec KaraFun toujours en échec (${syncFailure.count} essais) : ${reason}`);
       }
@@ -1035,6 +1040,7 @@ function safeSync() {
   }
   if (syncFailure && bridge?.ready && !serverUpdate.isBusy()) {
     appLog(`Synchronisation avec KaraFun rétablie après ${syncFailure.count} échec${syncFailure.count > 1 ? 's' : ''}.`);
+    sched.note('Mise à jour avec KaraFun rétablie : la file pilote de nouveau KaraFun.', 'info');
     syncFailure = null;
   }
 }
@@ -1065,7 +1071,7 @@ function syncBattle({ current, upcoming, q }, now) {
       battleVote.updateAutomation('failed', 'Plusieurs Battles identiques sont dans KaraFun. Vérifie la file.');
     } else if (!state.songId) {
       battleVote.updateAutomation('failed', 'Le vote ne contient pas de titre KaraFun compatible.');
-    } else if (settings.auto &&
+    } else if (settings.auto && !bridge.unreadable &&
         (bridge.protocol !== 'kcs' || bridge.raw?.configuration) &&
         !upcoming.length && !pending && !recoveredPending && !settings.queueClearPending &&
         !sched.reservedNext && bridge.permissions?.addToQueue !== false && !closingBlocksStart(current, 0, now)) {
@@ -1705,8 +1711,18 @@ function sync() {
   if (q.length) { hadNativeQueue = true; emptySince = null; }
   else if (hadNativeQueue && emptySince === null) emptySince = now;
 
+  // Message de KaraFun illisible (alerte rouge) : la file suit encore ce
+  // qu'elle lit, mais ne pilote plus KaraFun d'elle-même d'après ce qu'elle
+  // ne voit plus : ni envoi (sendStop, qui refuse aussi le retrait pour une
+  // priorité), ni lecture automatique, ni retrait qu'elle déciderait seule
+  // (fermeture, vidage, nouvel essai d'un retrait). Les gestes du bar et des
+  // chanteurs, eux, partent.
+  const blind = !!bridge.unreadable;
   if (pending) {
-    const matches = q.filter(it => !pending.before.has(it.queueId) && Number(it.songId) === pending.sel.song.songId && it.singer === pending.sel.label);
+    // File de KaraFun illisible : le titre envoyé peut ne se voir que sur
+    // scène, dans un état lisible (titre en cours hors de la file figée).
+    const seen = bridge.queueUnreadable && current && !q.includes(current) ? [...q, current] : q;
+    const matches = seen.filter(it => !pending.before.has(it.queueId) && Number(it.songId) === pending.sel.song.songId && it.singer === pending.sel.label);
     const hit = recoveredPending && matches.length !== 1 ? null : matches[0];
     if (hit) {
       if (pending.cancelled) {
@@ -1751,9 +1767,11 @@ function sync() {
       }
       pending = null;
       recoveredPending = false;
-    } else if (!recoveredPending && now - pending.at > 15000) {
+    } else if (!recoveredPending && now - pending.at > 15000 && !bridge.queueUnreadable) {
       // Une réponse manquante ne prouve pas que KaraFun a refusé l'ajout.
       // Le renvoyer créerait un doublon si la première commande arrive tard.
+      // File de KaraFun illisible : le titre y est peut-être, l'attente
+      // continue jusqu'à la prochaine file lisible.
       recoveredPending = true;
       journalEvent('send.unconfirmed', { entryId: pending.sel.song.entryId || null, ids: pending.sel.ids });
       sched.note(`KaraFun n'a pas confirmé « ${pending.sel.song.title} » (${shownLabel(pending.sel)}). Vérifie sa file avant de reprendre l'envoi automatique.`, 'error');
@@ -1766,7 +1784,7 @@ function sync() {
   // Une remise à zéro peut avoir été demandée pendant une déconnexion. Au
   // retour de KaraFun, retirer aussi les titres ajoutés hors de cette page.
   // Leur queueId n'est connu qu'après un QueueEvent frais.
-  if (settings.queueClearPending) {
+  if (settings.queueClearPending && !blind) {
     const known = new Set(tracked.map(tr => String(tr.queueId)));
     for (const item of upcoming) {
       const queueId = String(item.queueId);
@@ -1814,7 +1832,7 @@ function sync() {
         dropClearedTickets(tr.sel);
       }
     }
-    if ((tr.cancelled || tr.pulled) && qids.has(tr.queueId) && !onStage &&
+    if ((tr.cancelled || tr.pulled) && qids.has(tr.queueId) && !onStage && !blind &&
         now - (tr.removeRequestedAt || 0) >= 20000) {
       tr.removeRequestedAt = now;
       try { bridge.remove(tr.queueId); }
@@ -1890,7 +1908,7 @@ function sync() {
   // après Battle. Éviter d'attendre le prochain balayage de deux secondes.
   syncBattle({ current, upcoming, q }, now);
 
-  if (settings.queueClearPending && !upcoming.length && !pending &&
+  if (settings.queueClearPending && !upcoming.length && !pending && !bridge.queueUnreadable &&
       !tracked.some(tr => tr.cancelled && !isOnStage(tr, current))) {
     settings.queueClearPending = false;
     queueClearRemovalRequests.clear();
@@ -1938,7 +1956,7 @@ function sync() {
   // l'heure), et rien d'autre n'est envoyé. Le titre en cours finit normalement.
   upcoming.forEach((item, ahead) => {
     const tr = tracked.find(x => String(x.queueId) === String(item.queueId));
-    if (!tr || tr.cancelled || tr.pulled || tr.absent || tr.startedAt || !closingBlocksStart(current, ahead, now)) return;
+    if (blind || !tr || tr.cancelled || tr.pulled || tr.absent || tr.startedAt || !closingBlocksStart(current, ahead, now)) return;
     try {
       pullFromKaraFun(tr, 'closing'); noteClosingStop();
       // Le titre revient dans la liste de son auteur : l'invitée d'un duo
@@ -1982,7 +2000,7 @@ function sync() {
     const owner = firstQueueId === null ? null : tracked.find(tr => String(tr.queueId) === firstQueueId);
     const present = owner && !owner.cancelled && !owner.pulled && !owner.absent && (owner.sel.ids.every(pid => sched.people.has(pid)) &&
       (!sched.opts.requirePresence || owner.sel.presenceConfirmed || sched.confirmedForTurn(owner.sel.ids)));
-    if (settings.autoPlay && !settings.queueClearPending &&
+    if (settings.autoPlay && !settings.queueClearPending && !blind &&
         (!battleVote.automation || battleVote.automation.status === 'released' ||
           (battleVote.automation.status === 'waiting' && !isBattleItem(upcoming[0]))) &&
         present && Date.now() - idleSince >= settings.playDelaySec * 1000) {
@@ -3881,6 +3899,7 @@ function confirmPresence(p) {
 const PULL_KEEPS = ' : rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer la personne juste après lui.';
 const PULL_STOPS = {
   offline: 'KaraFun est déconnecté : rien n’a été retiré ni avancé. Réessaie une fois KaraFun reconnecté.',
+  unreadable: `Un message de KaraFun est illisible${PULL_KEEPS}`,
   restart: 'Le titre en cours est en train d’être relancé : rien n’a été retiré ni avancé. Réessaie dans un instant.',
   clear: 'La file est en train d’être vidée : rien n’a été retiré ni avancé.',
   unconfirmed: `Un envoi interrompu est à vérifier dans KaraFun${PULL_KEEPS}`,

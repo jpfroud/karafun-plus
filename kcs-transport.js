@@ -5,31 +5,32 @@ const EventEmitter = require('events');
 
 // Profondeur d'un message de KaraFun : 10 niveaux au plus dans les vraies
 // trames (file avec un mode Battle, journaux de septembre et de novembre
-// 2026). Au-delà de 32, le message n'est pas lu : copier ou écrire un objet
-// aussi imbriqué épuiserait la pile (structuredClone, JSON.stringify).
+// 2026). Au-delà de 32, le contenu est coupé (remplacé par null) : copier ou
+// écrire un objet aussi imbriqué épuiserait la pile (structuredClone,
+// JSON.stringify). Le reste du message sert : des options trop imbriquées
+// dans un seul titre ne font pas ignorer toute la file.
 const MAX_DEPTH = 32;
-// Seuls les objets et les listes vont sur la pile, sans copie ni paire par
-// valeur : une trame très large ne coûte pas plus de mémoire que ses propres
-// objets (une mémoire épuisée arrêterait le serveur, aucun filet n'y peut rien).
-function deeperThan(value, limit) {
-  const items = [value], depths = [1];
-  while (items.length) {
-    const item = items.pop(), depth = depths.pop();
-    if (item === null || typeof item !== 'object') continue;
-    if (depth > limit) return true;
-    if (Array.isArray(item)) {
-      for (let i = 0; i < item.length; i++) {
-        const child = item[i];
-        if (child !== null && typeof child === 'object') { items.push(child); depths.push(depth + 1); }
-      }
-    } else {
-      for (const key in item) {
-        const child = item[key];
-        if (child !== null && typeof child === 'object') { items.push(child); depths.push(depth + 1); }
-      }
+// Coupe sur place ce qui dépasse `room` niveaux (celui de `value` compris) et
+// dit si quelque chose a été coupé. Récursion bornée par la limite (32 appels
+// imbriqués au plus), sans copie ni pile par valeur : une trame très large ne
+// coûte pas plus de mémoire que ses propres objets (une mémoire épuisée
+// arrêterait le serveur, aucun filet n'y peut rien).
+function prune(value, room) {
+  let cut = false;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const child = value[i];
+      if (child === null || typeof child !== 'object') continue;
+      if (room <= 1) { value[i] = null; cut = true; } else if (prune(child, room - 1)) cut = true;
+    }
+  } else {
+    for (const key in value) {
+      const child = value[key];
+      if (child === null || typeof child !== 'object') continue;
+      if (room <= 1) { value[key] = null; cut = true; } else if (prune(child, room - 1)) cut = true;
     }
   }
-  return false;
+  return cut;
 }
 // Raison d'une erreur pour le journal, sans rien convertir d'imprévu.
 const reasonOf = error => (typeof error === 'string' ? error : typeof error?.message === 'string' ? error.message : 'erreur inconnue');
@@ -58,19 +59,16 @@ class KcsTransport extends EventEmitter {
       if (!message || typeof message.type !== 'string') return;
       // Identifiant renvoyé tel quel : un nombre ou un texte, jamais un objet.
       const id = typeof message.id === 'number' || typeof message.id === 'string' ? message.id : undefined;
-      if (deeperThan(message, MAX_DEPTH)) {
-        // Contenu non lu. Le message sert encore au battement (Ping,
-        // Timestamp) et conclut sa demande, sans son contenu : sinon, 8 s plus
-        // tard, une commande restée sans réponse ferait reconnecter.
-        this._ignore(message.type, `message de plus de ${MAX_DEPTH} niveaux`);
-        message = { ...(id === undefined ? {} : { id }), type: message.type };
-      } else {
-        // Filet : l'erreur d'un écouteur du WebSocket, Node la relance hors de
-        // toute portée et le serveur du bar s'arrêterait. Le message est
-        // ignoré ('message-error') et la lecture continue : Ping et réponses
-        // servent.
-        try { this.emit('message', message); } catch (error) { this._ignore(message.type, error); }
+      // Message coupé au-delà de 32 niveaux : signalé au pont, qui le note
+      // dans le journal de KaraFun, puis lu comme les autres.
+      if (prune(message, MAX_DEPTH)) {
+        try { this.emit('message-pruned', message.type); } catch { /* rien de plus à faire */ }
       }
+      // Filet : l'erreur d'un écouteur du WebSocket, Node la relance hors de
+      // toute portée et le serveur du bar s'arrêterait. Le message est
+      // ignoré ('message-error') et la lecture continue : Ping et réponses
+      // servent.
+      try { this.emit('message', message); } catch (error) { this._ignore(message.type, error); }
       if (this.closed) return;
       // Connexion déjà en train de se fermer : plus de réponse possible, et ce
       // n'est pas un message illisible.

@@ -21,6 +21,9 @@ const kcsKey = value => (value !== null && typeof value === 'object' ? null : St
 const kcsScalar = value => (value !== null && typeof value === 'object' ? undefined : value);
 // Texte : un texte, ou un nombre fini écrit en texte ; sinon vide.
 const kcsText = value => (typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : '');
+// Nom d'un message de KaraFun pour les journaux : choisi par KaraFun, il est
+// nettoyé, ni retour à la ligne ni nom sans fin.
+const messageName = type => String(type).replace(/[^\w.:-]/g, '?').slice(0, 64);
 // Valeur en direct d'un réglage essayé : 'pitch', 'tempo', 'backing' ou
 // 'voice:<type>' (volume d'une voix guide).
 const probedValue = (live, field) => (/^voice:/.test(field) ? live?.voices?.[field.slice(6)] : live?.[field]) ?? null;
@@ -188,6 +191,9 @@ const BATTLE_MODS_MAX = 2000;
 const RETRY_BASE_MS = 3000;
 const RETRY_MAX_MS = 30000;
 const LINK_STABLE_MS = 10000;
+// Messages de KaraFun ignorés : une ligne au plus par minute dans le journal
+// du serveur (chacun reste dans le journal de KaraFun).
+const IGNORED_LOG_EVERY_MS = 60000;
 // 20 connexions de suite closes aussitôt par AppLeftEvent (environ 10 min) :
 // l'URL gardée est peut-être périmée, la page est relue une fois (budgétée).
 // Sans ce filet, même « Reconnecter » réessaierait la même URL. Si l'URL que
@@ -722,16 +728,17 @@ class KaraFunBridge extends EventEmitter {
   // (valeur imprévue, titre illisible, plus de 32 niveaux imbriqués ; voir
   // kcs-transport.js). Il est ignoré et la connexion continue : chaque fois
   // dans le journal de KaraFun, une ligne par minute au plus dans celui du
-  // serveur, et un avis (lastError). Le nom du message, choisi par KaraFun, est
-  // nettoyé : ni retour à la ligne ni nom sans fin. Une file ou un état
-  // ignorés : la file garde ce qu'elle savait (le pont reste prêt, les états
-  // lisibles suivent toujours la scène), mais ne voit plus les changements de
-  // ce côté de KaraFun. La page du bar l'affiche en alerte (connectionState)
-  // jusqu'à la prochaine file ou au prochain état lisibles de cette sorte ;
-  // une file illisible bloque la vérification d'un envoi interrompu
-  // (queueUnreadable), sinon elle conclurait à tort qu'il n'est pas parti.
+  // serveur, et un avis (lastError). Le nom du message est nettoyé
+  // (messageName). Une file ou un état ignorés : la file garde ce qu'elle
+  // savait (le pont reste prêt, les états lisibles suivent toujours la scène),
+  // mais ne voit plus les changements de ce côté de KaraFun. La page du bar
+  // l'affiche en alerte (connectionState) jusqu'à la prochaine file ou au
+  // prochain état lisibles de cette sorte ; pendant ce temps, la file ne
+  // pilote plus KaraFun d'elle-même (unreadable), et une file illisible bloque
+  // la vérification d'un envoi interrompu (queueUnreadable), sinon elle
+  // conclurait à tort qu'il n'est pas parti.
   _ignoredMessage(type, reason) {
-    const name = String(type).replace(/[^\w.:-]/g, '?').slice(0, 64);
+    const name = messageName(type);
     const why = String(reason).replace(/\s+/g, ' ').slice(0, 200);
     this._ignored.count++;
     this._record('info', 'message-ignore', { type: name, reason: why });
@@ -740,7 +747,7 @@ class KaraFunBridge extends EventEmitter {
     if (kind) this._unreadable[kind] = name;
     this.emit('change');
     const now = Date.now();
-    if (this._ignored.loggedAt != null && now - this._ignored.loggedAt < 60000) return;
+    if (this._ignored.loggedAt != null && now - this._ignored.loggedAt < IGNORED_LOG_EVERY_MS) return;
     this._ignored.loggedAt = now;
     const count = this._ignored.count > 1 ? ` ${this._ignored.count} messages ignorés depuis le démarrage.` : '';
     this._log(`KaraFun : message ${name} ignoré (${why}) ; la connexion continue.${count}`);
@@ -1104,8 +1111,9 @@ class KaraFunBridge extends EventEmitter {
         this._nameAccepted();
       } else if (m.type === 'remote.QueueEvent' || m.type === 'remote.QueueResponse') {
         if (!isRecord(p.queue) || !Array.isArray(p.queue.items)) {
-          // File présente mais mal formée : illisible, comme un titre illisible.
-          if (p.queue !== undefined) this._ignoredMessage(m.type, 'file illisible');
+          // File mal formée ou absente (jamais dans les journaux réels : une
+          // clé renommée par KaraFun) : illisible, comme un titre illisible.
+          this._ignoredMessage(m.type, 'file illisible');
           return;
         }
         proven();
@@ -1118,8 +1126,8 @@ class KaraFunBridge extends EventEmitter {
         this._accept('queue', items);
       } else if (m.type === 'remote.StatusEvent' || m.type === 'remote.StatusResponse') {
         if (!isRecord(p.status) || typeof p.status.state !== 'number') {
-          // État présent mais mal formé (numéro d'état en texte…) : illisible.
-          if (p.status !== undefined) this._ignoredMessage(m.type, 'état illisible');
+          // État mal formé (numéro d'état en texte…) ou absent : illisible.
+          this._ignoredMessage(m.type, 'état illisible');
           return;
         }
         proven();
@@ -1254,6 +1262,9 @@ class KaraFunBridge extends EventEmitter {
       this.emit('change');
     });
     socket.on('message-error', (type, reason) => { if (active()) this._ignoredMessage(type, reason); });
+    // Message coupé au-delà de 32 niveaux (kcs-transport.js), puis lu : noté
+    // dans le journal de KaraFun seulement, sans alerte.
+    socket.on('message-pruned', type => { if (active()) this._record('info', 'message-coupe', { type: messageName(type) }); });
     socket.on('close', ({ code }) => lost(`Télécommande KaraFun déconnectée (code ${code}). Vérifie le code affiché dans KaraFun.`,
       `KaraFun a fermé la connexion (code ${code})`, code ?? null));
   }
@@ -1384,11 +1395,13 @@ class KaraFunBridge extends EventEmitter {
       stopped: ['error', `${CLOSED_REASON} : essais arrêtés`],
     };
     // File ou état de KaraFun illisibles (_ignoredMessage) : connecté, mais la
-    // file ne voit plus ces changements de KaraFun. Une alerte à part : le
-    // bouton « Reconnecter » de l'alerte générale couperait la connexion.
-    const unread = this._unreadable.queue || this._unreadable.status;
+    // file ne voit plus ces changements de KaraFun et ne le pilote plus
+    // d'elle-même. Une alerte à part : le bouton « Reconnecter » de l'alerte
+    // générale couperait la connexion. KaraFun perdu, c'est l'alerte de
+    // relance qui compte.
+    const unread = this.unreadable;
     const unreadable = unread && (phase === 'ready' || phase === 'waiting-data') ? `Message de KaraFun illisible (${unread}) : ` +
-      'la file garde ce qu’elle savait et ne voit plus les changements de KaraFun. Vérifie l’ordre dans KaraFun.' : null;
+      'la file ne voit plus ces changements de KaraFun et ne lui envoie plus rien d’elle-même. Pilote dans KaraFun en attendant.' : null;
     const [level, label] = unreadable ? ['error', unreadable] : labels[phase];
     return {
       phase, level, label, since: this._phaseSince, attempt: this._tries, protocol: this.protocol,
@@ -1396,8 +1409,9 @@ class KaraFunBridge extends EventEmitter {
       nameConflict: conflict,
       // Bouton « Prendre un autre nom maintenant » : POST /api/staff/kf { action: 'new-name' }.
       canRename: !!conflict,
-      // Alerte que le bar ne peut pas fermer : conflit de nom ou limite de
-      // KaraFun. Essais arrêtés : KaraFun absent, rien d'autre à signaler.
+      // Alerte que le bar ne peut pas fermer : conflit de nom, limite de
+      // KaraFun ou message de KaraFun illisible. Essais arrêtés : KaraFun
+      // absent, rien d'autre à signaler.
       alert: phase !== 'stopped' && conflict ? `KaraFun garde encore l’ancienne connexion de ${conflict.holder} (KaraFun relancé trop vite, ou une autre File karaoké ouverte avec le même nom). La file redemande ce nom toutes les 4 s pour garder ses droits d’administrateur et en prendra un autre ${later}. Tu peux aussi prendre un autre nom maintenant, puis lui redonner les droits dans KaraFun.` :
         limited ? limitMessage(limit.until, this.appMode) : unreadable,
       // Pages de découverte de l'heure pleine en cours (sans secret).
@@ -1582,6 +1596,10 @@ class KaraFunBridge extends EventEmitter {
   // File de KaraFun illisible depuis la dernière file lue : un envoi
   // interrompu n'y est pas vérifiable (voir _ignoredMessage).
   get queueUnreadable() { return this._unreadable.queue != null; }
+  // Nom du message illisible, file ou état, depuis la dernière file ou le
+  // dernier état lus, sinon null : la file ne pilote plus KaraFun d'elle-même
+  // d'après ce qu'elle ne voit plus (sync() dans server.js).
+  get unreadable() { return this._unreadable.queue || this._unreadable.status || null; }
 
   // Nouvelle soirée ou nouveau code : chœurs par défaut à relever de nouveau,
   // provisoires jusqu'à une remise par KaraFun au chargement (_observeDefaults).

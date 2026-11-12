@@ -350,44 +350,65 @@ test('KcsTransport : un écouteur qui échoue n’arrête ni la lecture ni les r
 // Regression: même relecture — un message imbriqué sur 100 000 niveaux
 // épuisait la pile du pont (structuredClone d'un mode Battle) ; gardé dans le
 // journal en mémoire, il aurait aussi cassé la page du bar (JSON.stringify).
-// Les vraies trames ont 10 niveaux au plus : au-delà de 32, le contenu du
-// message n'est pas lu. Un identifiant d'un type imprévu n'est jamais renvoyé
-// à KaraFun. Regression: relecture de cette correction — un Ping ou une
-// réponse attendue trop imbriqués restaient sans suite : pas de réponse au
-// Ping, et 8 s plus tard une commande sans réponse faisait reconnecter.
-test('KcsTransport : message de plus de 32 niveaux ignoré, Ping et réponse servent quand même, identifiant d’un type imprévu jamais renvoyé', t => {
+// Les vraies trames ont 10 niveaux au plus. Un identifiant d'un type imprévu
+// n'est jamais renvoyé à KaraFun. Regression: relecture 2 — au-delà de 32
+// niveaux, tout le message était ignoré : 26 niveaux dans les options d'un
+// seul titre (un client de télécommande qui en enverrait) figeaient la file
+// de KaraFun vue par le serveur. Le contenu est coupé au-delà de 32 niveaux
+// (remplacé par null) et le reste du message sert, Ping et réponses compris.
+test('KcsTransport : message de plus de 32 niveaux coupé au-delà et lu, Ping et réponse servis, identifiant d’un type imprévu jamais renvoyé', t => {
   mockTime(t);
   fakes(t);
   const transport = new KcsTransport(KCS_URL);
   t.after(() => transport.close());
   const ws = FakeWebSocket.instances[0];
-  const errors = [], messages = [];
-  transport.on('message', m => messages.push(m.type));
+  const errors = [], messages = [], pruned = [];
+  transport.on('message', m => messages.push(m));
   transport.on('message-error', (type, reason) => errors.push([type, reason]));
+  transport.on('message-pruned', type => pruned.push(type));
   ws.open();
   const nested = levels => '{"a":'.repeat(levels) + '1' + '}'.repeat(levels);
+  const depth = value => (value !== null && typeof value === 'object' ? 1 + Math.max(0, ...Object.values(value).map(depth)) : 0);
   ws.receive(`{"type":"remote.QueueEvent","payload":${nested(31)}}`); // 32 niveaux avec le message
-  assert.deepEqual(messages, ['remote.QueueEvent'], '32 niveaux : lu');
+  assert.deepEqual([messages.length, depth(messages[0]), pruned], [1, 32, []], '32 niveaux : lu tel quel');
   for (const levels of [32, 100000]) ws.receive(`{"type":"remote.QueueEvent","payload":${nested(levels)}}`);
-  assert.deepEqual(messages, ['remote.QueueEvent'], 'au-delà : ignoré');
-  assert.deepEqual(errors, [['remote.QueueEvent', 'message de plus de 32 niveaux'], ['remote.QueueEvent', 'message de plus de 32 niveaux']]);
+  assert.deepEqual(messages.slice(1).map(depth), [32, 32], 'au-delà : coupé à 32 niveaux, puis lu');
+  assert.deepEqual(pruned, ['remote.QueueEvent', 'remote.QueueEvent']);
+  assert.deepEqual(errors, [], 'rien d’illisible');
   ws.receive({ id: { piege: 1 }, type: 'core.PingRequest', payload: {} });
   ws.receive({ id: [7], type: 'core.TimestampRequest', payload: {} });
   assert.deepEqual(ws.sent.map(m => [m.type, 'id' in m]), [['core.PingResponse', false], ['core.TimestampResponse', false]],
     'réponse sans identifiant : un objet ou une liste n’est jamais renvoyé');
-  // Trop imbriqués, un Ping et une réponse attendue servent encore, sans
-  // leur contenu.
-  const replies = [], read = messages.length;
-  transport.on('reply', (type, m) => replies.push([type, m]));
+  // Trop imbriqués, un Ping et une réponse attendue servent comme les autres.
+  const replies = [];
+  transport.on('reply', (type, m) => replies.push([type, m.type, depth(m)]));
   ws.sent.length = 0;
   ws.receive(`{"id":43,"type":"core.PingRequest","payload":${nested(40)}}`);
   const id = transport.send('remote.AddToQueueRequest', {});
   ws.receive(`{"id":${id},"type":"remote.AddToQueueResponse","payload":${nested(40)}}`);
   assert.deepEqual(ws.sent.map(m => [m.type, m.id]), [['core.PingResponse', 43], ['remote.AddToQueueRequest', id]]);
-  assert.deepEqual(replies, [['remote.AddToQueueRequest', { id, type: 'remote.AddToQueueResponse' }]], 'réponse rattachée, sans son contenu');
+  assert.deepEqual(replies, [['remote.AddToQueueRequest', 'remote.AddToQueueResponse', 32]], 'réponse rattachée, coupée à 32 niveaux');
   assert.equal(transport.requestType(id), null, 'plus en attente : pas de reconnexion 8 s plus tard');
-  assert.equal(messages.length, read, 'contenu jamais transmis au pont');
-  assert.equal(errors.length, 4);
+  assert.equal(pruned.length, 4);
+});
+
+// Le filet du transport tient aussi quand l'écouteur qui reçoit le message
+// ignoré ('message-error') ou coupé ('message-pruned') échoue à son tour :
+// la lecture continue et les Ping reçoivent leur réponse.
+test('KcsTransport : écouteurs de message-error et message-pruned qui échouent, la lecture et les Ping continuent', t => {
+  mockTime(t);
+  fakes(t);
+  const transport = new KcsTransport(KCS_URL);
+  t.after(() => transport.close());
+  const ws = FakeWebSocket.instances[0];
+  transport.on('message', () => { throw new Error('écouteur piégé'); });
+  transport.on('message-error', () => { throw new Error('signalement piégé'); });
+  transport.on('message-pruned', () => { throw new Error('coupe piégée'); });
+  ws.open();
+  const deep = '{"a":'.repeat(40) + '1' + '}'.repeat(40);
+  assert.doesNotThrow(() => ws.receive({ id: 9, type: 'core.PingRequest', payload: {} }));
+  assert.doesNotThrow(() => ws.receive(`{"id":10,"type":"core.PingRequest","payload":${deep}}`));
+  assert.deepEqual(ws.sent.filter(m => m.type === 'core.PingResponse').map(m => m.id), [9, 10]);
 });
 
 // Regression: tour 3 de la relecture — un Ping reçu pendant la fermeture de la
@@ -410,20 +431,25 @@ test('KcsTransport : Ping reçu pendant la fermeture, ni réponse ni message ill
 // Regression: tour 3 de la relecture — la garde de profondeur gardait une paire
 // [valeur, profondeur] pour chaque valeur, nombres compris : une trame large
 // de quelques Mo épuisait la mémoire, ce qu'aucun filet ne rattrape (le
-// processus s'arrête). Essai dans un processus à 96 Mo de mémoire.
-test('KcsTransport : une trame large de 4 Mo n’épuise pas la mémoire du serveur', () => {
-  const child = `class WS { static OPEN = 1; constructor() { this.readyState = 1; this.listeners = {}; }
-    addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); } send() {} close() {} }
-    globalThis.WebSocket = WS;
-    const { KcsTransport } = require(${JSON.stringify(path.join(__dirname, '..', 'kcs-transport.js'))});
-    const transport = new KcsTransport('wss://kcs.exemple.invalid/');
-    transport.on('message', () => {}); transport.on('message-error', () => {});
-    const data = '{"type":"remote.ConfigurationUpdateEvent","payload":{"list":[' + '0,'.repeat(2e6) + '0]}}';
-    for (const listener of transport.ws.listeners.message) listener({ data });
-    transport.close(); console.log('vivant');`;
-  const run = spawnSync(process.execPath, ['--max-old-space-size=96', '-e', child], { encoding: 'utf8' });
-  assert.equal(run.status, 0, run.stderr);
-  assert.match(run.stdout, /vivant/);
+// processus s'arrête). Regression: relecture 2 — elle empilait encore chaque
+// objet d'une liste : 1,2 million d'objets vides (3,6 Mo) l'épuisaient aussi,
+// alors que la trame seule tient. Essai dans un processus à 96 Mo de mémoire.
+test('KcsTransport : une trame large de quelques Mo, de nombres ou d’objets vides, n’épuise pas la mémoire du serveur', () => {
+  for (const [item, count] of [['0', 2e6], ['{}', 1.2e6]]) {
+    const child = `class WS { static OPEN = 1; constructor() { this.readyState = 1; this.listeners = {}; }
+      addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); } send() {} close() {} }
+      globalThis.WebSocket = WS;
+      const { KcsTransport } = require(${JSON.stringify(path.join(__dirname, '..', 'kcs-transport.js'))});
+      const transport = new KcsTransport('wss://kcs.exemple.invalid/');
+      let read = 0;
+      transport.on('message', () => { read++; }); transport.on('message-error', () => {});
+      const data = '{"type":"remote.ConfigurationUpdateEvent","payload":{"list":[' + ${JSON.stringify(`${item},`)}.repeat(${count}) + ${JSON.stringify(item)} + ']}}';
+      for (const listener of transport.ws.listeners.message) listener({ data });
+      transport.close(); console.log(read === 1 ? 'vivant' : 'non lu');`;
+    const run = spawnSync(process.execPath, ['--max-old-space-size=96', '-e', child], { encoding: 'utf8' });
+    assert.equal(run.status, 0, `liste de ${item} : ${run.stderr.slice(0, 300)}`);
+    assert.match(run.stdout, /vivant/, `liste de ${item} lue`);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -2146,7 +2172,8 @@ test('valeurs imprévues : file de KaraFun lue avec ses types ; un titre illisib
   assert.deepEqual([bridge.ready, bridge.queueUnreadable], [true, true], 'toujours prêt, file de KaraFun illisible');
   const alerted = bridge.connectionState();
   assert.equal(alerted.level, 'error', 'bandeau rouge sur la page du bar');
-  assert.match(alerted.alert, /^Message de KaraFun illisible \(remote\.QueueEvent\) : la file garde ce qu’elle savait/);
+  assert.equal(alerted.alert, 'Message de KaraFun illisible (remote.QueueEvent) : la file ne voit plus ces changements de KaraFun ' +
+    'et ne lui envoie plus rien d’elle-même. Pilote dans KaraFun en attendant.');
   assert.deepEqual([alerted.canRename, alerted.nameConflict], [false, null], 'alerte à part, sans « Reconnecter »');
   // Un état lisible ne lève pas l'alerte de la file.
   ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 1, current: null } } });
@@ -2173,27 +2200,73 @@ test('valeurs imprévues : file de KaraFun lue avec ses types ; un titre illisib
 
 // Regression: tour 3 de la relecture — une file sans liste de titres, ou un
 // état dont le numéro n'est pas un nombre, étaient jetés en silence : le pont
-// restait sur l'état d'avant sans rien dire au bar.
-test('valeurs imprévues : file ou état mal formés ignorés comme un titre illisible, alerte comprise', async t => {
+// restait sur l'état d'avant sans rien dire au bar. Regression: relecture 2 —
+// un message sans file ou sans état (charge vide ou d'un autre type) l'était
+// encore : une clé renommée par une mise à jour de KaraFun aurait figé la
+// file sans alerte. Les 1 380 messages de file et d'état des journaux réels
+// (septembre et novembre 2026) ont tous la leur.
+test('valeurs imprévues : file ou état mal formés ou absents ignorés comme un titre illisible, alerte comprise', async t => {
   mockTime(t);
   const { bridge, ws } = await adminBridge(t);
   t.after(() => bridge.disconnect());
   ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [kcsItem({ id: 'q-0' })] } } });
   for (const queue of [{ items: { 0: kcsItem() } }, null, 'texte']) ws.receive({ type: 'remote.QueueEvent', payload: { queue } });
-  ws.receive({ type: 'remote.QueueEvent', payload: {} }); // sans file : rien à lire, rien à signaler
+  for (const payload of [{}, null, 'texte']) ws.receive({ type: 'remote.QueueEvent', payload });
   for (const status of [{ state: '4', current: kcsItem() }, null, 'texte']) ws.receive({ type: 'remote.StatusEvent', payload: { status } });
-  assert.deepEqual(ignoredMessages(bridge).map(entry => entry.reason), [...Array(3).fill('file illisible'), ...Array(3).fill('état illisible')]);
+  for (const payload of [{}, null]) ws.receive({ type: 'remote.StatusEvent', payload });
+  assert.deepEqual(ignoredMessages(bridge).map(entry => entry.reason), [...Array(6).fill('file illisible'), ...Array(5).fill('état illisible')]);
   assert.deepEqual(bridge.queue.map(item => item.queueId), ['q-0']);
   assert.equal(bridge.status.kcsState, 1, 'état d’avant gardé');
   assert.equal(bridge.queueUnreadable, true);
   assert.match(bridge.connectionState().alert, /illisible/);
 });
 
+// Regression: relecture 2 — 26 niveaux dans les options d'un seul titre (un
+// client de la télécommande peut en envoyer, KaraFun renvoie les options)
+// faisaient ignorer toute la file : celle que voyait le serveur restait figée
+// tant que ce titre était dans KaraFun. Le surplus est coupé, noté dans le
+// journal de KaraFun, et la file se lit.
+test('valeurs imprévues : options d’un titre trop imbriquées coupées, la file se lit sans alerte', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const deep = levels => (levels ? { a: deep(levels - 1) } : 1);
+  const options = { tracks: [], singer: 'Zoé', extra: deep(30) };
+  ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [kcsItem({ id: 'q-1' }, { options })] } } });
+  assert.deepEqual(bridge.queue.map(item => [item.queueId, item.singer]), [['q-1', 'Zoé']]);
+  assert.deepEqual([bridge.queueUnreadable, bridge.unreadable, bridge.connectionState().alert], [false, null, null]);
+  assert.deepEqual(ignoredMessages(bridge), []);
+  assert.deepEqual(bridge.events.filter(e => e.name === 'message-coupe').map(e => e.data), [{ type: 'remote.QueueEvent' }]);
+});
+
+// L'alerte d'un message illisible ne vaut que connecté : KaraFun perdu, c'est
+// l'alerte de relance (avec « Reconnecter ») qui s'affiche. Et seuls la file
+// et l'état comptent : un autre message ignoré (réponse à un ajout) ne rend
+// ni l'une ni l'autre illisibles, et la reprise d'un envoi reste possible.
+test('valeurs imprévues : alerte d’un message illisible seulement connecté, et pour la file ou l’état seulement', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  for (const type of ['remote.AddToQueueResponse', 'remote.SetQueueItemOptionsResponse', 'remote.QueueItemEvent']) {
+    bridge._ignoredMessage(type, 'réponse illisible');
+  }
+  assert.deepEqual([bridge.queueUnreadable, bridge.unreadable, bridge.connectionState().alert], [false, null, null]);
+  ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [null] } } });
+  assert.equal(bridge.unreadable, 'remote.QueueEvent');
+  assert.match(bridge.connectionState().alert, /illisible/);
+  ws.serverClose(1006);
+  const lost = bridge.connectionState();
+  assert.equal(lost.phase, 'retry');
+  assert.doesNotMatch(lost.label, /illisible/);
+  assert.equal(lost.alert, null, 'KaraFun perdu : l’alerte générale, avec « Reconnecter »');
+});
+
 // Tour 3 de la relecture — une file illisible dès la connexion (titre déjà
 // dans KaraFun quand la file se reconnecte) s'affiche aussi, et une nouvelle
-// connexion l'oublie. Pendant l'alerte, « Reconnecter » garde la connexion
-// qui marche : la couper créerait un conflit de nom.
-test('valeurs imprévues : file illisible dès la connexion, oubliée à la reconnexion ; « Reconnecter » garde la connexion', async t => {
+// connexion l'oublie, comme un état illisible (relecture 2). Pendant
+// l'alerte, « Reconnecter » garde la connexion qui marche : la couper
+// créerait un conflit de nom.
+test('valeurs imprévues : file illisible dès la connexion, file et état illisibles oubliés à la reconnexion ; « Reconnecter » garde la connexion', async t => {
   mockTime(t);
   const { bridge, ws, env } = await connected(t, { ready: false });
   t.after(() => bridge.disconnect());
@@ -2208,6 +2281,7 @@ test('valeurs imprévues : file illisible dès la connexion, oubliée à la reco
   ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 1, current: null } } });
   assert.equal(bridge.ready, true);
   ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [null] } } });
+  ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 3, current: 'texte' } } });
   assert.equal(bridge.connect(CODE), 'kept', 'connexion gardée malgré l’alerte');
   assert.equal(ws.closeCalls, 0);
   bridge.disconnect();
@@ -2217,7 +2291,8 @@ test('valeurs imprévues : file illisible dès la connexion, oubliée à la reco
   assert.notEqual(again, ws);
   again.open();
   named(again);
-  assert.deepEqual([bridge.queueUnreadable, bridge.connectionState().level], [false, 'wait'], 'nouvelle connexion : alerte oubliée');
+  assert.deepEqual([bridge.queueUnreadable, bridge.unreadable, bridge.connectionState().level, bridge.connectionState().alert],
+    [false, null, 'wait', null], 'nouvelle connexion : file et état illisibles oubliés');
 });
 
 // Regression: relecture de cette correction — un titre en cours illisible
@@ -2319,15 +2394,18 @@ test('filet du pont : un message qui fait échouer le pont est ignoré, noté au
   ws.receive(queue);
   assert.equal(lines.length, 2);
   assert.match(lines[1], /3 messages ignorés depuis le démarrage/);
-  // Message trop imbriqué (mode Battle sur 100 000 niveaux) : ignoré de même.
+  // Message trop imbriqué (mode Battle sur 100 000 niveaux) : coupé à 32
+  // niveaux, puis lu ; une file lisible efface l'avis.
   fail = false;
   const battle = { singer: 'Zoé', mod: { id: 1, caption: 'Battle', data: { battle: { subtype: 1 } }, x: 'IMBRIQUE' } };
   const deep = JSON.stringify({ type: 'remote.QueueEvent', payload: { queue: { items: [kcsItem({ id: 'q-9' }, { options: battle })] } } })
     .replace('"IMBRIQUE"', '{"a":'.repeat(100000) + '1' + '}'.repeat(100000));
   assert.doesNotThrow(() => ws.receive(deep));
-  assert.deepEqual(ignoredMessages(bridge).at(-1), { type: 'remote.QueueEvent', reason: 'message de plus de 32 niveaux' });
+  assert.equal(ignoredMessages(bridge).length, 3, 'rien d’ignoré de plus');
+  assert.deepEqual(bridge.queue.map(item => [item.queueId, isBattleItem(item)]), [['q-9', true]], 'mode Battle lu, son surplus coupé');
+  assert.equal(bridge.lastError, null);
   assert.doesNotThrow(() => JSON.stringify(bridge.snapshot()), 'la page du bar reste lisible');
-  // La connexion sert toujours, et une file lisible efface l'avis.
+  // La connexion sert toujours.
   ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [kcsItem({ id: 'q-5' })] } } });
   assert.deepEqual(bridge.queue.map(item => item.queueId), ['q-5']);
   assert.equal(bridge.lastError, null);
@@ -2346,9 +2424,14 @@ test('filet du pont : le nom d’un message ignoré est nettoyé dans le journal
   const lines = [];
   bridge.log = line => lines.push(line);
   const type = `remote.QueueEvent\nFAUSSE LIGNE ${'x'.repeat(500)}`;
-  ws.receive(`{"type":${JSON.stringify(type)},"payload":${'{"a":'.repeat(40) + '1' + '}'.repeat(40)}}`);
+  // Le transport signale le message ignoré sous le nom choisi par KaraFun.
+  bridge.socket.emit('message-error', type, 'Cannot convert object to primitive value');
   assert.equal(lines.length, 1);
-  assert.match(lines[0], /^KaraFun : message remote\.QueueEvent\?FAUSSE\?LIGNE\?x+ ignoré \(message de plus de 32 niveaux\)/);
+  assert.match(lines[0], /^KaraFun : message remote\.QueueEvent\?FAUSSE\?LIGNE\?x+ ignoré \(Cannot convert object to primitive value\)/);
   assert.ok(lines[0].length < 200, 'nom raccourci');
   assert.doesNotMatch(bridge.lastError, /\n/);
+  // Coupé au-delà de 32 niveaux, il est noté nettoyé de même.
+  ws.receive(`{"type":${JSON.stringify(type)},"payload":${'{"a":'.repeat(40) + '1' + '}'.repeat(40)}}`);
+  assert.match(bridge.events.filter(e => e.name === 'message-coupe').at(-1).data.type, /^remote\.QueueEvent\?FAUSSE\?LIGNE\?x+$/);
+  assert.equal(bridge.events.filter(e => e.name === 'message-coupe').at(-1).data.type.length, 64);
 });

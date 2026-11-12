@@ -211,9 +211,13 @@ test('priorité confirmée : KaraFun déconnecté ou qui refuse le retrait, rien
 // bar, après une sauvegarde impossible, ou quand KaraFun retire le droit
 // d'ajout) : ni la priorité ni le titre retiré ne partaient, et la scène
 // restait vide après le titre en cours.
-test('priorité avec retrait, envoi automatique coupé (bar, sauvegarde, droits KaraFun) : rien n’est retiré, la priorité sans retrait reste possible', async () => {
+// Regression: relecture 2 du pont KaraFun — pendant un message de KaraFun
+// illisible, la file ne sait plus ce qui est sur scène : le retrait aurait pu
+// sortir un titre en train d'être chanté.
+test('priorité avec retrait, envoi automatique coupé (bar, sauvegarde, droits KaraFun) ou message de KaraFun illisible : rien n’est retiré, la priorité sans retrait reste possible', async () => {
   const after = ' : rien n’a été retiré ni avancé. « Priorité » sans retrait fait passer la personne juste après lui.';
   const cases = [
+    ['message de KaraFun illisible', (f, ctx) => { ctx.bridge.unreadable = 'remote.StatusEvent'; }, `Un message de KaraFun est illisible${after}`],
     ['coupé par le bar', f => f.call('POST /api/staff/settings', { auto: false }), `L’envoi automatique vers KaraFun est coupé${after}`],
     ['sauvegarde impossible', f => f.failSave('disque plein'), `La sauvegarde de la soirée est impossible, l’envoi automatique est suspendu${after}`],
     ['droit d’ajout retiré, avant le balayage', (f, ctx) => { ctx.bridge.permissions.addToQueue = false; }, `KaraFun refuse l’ajout de titres${after}`],

@@ -2265,7 +2265,9 @@ test('filet de la synchronisation : aucune minuterie n’appelle sync() sans le 
 // l'ajout d'un titre n'y était jamais vu : « J'ai vérifié la file KaraFun :
 // reprendre » concluait qu'il n'était pas parti et l'envoyait une seconde fois.
 // La reprise est refusée tant que la file est illisible ; à la file lisible
-// suivante, l'envoi est retrouvé.
+// suivante, l'envoi est retrouvé. (Depuis la relecture 2, l'envoi n'est plus
+// déclaré non confirmé pendant une file illisible : ici, la file devient
+// illisible après.)
 test('valeurs imprévues : file de KaraFun illisible, la reprise d’un envoi interrompu est refusée', async t => {
   let now = Date.parse('2026-11-12T21:00:00.000Z');
   const Real = Date;
@@ -2282,14 +2284,185 @@ test('valeurs imprévues : file de KaraFun illisible, la reprise d’un envoi in
   f.settings.auto = false;
   assert.equal(add.type, 'remote.AddToQueueRequest');
   const item = isoItem('A-id', 12458, add.payload.options);
-  // KaraFun ajoute le titre, mais sa file arrive avec un titre illisible.
-  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(item, null));
+  // KaraFun tarde : 15 s plus tard, l'envoi est à vérifier.
   now += 16000;
   frames();
   assert.match(notes(f).at(-1), /^KaraFun n'a pas confirmé « Titre 12458 »/);
+  // KaraFun ajoute le titre, mais sa file arrive avec un titre illisible.
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(item, null));
   await assert.rejects(f.call('POST /api/staff/reconcile-pending'), /^Error: La file de KaraFun est illisible/);
   assert.ok(f.pending(), 'rien n’est renvoyé');
   frames(queueEvent(item));
   assert.equal(f.pending(), null, 'file lisible : envoi retrouvé');
   assert.equal(f.tracked().map(tr => tr.queueId).join(), 'A-id');
+});
+
+// Horloge du serveur que l'essai avance lui-même.
+function clockAt(iso) {
+  const clock = { now: Date.parse(iso) };
+  const Real = Date;
+  clock.Date = class extends Real {
+    constructor(...args) { super(...(args.length ? args : [clock.now])); }
+    static now() { return clock.now; }
+  };
+  return clock;
+}
+// Titre ajouté dans KaraFun dont le numéro est illisible : toute file qui le
+// contient est ignorée.
+const ODD_ITEM = { id: ['x'], song: { id: { type: 1, id: 9 }, title: 'Pause', artist: 'Artiste', songTracks: [], options: {} } };
+const removals = sent => sent.filter(m => m.type === 'remote.RemoveFromQueueRequest').map(m => m.payload.queueItemId);
+const unconfirmed = f => notes(f).filter(line => line.startsWith('KaraFun n\'a pas confirmé'));
+
+// Regression: relecture 2 (passe adverse) — avec une file de KaraFun
+// illisible, la file la croyait vide et envoyait le titre suivant : jamais vu
+// dans la file figée, il finissait en « n'a pas confirmé », envoi automatique
+// suspendu. Pendant l'alerte, la file ne lui envoie plus rien d'elle-même ;
+// l'envoi repart à la file lisible suivante.
+test('valeurs imprévues : file de KaraFun illisible, aucun envoi d’elle-même, puis l’envoi repart', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  const lea = singer(f, openTable(f, '1'), 'Léa');
+  f.sched.chooseSong(lea.person, { songId: 12458, title: 'Titre 12458', artist: 'Artiste' });
+  f.settings.auto = true;
+  assert.deepEqual(frames(queueEvent(ODD_ITEM)), [], 'file illisible : rien n’est envoyé');
+  clock.now += 60000;
+  assert.deepEqual(frames(), [], 'une minute plus tard non plus');
+  assert.deepEqual(unconfirmed(f), []);
+  const [add] = frames(queueEvent());
+  assert.equal(add?.type, 'remote.AddToQueueRequest', 'file lisible : l’envoi repart');
+});
+
+// Regression: relecture 2 (équipe rouge) — un titre envoyé juste avant que la
+// file de KaraFun devienne illisible n'y était jamais vu : 15 s plus tard,
+// « n'a pas confirmé », alors que KaraFun le chantait ; une fois chanté et
+// retiré, « reprendre » le renvoyait, et la même personne chantait deux fois.
+// L'horloge des 15 s attend une file lisible, et le titre en cours, dans un
+// état lisible, confirme l'envoi.
+test('valeurs imprévues : titre envoyé puis file illisible, vu sur scène dans l’état : envoi confirmé, jamais renvoyé', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  const lea = singer(f, openTable(f, '1'), 'Léa');
+  f.sched.chooseSong(lea.person, { songId: 12458, title: 'Titre 12458', artist: 'Artiste' });
+  f.settings.auto = true;
+  const [add] = frames();
+  assert.equal(add.type, 'remote.AddToQueueRequest');
+  const item = isoItem('A-id', 12458, add.payload.options);
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(item, ODD_ITEM));
+  clock.now += 20000;
+  frames();
+  assert.deepEqual(unconfirmed(f), [], 'pas de fausse alerte');
+  assert.ok(f.pending(), 'file illisible, titre pas encore vu : envoi en attente');
+  frames(isoStatus(4, item));
+  assert.equal(f.pending(), null, 'titre en cours : envoi confirmé');
+  assert.equal(f.tracked().map(tr => tr.queueId).join(), 'A-id');
+  // Titre chanté puis retiré par KaraFun ; le titre illisible s'en va ensuite.
+  clock.now += 200000;
+  const later = frames(isoStatus(1, null), queueEvent(ODD_ITEM), queueEvent());
+  assert.deepEqual(later.filter(m => m.type === 'remote.AddToQueueRequest'), [], 'jamais renvoyé');
+  assert.deepEqual(f.events('turn.unsent'), [], 'passage compté');
+  assert.equal(notes(f).some(line => /passée dans KaraFun avant la lecture/.test(line)), false);
+});
+
+// Regression: relecture 2 (passe adverse) — avec un état de KaraFun illisible,
+// la file ne sait plus ce qui est sur scène : elle relançait le retrait d'un
+// titre et faisait ses retraits de fermeture alors que KaraFun pouvait être
+// en train de le jouer. Rien n'est retiré d'elle-même avant un état lisible.
+test('valeurs imprévues : état de KaraFun illisible, aucun retrait d’elle-même avant le prochain état lisible', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  const tb = openTable(f, '1');
+  singer(f, tb, 'Léa', 101);
+  singer(f, tb, 'Tom', 201);
+  const a = sendNext(f, 'A-id'), b = sendNext(f, 'B-id');
+  const item = tr => isoItem(tr.queueId, tr.sel.song.songId, { singer: tr.sel.label });
+  frames(queueEvent(item(a), item(b)));
+  frames({ type: 'remote.StatusEvent', payload: { status: { state: '4', current: item(b) } } });
+  a.cancelled = true;
+  f.settings.closingAt = clock.now - 60000;
+  clock.now += 20000;
+  assert.deepEqual(removals(frames()), [], 'ni retrait relancé ni retrait de fermeture');
+  clock.now += 20000;
+  assert.deepEqual(removals(frames(isoStatus(1, null))).sort(), ['A-id', 'B-id'], 'état lisible : les retraits partent');
+});
+
+// Regression: relecture 2 (passe adverse) — pendant une file illisible, la
+// lecture automatique jugeait le titre en tête de la file figée, et le vidage
+// de la file était déclaré fini sans rien retirer de KaraFun.
+test('valeurs imprévues : file de KaraFun illisible, ni lecture automatique ni vidage déclaré fini', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  f.sched.opts.requirePresence = false;
+  singer(f, openTable(f, '1'), 'Léa', 101);
+  const a = sendNext(f, 'A-id');
+  const item = isoItem('A-id', 101, { singer: a.sel.label });
+  frames(queueEvent(item));
+  frames(queueEvent(item, ODD_ITEM));
+  f.settings.autoPlay = true;
+  f.settings.playDelaySec = 0;
+  const played = [];
+  for (let i = 0; i < 3; i++) { clock.now += 30000; played.push(...frames().filter(m => m.type === 'remote.PlayRequest')); }
+  assert.deepEqual(played, [], 'pas de lecture automatique');
+  assert.equal(frames(queueEvent(item))[0]?.type, 'remote.PlayRequest', 'file lisible : lecture automatique');
+  // Vidage demandé pendant une file illisible : la file d'avant était vide,
+  // KaraFun a pu en recevoir d'autres titres depuis.
+  f.settings.autoPlay = false;
+  f.tracked().length = 0;
+  frames(queueEvent());
+  frames(queueEvent(ODD_ITEM, isoItem('X-id', 301, { singer: 'Quelqu’un' })));
+  f.settings.queueClearPending = true;
+  frames();
+  assert.equal(f.settings.queueClearPending, true, 'vidage pas déclaré fini');
+  assert.equal(notes(f).some(line => line.startsWith('File vidée dans KaraFun')), false);
+  frames(queueEvent());
+  assert.equal(f.settings.queueClearPending, false, 'file lisible et vide : vidage fini');
+});
+
+// Un état illisible seul ne bloque pas la reprise d'un envoi interrompu : elle
+// ne lit que la file, où le titre en cours est en tête pendant la lecture.
+// L'envoi automatique, lui, attend un état lisible.
+test('valeurs imprévues : état de KaraFun illisible seul, la reprise d’un envoi interrompu reste possible', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  const lea = singer(f, openTable(f, '1'), 'Léa');
+  f.sched.chooseSong(lea.person, { songId: 12458, title: 'Titre 12458', artist: 'Artiste' });
+  f.settings.auto = true;
+  const [add] = frames();
+  f.settings.auto = false;
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} });
+  clock.now += 16000;
+  frames();
+  assert.match(notes(f).at(-1), /^KaraFun n'a pas confirmé « Titre 12458 »/);
+  frames({ type: 'remote.StatusEvent', payload: { status: { state: '4', current: null } } });
+  assert.deepEqual(plain(await f.call('POST /api/staff/reconcile-pending')), { ok: true });
+  assert.deepEqual([f.settings.auto, f.pending()], [true, null]);
+  assert.deepEqual(frames().filter(m => m.type === 'remote.AddToQueueRequest'), [], 'état illisible : pas encore renvoyé');
+  assert.equal(frames(isoStatus(1, null))[0]?.type, 'remote.AddToQueueRequest', 'état lisible : renvoyé');
+});
+
+// Regression: relecture 2 (maintenabilité) — l'endroit du code venait de la
+// première ligne de la pile : quand Number(), String() ou toISOString()
+// échouent, c'est la fonction de Node (« at Number (<anonymous>) »), et
+// l'endroit promis manquait au journal. La première ligne avec un fichier
+// sert. Le retour à la normale est aussi annoncé au bar, qui pilotait
+// KaraFun à la main en attendant.
+test('filet de la synchronisation : endroit du code noté quand Number() échoue, retour annoncé au bar', () => {
+  const f = harness();
+  const { bridge } = kcsBridge(f);
+  const status = bridge.status;
+  const trap = JSON.parse('{"toString":1}');
+  let fail = true;
+  Object.defineProperty(bridge, 'status', { configurable: true, get() { return fail ? Number(trap) : status; } });
+  f.safeSync();
+  assert.match(f.logs.find(line => line.startsWith('Synchronisation avec KaraFun interrompue')), /\(song-settings-server\.test\.js:\d+\)$/);
+  fail = false;
+  f.safeSync();
+  assert.deepEqual(f.sched.log.filter(line => /mise à jour avec KaraFun/i.test(line.msg)).map(line => [line.kind, line.msg]), [
+    ['error', 'La mise à jour avec KaraFun a échoué (Cannot convert object to primitive value) : la file ne pilote plus KaraFun et réessaie seule. Pilote dans KaraFun en attendant.'],
+    ['info', 'Mise à jour avec KaraFun rétablie : la file pilote de nouveau KaraFun.'],
+  ]);
 });

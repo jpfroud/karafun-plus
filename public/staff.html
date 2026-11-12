@@ -1424,8 +1424,10 @@
     if (changed) saveDismissed();
     // KaraFun perdu : impossible à fermer, avec la reconnexion à portée de doigt.
     const kf = kfStatus();
-    // KaraFun qui limite les essais d'abord : inutile de cliquer, pas de
-    // bouton Reconnecter. Puis KaraFun fermé ou code changé, essais arrêtés :
+    // KaraFun qui limite les essais, ou un message de KaraFun illisible
+    // (connecté), d'abord : alerte du pont seule, sans bouton Reconnecter
+    // (inutile de cliquer, ou il couperait la connexion qui marche). Puis
+    // KaraFun fermé ou code changé, essais arrêtés :
     // la file n'essaie plus seule, Reconnecter à l'ouverture ou nouveau code.
     // Puis KaraFun perdu (Reconnecter), même pendant un conflit de nom :
     // KaraFun absent, le nom n'est pas redemandé. Enfin le nom encore tenu
