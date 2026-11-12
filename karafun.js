@@ -714,17 +714,24 @@ class KaraFunBridge extends EventEmitter {
   }
 
   // Filet : message de KaraFun que le pont n'a pas pu lire jusqu'au bout
-  // (valeur imprévue, plus de 32 niveaux imbriqués ; voir kcs-transport.js).
-  // Il est ignoré et la connexion continue : chaque fois dans le journal de
-  // KaraFun, une ligne par minute au plus dans celui du serveur.
+  // (valeur imprévue, titre illisible, plus de 32 niveaux imbriqués ; voir
+  // kcs-transport.js). Il est ignoré et la connexion continue : chaque fois
+  // dans le journal de KaraFun, une ligne par minute au plus dans celui du
+  // serveur, et un avis sur la page du bar (lastError), effacé par la
+  // prochaine file ou le prochain état lisibles. Le nom du message, choisi par
+  // KaraFun, est nettoyé : ni retour à la ligne ni nom sans fin.
   _ignoredMessage(type, reason) {
+    const name = String(type).replace(/[^\w.:-]/g, '?').slice(0, 64);
+    const why = String(reason).replace(/\s+/g, ' ').slice(0, 200);
     this._ignored.count++;
-    this._record('info', 'message-ignore', { type, reason });
+    this._record('info', 'message-ignore', { type: name, reason: why });
+    this.lastError = `KaraFun a envoyé un message illisible (${name}) : il est ignoré, la connexion continue.`;
+    this.emit('change');
     const now = Date.now();
     if (this._ignored.loggedAt != null && now - this._ignored.loggedAt < 60000) return;
     this._ignored.loggedAt = now;
     const count = this._ignored.count > 1 ? ` ${this._ignored.count} messages ignorés depuis le démarrage.` : '';
-    this._log(`KaraFun : message ${type} ignoré (${reason}) ; la connexion continue.${count}`);
+    this._log(`KaraFun : message ${name} ignoré (${why}) ; la connexion continue.${count}`);
   }
 
   _record(dir, name, data, id) {
@@ -1084,17 +1091,25 @@ class KaraFunBridge extends EventEmitter {
       } else if (m.type === 'remote.QueueEvent' || m.type === 'remote.QueueResponse') {
         if (!p.queue || !Array.isArray(p.queue.items)) return;
         proven();
+        // Un titre illisible, laissé de côté, passerait pour retiré de
+        // KaraFun : toute la file reçue est ignorée, la file garde l'ancienne.
+        const items = p.queue.items.map(item => normalizeKcsItem(item));
+        if (items.includes(null)) { this._ignoredMessage(m.type, 'titre illisible dans la file'); return; }
         this.raw.queue = p.queue;
-        const items = p.queue.items.map(item => normalizeKcsItem(item)).filter(Boolean);
         this._learnBattleMods(items);
         this._accept('queue', items);
       } else if (m.type === 'remote.StatusEvent' || m.type === 'remote.StatusResponse') {
         if (!p.status || typeof p.status.state !== 'number') return;
         proven();
-        const status = p.status || {};
-        this.raw.status = status;
-        // Titre en cours illisible (pas un objet, numéro objet) : aucun.
+        // `songPlaying` : titre en cours de l'ancien protocole, jamais envoyé
+        // en KCS ; il ne doit pas passer devant `current`, lu avec ses types.
+        const { songPlaying: _, ...status } = p.status;
+        // Titre en cours illisible (pas un objet, numéro objet) : sans lui, le
+        // premier titre de la file passerait pour celui sur scène. Tout
+        // l'état reçu est ignoré, la file garde l'ancien.
         const current = status.current ? normalizeKcsItem(status.current) : null;
+        if (status.current && !current) { this._ignoredMessage(m.type, 'titre en cours illisible'); return; }
+        this.raw.status = p.status;
         if (current) this._learnBattleMods([current]);
         this._noteLoading(status);
         this._observeDefaults(status);

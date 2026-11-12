@@ -32,6 +32,7 @@ require.cache[ioPath] = { id: ioPath, filename: ioPath, loaded: true,
 
 const { KcsTransport } = require('../kcs-transport');
 const { KaraFunBridge, readSettings, normalizeKcsItem, normalizeResults, BATTLE_MOD, BATTLE_MODS_MAX, isBattleItem, battleModFor } = require('../karafun');
+const { analyzeState } = require('../karafun-state');
 
 // --- Faux WebSocket : ce que KaraFun envoie et ce qu'il reçoit ---
 class FakeWebSocket {
@@ -348,9 +349,12 @@ test('KcsTransport : un écouteur qui échoue n’arrête ni la lecture ni les r
 // Regression: même relecture — un message imbriqué sur 100 000 niveaux
 // épuisait la pile du pont (structuredClone d'un mode Battle) ; gardé dans le
 // journal en mémoire, il aurait aussi cassé la page du bar (JSON.stringify).
-// Les vraies trames ont 10 niveaux au plus : au-delà de 32, le message n'est
-// pas lu. Un identifiant d'un type imprévu n'est jamais renvoyé à KaraFun.
-test('KcsTransport : message de plus de 32 niveaux ignoré, identifiant d’un type imprévu jamais renvoyé', t => {
+// Les vraies trames ont 10 niveaux au plus : au-delà de 32, le contenu du
+// message n'est pas lu. Un identifiant d'un type imprévu n'est jamais renvoyé
+// à KaraFun. Regression: relecture de cette correction — un Ping ou une
+// réponse attendue trop imbriqués restaient sans suite : pas de réponse au
+// Ping, et 8 s plus tard une commande sans réponse faisait reconnecter.
+test('KcsTransport : message de plus de 32 niveaux ignoré, Ping et réponse servent quand même, identifiant d’un type imprévu jamais renvoyé', t => {
   mockTime(t);
   fakes(t);
   const transport = new KcsTransport(KCS_URL);
@@ -370,6 +374,19 @@ test('KcsTransport : message de plus de 32 niveaux ignoré, identifiant d’un t
   ws.receive({ id: [7], type: 'core.TimestampRequest', payload: {} });
   assert.deepEqual(ws.sent.map(m => [m.type, 'id' in m]), [['core.PingResponse', false], ['core.TimestampResponse', false]],
     'réponse sans identifiant : un objet ou une liste n’est jamais renvoyé');
+  // Trop imbriqués, un Ping et une réponse attendue servent encore, sans
+  // leur contenu.
+  const replies = [], read = messages.length;
+  transport.on('reply', (type, m) => replies.push([type, m]));
+  ws.sent.length = 0;
+  ws.receive(`{"id":43,"type":"core.PingRequest","payload":${nested(40)}}`);
+  const id = transport.send('remote.AddToQueueRequest', {});
+  ws.receive(`{"id":${id},"type":"remote.AddToQueueResponse","payload":${nested(40)}}`);
+  assert.deepEqual(ws.sent.map(m => [m.type, m.id]), [['core.PingResponse', 43], ['remote.AddToQueueRequest', id]]);
+  assert.deepEqual(replies, [['remote.AddToQueueRequest', { id, type: 'remote.AddToQueueResponse' }]], 'réponse rattachée, sans son contenu');
+  assert.equal(transport.requestType(id), null, 'plus en attente : pas de reconnexion 8 s plus tard');
+  assert.equal(messages.length, read, 'contenu jamais transmis au pont');
+  assert.equal(errors.length, 4);
 });
 
 // ---------------------------------------------------------------------------
@@ -2062,38 +2079,53 @@ const kcsItem = (over = {}, song = {}) => ({ id: 'q-1', song: { id: { type: 1, i
   songTracks: [{ type: 4 }, { type: 5 }], options: { tracks: [], singer: 'Zoé' }, ...song }, ...over });
 const ignoredMessages = bridge => bridge.events.filter(e => e.name === 'message-ignore').map(e => e.data);
 
-test('valeurs imprévues : file de KaraFun lue avec ses types, les titres lisibles gardés', async t => {
+// Regression: relecture de cette correction — un titre illisible était
+// laissé de côté : la file croyait ensuite qu'il avait été retiré de KaraFun
+// (passage rendu, titre plus suivi, et un second passage possible). Toute la
+// file reçue est ignorée, et la file garde ce qu'elle savait.
+test('valeurs imprévues : file de KaraFun lue avec ses types ; un titre illisible fait ignorer toute la file reçue', async t => {
   mockTime(t);
   const { bridge, ws } = await adminBridge(t);
   t.after(() => bridge.disconnect());
   const valid = kcsItem({ id: 'q-2' });
+  // Titre qui n'est pas un objet, ou dont le numéro est un objet ou une liste.
+  for (const bad of [null, 'texte', kcsItem({ id: piege() }), kcsItem({ id: [1] })]) {
+    assert.doesNotThrow(() => ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [valid, bad] } } }));
+  }
+  assert.deepEqual(bridge.queue, [], 'file d’avant gardée');
+  assert.deepEqual(ignoredMessages(bridge).map(entry => entry.reason), Array(4).fill('titre illisible dans la file'));
+  assert.match(bridge.lastError, /message illisible \(remote\.QueueEvent\)/, 'avis sur la page du bar');
+  assert.equal(normalizeKcsItem(null), null);
+  // Valeurs secondaires d'un type imprévu : ignorées, le reste du titre sert.
   const odd = kcsItem({ id: 'q-3' }, { id: { type: 1, id: piege() }, title: piege(), artist: piege(),
     songTracks: [{ type: piege() }, { type: 4 }, { type: '5' }],
     options: { singer: piege(), tracks: [], mod: { id: piege(), caption: 'Battle', data: { battle: { subtype: 1 } } } } });
-  const items = [null, 'texte', kcsItem({ id: piege() }), kcsItem({ id: [1] }), odd, kcsItem({ id: 'q-4' }, { options: 'texte' }), valid];
+  const items = [odd, kcsItem({ id: 'q-4' }, { options: 'texte' }), valid];
   assert.doesNotThrow(() => ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items } } }));
-  assert.deepEqual(bridge.queue.map(item => item.queueId), ['q-3', 'q-4', 'q-2'], 'titres sans numéro lisible laissés de côté');
+  assert.deepEqual(bridge.queue.map(item => item.queueId), ['q-3', 'q-4', 'q-2']);
   const [read, plain, kept] = bridge.queue;
   assert.deepEqual([read.songId, read.title, read.artist, read.singer, read.songTracks], [undefined, '', '', '', [4, 5]]);
   assert.equal(isBattleItem(read), false, 'mode Battle sans numéro lisible : pas une Battle');
   assert.deepEqual(plain.options, {}, 'options d’un autre type : aucune');
   assert.deepEqual(kept, normalizeKcsItem(valid));
-  assert.equal(normalizeKcsItem(null), null);
-  assert.deepEqual(ignoredMessages(bridge), [], 'lues avec leur type, sans le filet');
+  assert.equal(ignoredMessages(bridge).length, 4, 'lues avec leur type, sans le filet');
+  assert.equal(bridge.lastError, null, 'une file lisible efface l’avis');
   assert.equal(bridge.ready, true);
 });
 
-test('valeurs imprévues : état de KaraFun lu avec ses types, le titre en cours et ses pistes lisibles gardés', async t => {
+// Regression: relecture de cette correction — un titre en cours illisible
+// devenait « aucun titre en cours » alors que KaraFun jouait : analyzeState
+// prenait alors le premier titre de la file pour celui sur scène. Tout l'état
+// reçu est ignoré, et la file garde ce qu'elle savait.
+test('valeurs imprévues : état de KaraFun lu avec ses types ; un titre en cours illisible fait ignorer tout l’état reçu', async t => {
   mockTime(t);
   const { bridge, ws } = await adminBridge(t);
   t.after(() => bridge.disconnect());
   const tracks = [{ track: { type: piege() }, volume: 53 }, null, { track: { type: 4 }, volume: 53 }, { track: { type: 5 }, volume: piege() }];
   const status = (current, extra = {}) => ({ type: 'remote.StatusEvent', payload: { status: { state: 3, pitch: 0, tempo: 0, tracks, current, ...extra } } });
-  // Titre en cours sans numéro lisible : pas de titre en cours, l'état sert.
-  assert.doesNotThrow(() => ws.receive(status(kcsItem({ id: piege() }))));
-  assert.deepEqual([bridge.status.current, bridge.status.kcsState], [null, 3]);
-  assert.doesNotThrow(() => ws.receive(status('texte')));
-  assert.equal(bridge.status.current, null);
+  for (const current of [kcsItem({ id: piege() }), 'texte']) assert.doesNotThrow(() => ws.receive(status(current)));
+  assert.deepEqual([bridge.status.kcsState, bridge.status.current], [1, null], 'état d’avant gardé');
+  assert.deepEqual(ignoredMessages(bridge).map(entry => entry.reason), ['titre en cours illisible', 'titre en cours illisible']);
   // Piste, volume, tonalité et options d'un type imprévu : ignorés, le reste sert.
   const own = { singer: 'Zoé', tracks: [{ track: { type: piege() }, volume: 50 }] };
   assert.doesNotThrow(() => ws.receive(status(kcsItem({}, { options: own }), { pitch: piege() })));
@@ -2101,8 +2133,24 @@ test('valeurs imprévues : état de KaraFun lu avec ses types, le titre en cours
   assert.deepEqual(bridge.snapshot().songSettings.live,
     { queueId: 'q-1', pitch: null, tempo: 0, guide: null, backing: 53, voices: {}, tracks: [4, 5] });
   assert.equal(bridge.seenLoading('q-1'), true);
-  assert.deepEqual(ignoredMessages(bridge), []);
+  assert.equal(ignoredMessages(bridge).length, 2, 'lu avec ses types, sans le filet');
+  assert.equal(bridge.lastError, null);
   assert.equal(bridge.ready, true);
+});
+
+// Regression: relecture de cette correction — un champ `songPlaying` (le nom
+// du titre en cours dans l'ancien protocole ; KaraFun ne l'envoie pas en KCS,
+// journaux de septembre et de novembre 2026) restait tel quel dans l'état, et
+// analyzeState le lit avant le titre en cours lu avec ses types.
+test('valeurs imprévues : un champ songPlaying de l’état KCS n’est jamais gardé', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [kcsItem()] } } });
+  ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 4, pitch: 0, tempo: 0, tracks: [], current: kcsItem(),
+    songPlaying: { songId: piege(), queueId: [7], title: ['x'] } } } });
+  assert.equal(bridge.status.songPlaying, undefined);
+  assert.equal(analyzeState(bridge.queue, bridge.status).current.queueId, 'q-1', 'le titre en cours lu avec ses types');
 });
 
 test('valeurs imprévues : refus de KaraFun dont la raison est d’un type imprévu', async t => {
@@ -2143,6 +2191,7 @@ test('filet du pont : un message qui fait échouer le pont est ignoré, noté au
   assert.doesNotThrow(() => ws.receive(queue));
   assert.deepEqual(ignoredMessages(bridge), [{ type: 'remote.QueueEvent', reason: 'Cannot convert object to primitive value' }]);
   assert.deepEqual(lines, ['KaraFun : message remote.QueueEvent ignoré (Cannot convert object to primitive value) ; la connexion continue.']);
+  assert.match(bridge.lastError, /message illisible \(remote\.QueueEvent\)/, 'avis sur la page du bar');
   ws.receive(queue);
   assert.equal(ignoredMessages(bridge).length, 2);
   assert.equal(lines.length, 1, 'une ligne par minute au plus dans le journal du serveur');
@@ -2162,9 +2211,28 @@ test('filet du pont : un message qui fait échouer le pont est ignoré, noté au
   assert.doesNotThrow(() => ws.receive(deep));
   assert.deepEqual(ignoredMessages(bridge).at(-1), { type: 'remote.QueueEvent', reason: 'message de plus de 32 niveaux' });
   assert.doesNotThrow(() => JSON.stringify(bridge.snapshot()), 'la page du bar reste lisible');
-  // La connexion sert toujours.
+  // La connexion sert toujours, et une file lisible efface l'avis.
   ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [kcsItem({ id: 'q-5' })] } } });
   assert.deepEqual(bridge.queue.map(item => item.queueId), ['q-5']);
+  assert.equal(bridge.lastError, null);
   assert.equal(bridge.ready, true);
   assert.equal(ws.closeCalls, 0);
+});
+
+// Regression: relecture de cette correction — le nom d'un message ignoré,
+// choisi par KaraFun, était recopié tel quel dans le journal du serveur : un
+// retour à la ligne y fabriquait une fausse ligne, et un nom très long
+// remplissait le journal.
+test('filet du pont : le nom d’un message ignoré est nettoyé dans le journal du serveur et sur la page du bar', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const lines = [];
+  bridge.log = line => lines.push(line);
+  const type = `remote.QueueEvent\nFAUSSE LIGNE ${'x'.repeat(500)}`;
+  ws.receive(`{"type":${JSON.stringify(type)},"payload":${'{"a":'.repeat(40) + '1' + '}'.repeat(40)}}`);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^KaraFun : message remote\.QueueEvent\?FAUSSE\?LIGNE\?x+ ignoré \(message de plus de 32 niveaux\)/);
+  assert.ok(lines[0].length < 200, 'nom raccourci');
+  assert.doesNotMatch(bridge.lastError, /\n/);
 });

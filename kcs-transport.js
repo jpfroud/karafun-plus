@@ -43,14 +43,22 @@ class KcsTransport extends EventEmitter {
       try { message = JSON.parse(String(event.data)); }
       catch { this.emit('transport-error', 'Message KaraFun illisible.'); return; }
       if (!message || typeof message.type !== 'string') return;
-      if (deeperThan(message, MAX_DEPTH)) { this._ignore(message.type, `message de plus de ${MAX_DEPTH} niveaux`); return; }
-      // Filet : l'erreur d'un écouteur du WebSocket, Node la relance hors de
-      // toute portée et le serveur du bar s'arrêterait. Le message est ignoré
-      // ('message-error') et la lecture continue : Ping et réponses servent.
-      try { this.emit('message', message); } catch (error) { this._ignore(message.type, error); }
-      if (this.closed) return;
       // Identifiant renvoyé tel quel : un nombre ou un texte, jamais un objet.
       const id = typeof message.id === 'number' || typeof message.id === 'string' ? message.id : undefined;
+      if (deeperThan(message, MAX_DEPTH)) {
+        // Contenu non lu. Le message sert encore au battement (Ping,
+        // Timestamp) et conclut sa demande, sans son contenu : sinon, 8 s plus
+        // tard, une commande restée sans réponse ferait reconnecter.
+        this._ignore(message.type, `message de plus de ${MAX_DEPTH} niveaux`);
+        message = { ...(id === undefined ? {} : { id }), type: message.type };
+      } else {
+        // Filet : l'erreur d'un écouteur du WebSocket, Node la relance hors de
+        // toute portée et le serveur du bar s'arrêterait. Le message est
+        // ignoré ('message-error') et la lecture continue : Ping et réponses
+        // servent.
+        try { this.emit('message', message); } catch (error) { this._ignore(message.type, error); }
+      }
+      if (this.closed) return;
       try {
         if (message.type === 'core.PingRequest') {
           this._send('core.PingResponse', {}, id);

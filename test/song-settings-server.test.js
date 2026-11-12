@@ -21,7 +21,8 @@ const root = path.join(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 const fromServer = createRequire(path.join(root, 'server.js'));
 
-function harness() {
+// `setTimeout` : minuterie donnée au serveur (par défaut, aucune ne part).
+function harness({ setTimeout: later = () => ({ unref() {} }) } = {}) {
   const entry = source.lastIndexOf('main().catch(');
   assert.ok(entry > 0, 'point d’entrée du serveur introuvable');
   const quietFs = { ...fs, mkdirSync() {}, appendFileSync() {}, writeFileSync() {}, renameSync() {},
@@ -32,11 +33,11 @@ function harness() {
   const logs = [];
   const context = { require: name => name === 'fs' ? quietFs : fromServer(name),
     __dirname: root, process: fixtureProcess, console: { ...console, log: (...args) => logs.push(args.join(' ')) }, Buffer, URL,
-    setTimeout: () => ({ unref() {} }), clearTimeout() {}, setImmediate, AbortSignal };
+    setTimeout: later, clearTimeout() {}, setImmediate, AbortSignal };
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, settings, handlers, access, journal, sync, staffState, publicState, battleVote, clearEvening,
       resendWithoutOptions, restoreKaraFunDefaults: typeof restoreKaraFunDefaults === 'function' ? restoreKaraFunDefaults : null,
-      safeSync: typeof safeSync === 'function' ? safeSync : null, wireBridge,
+      safeSync: typeof safeSync === 'function' ? safeSync : null, wireBridge, connectionAnswer,
       connectKaraFun,
       tracked: () => tracked, pending: () => pending, setBridge: b => { bridge = b; },
       handle: server.listeners('request')[0], STAFF_KEY, PORT };
@@ -2175,4 +2176,28 @@ test('filet de la synchronisation : une erreur dans sync() n’arrête pas le se
   bridge.emit('battle-mode-answer', { get ok() { throw new Error('réponse piégée'); } });
   await tick();
   assert.ok(f.logs.includes('Réponse de KaraFun au mode Battle non traitée : réponse piégée'));
+});
+
+// Regression: relecture de cette correction (trois relecteurs) — la mise à
+// jour relancée 300 ms après une commande du bar (POST /api/staff/kf) et après
+// « Connecter » ou « Reconnecter » (connectionAnswer) appelait sync() sans le
+// filet : pendant une panne de la mise à jour, le clic suivant du bar
+// arrêtait le serveur.
+test('filet de la synchronisation : mise à jour relancée 300 ms après une commande du bar ou « Connecter »', async () => {
+  const timers = [];
+  const f = harness({ setTimeout: (run, ms) => { timers.push({ run, ms }); return { unref() {} }; } });
+  const { bridge } = kcsBridge(f);
+  const status = bridge.status;
+  let fail = false;
+  Object.defineProperty(bridge, 'status', { configurable: true, get() {
+    if (fail) throw new TypeError('Cannot convert object to primitive value');
+    return status;
+  } });
+  assert.deepEqual(plain(await f.call('POST /api/staff/kf', { action: 'next' })), { ok: true });
+  f.connectionAnswer('kept');
+  const later = timers.filter(timer => timer.ms === 300);
+  assert.equal(later.length, 2, '« Suivant », puis la réponse à « Connecter »');
+  fail = true;
+  for (const { run } of later) assert.doesNotThrow(run, 'une mise à jour en échec ne sort pas de la minuterie');
+  assert.equal(f.sched.log.filter(line => line.kind === 'error').length, 1, 'signalée une fois au bar');
 });

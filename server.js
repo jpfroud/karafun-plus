@@ -1003,9 +1003,10 @@ function shielded(label, run) {
   try { run(); } catch (error) { appLog(`${label} : ${errorReason(error)}`); }
 }
 
-// Filet de la synchronisation avec KaraFun (événements du pont, minuterie de
-// 2 s) : une valeur imprévue qui ferait échouer sync() ne doit jamais arrêter
-// la file. Une panne est notée une fois pour le bar et dans le journal du
+// Filet de la synchronisation avec KaraFun lancée hors d'une requête
+// (événements du pont, minuterie de 2 s, relance 300 ms après une commande du
+// bar ou « Connecter ») : une valeur imprévue qui ferait échouer sync() ne
+// doit jamais arrêter la file. Une panne est notée une fois pour le bar et dans le journal du
 // serveur, avec l'endroit du code (puis une ligne par minute au plus) ; la
 // synchronisation suivante réessaie, et son retour est noté.
 let syncFailure = null; // { count, loggedAt } pendant une panne
@@ -5930,7 +5931,7 @@ const handlers = {
     else if (body.action === 'test-add') bridge.add(body.songId, 'Test file karaoké');
     else if (['pitch', 'tempo', 'track'].includes(body.action)) return liveSongSetting(body);
     else throw new Error('Action inconnue');
-    setTimeout(sync, 300);
+    setTimeout(safeSync, 300);
     return { ok: true };
   },
 };
@@ -6255,7 +6256,7 @@ function connectKaraFun(code = CODE) {
 // limite les essais ou budget de l'heure épuisé : { ok: false, message },
 // affiché en erreur par la page du bar, sans relire la page de KaraFun.
 function connectionAnswer(result) {
-  setTimeout(sync, 300);
+  setTimeout(safeSync, 300);
   if (result?.ok === false) return { ok: false, kept: false, message: result.message };
   return result === 'kept' ?
     { ok: true, kept: true, message: 'KaraFun est déjà connecté ou en train de se connecter : connexion gardée.' } :
