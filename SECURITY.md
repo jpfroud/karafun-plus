@@ -199,7 +199,12 @@ gh attestation verify oci://ghcr.io/jpfroud/karafun-plus:vX.Y.Z --repo jpfroud/k
   ligne quand l'empreinte de `node:26-trixie-slim` contient
   `1:1.3.dfsg+really1.3.1-1+deb13u1`. La construction de l'image échoue alors en
   le disant : la PR d'empreinte de Dependabot qui l'apporte, qui fusionnerait
-  seule, attend ce retrait au lieu de garder la ligne sans qu'on le voie.
+  seule, attend ce retrait au lieu de garder la ligne sans qu'on le voie. Le
+  retrait se fait sur la branche de cette PR même (une PR à part garderait
+  l'ancienne empreinte, que Trivy refuserait), qui se fusionne ensuite à la main :
+  un commit d'un autre auteur retire la fusion automatique. L'étape vérifie aussi
+  la version installée : un miroir de Debian en retard ferait sinon passer
+  l'ancienne sans erreur.
 - **Outils d'agents dans les sessions de développement** : les hooks de
   `.claude/` installent gstack depuis son dépôt dans le conteneur éphémère de
   la session. Rien de cet outillage n'entre dans le kit ni dans l'image, et

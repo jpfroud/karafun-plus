@@ -3542,6 +3542,37 @@ test('filet de la synchronisation : panne qui empêche de lire KaraFun, gestes d
   await f.call('POST /api/staff/duo-unmark', { queueId: 'A-id' });
   assert.deepEqual(plain(a.sel.ids), [a.sel.ids[0]]);
 });
+// Regression: relecture gstack-review de la branche finale (spécialiste des
+// essais) — un déplacement ou une « Priorité » du bar pendant la panne notait
+// son changement manuel sans empreinte de KaraFun (routeRead rendait null) :
+// la soirée enregistrée était refusée à la reprise (« changement manuel mal
+// formé ») et le serveur ne redémarrait plus de cette soirée. Sans empreinte
+// lisible, le changement porte une empreinte qu'aucune file ne donne : son
+// annulation reprend l'ordre comme après un autre changement, et la soirée se
+// reprend.
+test('filet de la synchronisation : déplacement du bar pendant la panne, soirée enregistrée qui se reprend', async () => {
+  const { restoreNight } = require('../night-state');
+  const { Scheduler } = require('../scheduler');
+  const { TableAccess } = require('../table-access');
+  const f = harness({ persistent: true });
+  const { bridge } = kcsBridge(f);
+  const tb = openTable(f, '1', 6);
+  for (const [name, song] of [['Léa', 101], ['Tom', 201], ['Zoé', 301]]) singer(f, tb, name, song);
+  f.sched.opts.requirePresence = false;
+  f.sync();
+  breakStatus(bridge);
+  const [, second] = f.sched.presenceView().filter(v => !v.future).map(v => v.ids[0]);
+  const saves = f.saves.length;
+  const moved = await post(f, `/api/staff/move?key=${f.STAFF_KEY}`, { personId: second, toIndex: 0 });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.ok(f.saves.length > saves, 'soirée enregistrée');
+  const scheduler = new Scheduler({ solverEnabled: false });
+  assert.doesNotThrow(() => restoreNight(f.saves.at(-1), { scheduler, access: new TableAccess(), settings: { auto: true } }),
+    'la soirée enregistrée pendant la panne se reprend');
+  const change = scheduler.manualChanges.at(-1);
+  assert.equal(change?.personId, second, 'changement repris');
+  assert.equal(change.native, '0'.repeat(64), 'empreinte de panne : aucune file ne la donne, annulation comme après un autre changement');
+});
 
 // ---------------------------------------------------------------- relecture contradictoire du tour 5 (tour 2)
 // Ligne de GUIDE-BAR.md qui commence par `start` (un paragraphe, ou un point
@@ -3816,4 +3847,33 @@ test('valeurs imprévues : file de KaraFun illisible, retrait annulé que KaraFu
     `compte alors comme un titre passé dans KaraFun si l'alerte finit plus de ${late / 1000} secondes après l'annulation : le titre n'est pas rendu à son chanteur`]) {
     assert.ok(line.includes(said), `GUIDE-BAR.md : ${said}`);
   }
+});
+
+// Regression: relecture gstack-review de la branche finale (passe
+// contradictoire) — la pause des délais de la relance ⏮ pendant l'alerte était
+// notée même sans relance en cours, puis appliquée à la première
+// synchronisation lisible : une relance demandée juste après l'alerte, avant
+// cette synchronisation, voyait ses délais (15 s, 20 s) repoussés de toute la
+// durée de l'alerte. Chaque relance ne garde que sa propre pause.
+test('valeurs imprévues : relance ⏮ demandée juste après une longue alerte : ses délais ne sont pas repoussés', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  singer(f, openTable(f, '1'), 'Léa', 101);
+  const a = sendNext(f, 'A-id');
+  const A = isoItem('A-id', 101, { singer: a.sel.label });
+  frames(queueEvent(A), isoStatus(4, A));
+  a.liveChecked = 'A-id';
+  // Longue alerte sans relance en cours : file de KaraFun illisible pendant 60 s.
+  frames(queueEvent(A, ODD_ITEM));
+  clock.now += 60000;
+  frames();
+  // La file lisible arrive ; le bar touche ⏮ avant la synchronisation suivante.
+  FakeWS.last.emit('message', { data: JSON.stringify(queueEvent(A)) });
+  await f.call('POST /api/staff/kf', { action: 'restart' });
+  assert.ok(frames().some(m => m.type === 'remote.AddToQueueRequest'), 'copie demandée à KaraFun');
+  // 16 s plus tard, sans copie : la relance conclut, sans attendre 60 s de plus.
+  clock.now += 16000;
+  frames(queueEvent(A));
+  assert.equal(restartNotConfirmed(f).length, 1, 'délai de 15 s compté depuis la demande');
 });

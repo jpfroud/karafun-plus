@@ -1421,8 +1421,11 @@ class KaraFunBridge extends EventEmitter {
     // perdu, c'est l'alerte de relance qui compte.
     const unread = this._unreadableAlert();
     const unreadable = unread ? `Message de KaraFun illisible (${unread}) : la file ne voit plus ces changements de KaraFun ` +
-      'et ne lui envoie plus rien d’elle-même. Pilote dans KaraFun en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.' : null;
-    const [level, label] = unreadable ? ['error', unreadable] : labels[phase];
+      'et ne lui envoie plus rien d’elle-même ; Spotify n’est plus coupé ni relancé d’office. Pilote dans KaraFun et avec ' +
+      '« ⏸ Spotify » en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.' : null;
+    // Pastille de l'état KaraFun : le titre de l'alerte seulement ; la phrase entière,
+    // dans le bandeau, y faisait grandir la barre du haut sur un téléphone.
+    const [level, label] = unreadable ? ['error', `Message de KaraFun illisible (${unread})`] : labels[phase];
     return {
       phase, level, label, since: this._phaseSince, attempt: this._tries, protocol: this.protocol,
       retryAt: phase === 'retry' ? this.retryAt : null,

@@ -2191,7 +2191,11 @@ test('valeurs imprévues : file de KaraFun lue avec ses types ; un titre illisib
   const alerted = bridge.connectionState();
   assert.equal(alerted.level, 'error', 'bandeau rouge sur la page du bar');
   assert.equal(alerted.alert, 'Message de KaraFun illisible (remote.QueueEvent) : la file ne voit plus ces changements de KaraFun ' +
-    'et ne lui envoie plus rien d’elle-même. Pilote dans KaraFun en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.');
+    'et ne lui envoie plus rien d’elle-même ; Spotify n’est plus coupé ni relancé d’office. Pilote dans KaraFun et avec ' +
+    '« ⏸ Spotify » en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.');
+  // Relecture gstack-review de la branche finale (design) : la pastille de l'état KaraFun ne
+  // garde que le titre de l'alerte ; la phrase entière y faisait grandir la barre du haut.
+  assert.equal(alerted.label, 'Message de KaraFun illisible (remote.QueueEvent)');
   assert.deepEqual([alerted.canRename, alerted.nameConflict, alerted.canReconnect], [false, null, true],
     'alerte à part, avec « Reconnecter »');
   // Un état lisible ne lève pas l'alerte de la file.

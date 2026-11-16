@@ -408,3 +408,30 @@ test('hors Battle : file vide, Spotify reprend et la lecture automatique attend 
   await ticks(next.f, next.clock, 5);
   assert.deepEqual(next.order, []);
 });
+
+// Regression: relecture gstack-review de la branche finale (passe
+// contradictoire) — pendant l'alerte « Message de KaraFun illisible » (état
+// seul illisible, file lisible), une Battle lancée dans KaraFun quitte sa file
+// avant d'être annoncée : la file concluait d'après l'état figé que la Battle
+// était finie (« Battle terminée », délai entre deux Battles lancé dès son
+// départ). Rien n'est conclu pendant l'alerte ; la première vue lisible juge.
+test('Battle lancée pendant l’alerte d’un état illisible : rien de conclu d’après l’état figé', async () => {
+  const serverTime = serverClock();
+  const { f, order } = setup({ serverTime });
+  const bridge = fakeBridge(order, [battleItem(50)]);
+  f.setBridge(bridge);
+  f.sync();
+  assert.equal(f.battleVote.automation?.status, 'queued', 'Battle ajoutée dans KaraFun, suivie');
+  bridge.queue.length = 0; // lancée dans KaraFun : sortie de sa file avant d'être annoncée
+  bridge.unreadable = 'remote.StatusEvent';
+  f.sync();
+  await serverTime.advance(5000);
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'queued', 'rien de conclu pendant l’alerte');
+  assert.ok(!f.sched.log.some(line => /Battle terminée/.test(line.msg)), 'pas de « Battle terminée »');
+  // Fin de l'alerte : l'état lisible montre la Battle sur scène.
+  bridge.unreadable = null;
+  bridge.status = { state: 'playing', songPlaying: { queueId: 50 } };
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'playing', 'Battle vue sur scène à la fin de l’alerte');
+});

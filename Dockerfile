@@ -55,16 +55,22 @@ COPY --from=solveur /build/LICENCES-JAVA/ LICENCES-JAVA/
 COPY --from=jre /solver-runtime/ solver-runtime/
 # Correctif de zlib publié par Debian (CVE-2026-76844, CVE-2026-85091) que
 # l'image node:26-trixie-slim n'embarque pas encore (zlib1g +b1 au 16 novembre
-# 2026). Mise à niveau de ce seul paquet, à retirer dès que l'empreinte de
-# l'image de base contient zlib1g 1:1.3.dfsg+really1.3.1-1+deb13u1 (SECURITY.md).
-# La construction échoue alors en le disant : une PR d'empreinte de Dependabot,
-# qui fusionne seule, ne garde pas cette étape sans qu'on le voie.
-RUN if dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge 1:1.3.dfsg+really1.3.1-1+deb13u1; then \
-      echo "zlib1g de l'image de base déjà corrigé : retirer cette étape du Dockerfile (SECURITY.md)." >&2; exit 1; \
+# 2026). Mise à niveau de ce seul paquet, puis version vérifiée : un miroir de
+# Debian en retard (une architecture à la traîne) laisserait sinon l'ancienne,
+# sans erreur. À retirer dès que l'empreinte de l'image de base contient le
+# correctif : la construction échoue alors en le disant. Le retrait se fait dans
+# la PR d'empreinte de Dependabot elle-même, qui se fusionne ensuite à la main :
+# sans l'étape, l'ancienne empreinte, gardée, serait refusée par Trivy (SECURITY.md).
+RUN corrige=1:1.3.dfsg+really1.3.1-1+deb13u1 \
+ && if dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge "$corrige"; then \
+      echo "zlib1g de l'image de base déjà corrigé : retirer cette étape dans cette même PR (SECURITY.md)." >&2; exit 1; \
     fi \
  && apt-get update \
  && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && if ! dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge "$corrige"; then \
+      echo "zlib1g sans le correctif de Debian ($corrige) après la mise à niveau : construction arrêtée." >&2; exit 1; \
+    fi
 # L'application n'utilise que node : npm, npx, corepack et yarn de l'image de
 # base (et leurs propres dépendances, souvent signalées vulnérables) sont retirés.
 RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \

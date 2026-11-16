@@ -1181,6 +1181,10 @@ function syncBattle({ current, upcoming, q }, now) {
     const statusId = bridge.status?.current?.queueId || bridge.status?.songPlaying?.queueId;
     if (current && String(current.queueId) === state.queueId && state.status === 'queued') {
       battleVote.updateAutomation('playing');
+    } else if (bridge.unreadable) {
+      // Message de KaraFun illisible : l'état vu peut être figé, et KaraFun
+      // retire de sa file la Battle qu'il lance avant de l'annoncer. Rien n'est
+      // conclu (ni Battle finie, ni attente de son retour) avant une vue lisible.
     } else if (!queueHasBattle && String(statusId || '') !== state.queueId) {
       // QueueEvent peut arriver avant StatusEvent. Si le titre prêt disparaît
       // momentanément de la file, patienter avant de conclure qu'il est fini.
@@ -1236,7 +1240,6 @@ const RESTART_SWEEP_MS = 60000;          // copie tardive retirée pendant ce d�
 let lastRestartCopy = null;
 let restartSweep = null; // { songId, singer, before, until } : copies tardives à retirer
 let restartAwaitingPlay = null; // copie prête après une relance inachevée : { copyQueueId, title }
-let restartPausedAt = null; // début d'une alerte « message illisible » (syncRestart en pause)
 
 function startRestart() {
   if (!bridge?.ready) throw new Error('KaraFun est déconnecté. Reconnecte-le avant de relancer le titre.');
@@ -1321,16 +1324,21 @@ function syncRestart({ current, upcoming, q }, now) {
   // Message de KaraFun illisible : relance en cours et retrait des copies
   // tardives en pause, sans commande ni conclusion, leurs délais avec eux.
   // KaraFun a pu ajouter la copie sans qu'elle se voie dans une file figée :
-  // « rien n'a été passé » serait faux, et la copie retirée à tort.
+  // « rien n'a été passé » serait faux, et la copie retirée à tort. Chaque
+  // délai garde sa propre pause (`pausedAt`) : une relance demandée après
+  // l'alerte, avant ce passage, n'a pas été en pause.
   if (bridge.unreadable) {
-    restartPausedAt ??= now;
+    if (restartOp) restartOp.pausedAt ??= now;
+    if (restartSweep) restartSweep.pausedAt ??= now;
     return;
   }
-  if (restartPausedAt != null) {
-    const paused = now - restartPausedAt;
-    restartPausedAt = null;
-    if (restartOp) restartOp.at += paused;
-    if (restartSweep) restartSweep.until += paused;
+  if (restartOp?.pausedAt != null) {
+    restartOp.at += now - restartOp.pausedAt;
+    delete restartOp.pausedAt;
+  }
+  if (restartSweep?.pausedAt != null) {
+    restartSweep.until += now - restartSweep.pausedAt;
+    delete restartSweep.pausedAt;
   }
   sweepRestartCopies({ current, q }, now);
   const waiting = restartAwaitingPlay;
@@ -1874,7 +1882,14 @@ function sync() {
         tracked.push(sent);
         appLog(`Envoyé à KaraFun : ${done.sel.label} — ${done.sel.song.title} (queueId ${hit.queueId})`);
         // Duo improvisé noté pendant l'envoi : ce titre repassera plus tard.
-        if (done.pullOnAck && !isOnStage(sent, current)) {
+        // Message de KaraFun illisible : la scène vue peut être figée, et KaraFun
+        // a pu lancer ce titre. Le retrait est noté sans être envoyé ; il part à
+        // la première vue lisible (boucle plus bas), comme celui d'un envoi
+        // annulé, et un titre alors sur scène continue.
+        if (done.pullOnAck && blind) {
+          sent.pulled = { reason: done.pullOnAck, at: now };
+          sent.removeRequestedAt = 0;
+        } else if (done.pullOnAck && !isOnStage(sent, current)) {
           try { pullFromKaraFun(sent, done.pullOnAck); }
           catch (error) { sched.note(`Retrait KaraFun à vérifier : ${error.message}`, 'error'); }
         }
@@ -1946,6 +1961,9 @@ function sync() {
     }
     if ((tr.cancelled || tr.pulled) && qids.has(tr.queueId) && !onStage && !blind &&
         now - (tr.removeRequestedAt || 0) >= 20000) {
+      // Premier envoi d'un retrait noté pendant l'alerte (plus haut) : son délai
+      // d'avertissement (« retrait ignoré », PULL_ALERT_MS) part d'ici.
+      if (tr.pulled && !tr.removeRequestedAt) tr.pulled.at = now;
       tr.removeRequestedAt = now;
       try { bridge.remove(tr.queueId); }
       catch (error) { appLog(`Retrait KaraFun en attente : ${error.message}`); }
@@ -2962,6 +2980,12 @@ function stageHistoryView() {
 
 // L'historique ne peut restaurer que la file du helper. Une évolution de la
 // lecture ou de l'ordre natif KaraFun rend le dernier état manuel périmé.
+// Empreinte d'un changement manuel noté pendant une panne de la lecture de
+// KaraFun (routeRead) : aucune file ne donne une empreinte nulle, l'annulation
+// reprend donc l'ordre comme après un autre changement. Elle a la forme
+// attendue : la soirée enregistrée se reprend (night-state.js), là où null la
+// faisait refuser et empêchait le serveur de redémarrer.
+const NATIVE_UNREAD = '0'.repeat(64);
 function priorityNativeFingerprint() {
   const live = analyze();
   // Certaines versions annoncent le titre avant de lui attribuer un queueId.
@@ -5650,7 +5674,7 @@ const handlers = {
     // reprend l'ordre comme après un autre changement.
     const change = sched.recordManualChange({
       kind: priority ? 'priority' : 'move', personId, name,
-      from: from + 1, to: placed + 1, before, native: routeRead(priorityNativeFingerprint),
+      from: from + 1, to: placed + 1, before, native: routeRead(priorityNativeFingerprint, NATIVE_UNREAD),
     });
     // Le geste lui-même : annulé ou tombé, le titre retiré reprend la tête à
     // son retour (Scheduler#returnFromKaraFun).

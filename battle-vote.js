@@ -389,7 +389,10 @@ class BattleVote {
     if (queueId == null || String(queueId) === '') throw new Error('Identifiant de Battle manquant.');
     const time = this.now();
     const id = randomUUID();
-    const song = { songId: Number.isSafeInteger(Number(songId)) ? Number(songId) : 0,
+    // Numéro du titre de KaraFun : un entier positif, sinon 0 (titre inconnu) :
+    // le suivi enregistré n'accepte rien d'autre au démarrage (constructeur).
+    const numero = Number(songId);
+    const song = { songId: Number.isSafeInteger(numero) && numero > 0 ? numero : 0,
       title: String(title || 'Battle collective').slice(0, 100),
       artist: String(artist || '').slice(0, 80) };
     // Une Battle organisée dans KaraFun prime sur un vote encore ouvert :

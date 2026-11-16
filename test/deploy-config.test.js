@@ -80,6 +80,20 @@ test('D1 Dockerfile et contrat', () => {
     assert.ok(cleanup.includes(removed), `${removed} retiré de l’image d’exécution`);
   }
 
+  // Mise à niveau de zlib1g (SECURITY.md) : construction refusée si l'image de base
+  // a déjà le correctif (retirer l'étape), et version vérifiée après coup (un miroir de
+  // Debian en retard laisserait sinon l'ancienne sans erreur).
+  const zlib = inStage(finalStage, 'RUN').map(i => i.args).find(args => /--only-upgrade zlib1g/.test(args));
+  if (zlib) {
+    const corrige = /\bcorrige=(\S+)/.exec(zlib)?.[1];
+    assert.ok(corrige, 'version corrigée de zlib1g nommée dans l’étape');
+    assert.match(zlib, /if dpkg --compare-versions [\s\S]*? ge "\$corrige"; then [\s\S]*?retirer cette étape[\s\S]*?exit 1/,
+      'base déjà corrigée : construction refusée');
+    assert.match(zlib, /--only-upgrade zlib1g[\s\S]*if ! dpkg --compare-versions [\s\S]*? ge "\$corrige"; then [\s\S]*?exit 1/,
+      'version vérifiée après la mise à niveau');
+    assert.ok(read('SECURITY.md').includes(corrige), 'SECURITY.md cite la même version de zlib1g');
+  }
+
   // Environnement de l'image : exactement ces cinq variables, aucune URL ni clé.
   const envs = dockerfile.filter(i => i.op === 'ENV');
   assert.equal(envs.length, 1, 'une seule instruction ENV');

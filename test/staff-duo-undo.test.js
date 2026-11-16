@@ -418,3 +418,33 @@ test('duo noté après la chanson, titre suivant du chanteur passé dans KaraFun
   assert.equal(s.appearanceSerial, stageTurn);
   assert.equal(restart(f).people.get(bea.id).lastAppearanceTurn, stageTurn, 'la soirée se reprend');
 });
+
+// Regression: relecture gstack-review de la branche finale (spécialiste des
+// machines à états) — pendant l'alerte « Message de KaraFun illisible », l'accusé
+// d'un envoi annulé reporte son retrait (la scène vue peut être figée, KaraFun
+// a pu lancer le titre), mais celui d'un duo noté pendant l'envoi du titre du
+// partenaire partait aussitôt, jugé sur cette scène peut-être figée. Il est
+// noté, puis envoyé à la première vue lisible ; son délai d'avertissement
+// (« retrait ignoré ») part de cet envoi.
+test('duo noté pendant l’envoi, accusé pendant l’alerte d’un message illisible : retrait envoyé à la fin de l’alerte', async () => {
+  const { f, s, bridge, queue } = evening();
+  const next = s.select();
+  const partner = s.people.get(next.ids[0]);
+  f.setPending({ sel: next, at: Date.now(), before: new Set(queue.map(item => item.queueId)) });
+  await f.call('POST /api/staff/duo-mark', { queueId: 1, partnerId: partner.id });
+  assert.equal(f.getPending().pullOnAck, 'duo', `duo noté avec ${partner.name} pendant l’envoi de son titre`);
+  // Alerte, puis accusé : le titre envoyé apparaît dans la file de KaraFun.
+  bridge.unreadable = 'remote.StatusEvent';
+  queue.push({ queueId: 3, songId: next.song.songId, singer: next.label });
+  f.sync();
+  const sent = f.tracked().find(tr => tr.queueId === 3);
+  assert.ok(sent, 'envoi accusé et suivi');
+  assert.deepEqual(bridge.removed, [], 'rien retiré de KaraFun pendant l’alerte');
+  assert.equal(sent.pulled?.reason, 'duo', 'retrait noté pour le duo');
+  // Fin de l'alerte : le titre n'est pas sur scène, le retrait part.
+  bridge.unreadable = null;
+  const before = Date.now();
+  f.sync();
+  assert.deepEqual(bridge.removed, [3], 'retrait envoyé à la première vue lisible');
+  assert.ok(sent.pulled.at >= before, 'délai d’avertissement compté depuis l’envoi');
+});

@@ -2876,11 +2876,17 @@ test('barre du haut : état KaraFun du pont, alerte impossible à manquer, recon
   // tour 2) : le pont rouvre alors la connexion, KaraFun renvoie sa file et
   // son état. Sans ce bouton, l'alerte restait tant que KaraFun était à l'arrêt.
   const unreadable = 'Message de KaraFun illisible (remote.QueueEvent) : la file ne voit plus ces changements de KaraFun ' +
-    'et ne lui envoie plus rien d’elle-même. Pilote dans KaraFun en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.';
-  await page.update({ kf: { ...world.kf, connection: { phase: 'ready', level: 'error', label: unreadable, since: Date.now(), attempt: 1,
+    'et ne lui envoie plus rien d’elle-même ; Spotify n’est plus coupé ni relancé d’office. Pilote dans KaraFun et avec ' +
+    '« ⏸ Spotify » en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.';
+  const unreadableLabel = 'Message de KaraFun illisible (remote.QueueEvent)';
+  await page.update({ kf: { ...world.kf, connection: { phase: 'ready', level: 'error', label: unreadableLabel, since: Date.now(), attempt: 1,
     canRename: false, nameConflict: null, alert: unreadable, canReconnect: true } } });
   assert.equal(pill.className, 'pill bad');
+  assert.equal(pill.textContent, unreadableLabel, 'pastille courte, la phrase entière dans le bandeau');
   assert.equal(page.in('staffAlerts', '.kf-alert span').textContent, unreadable);
+  // Relecture gstack-review de la branche finale (design) : texte et bouton passent à la
+  // ligne sur un téléphone, comme les autres alertes avec actions.
+  assert.match(page.in('staffAlerts', '.kf-alert').className, /\bwith-actions\b/);
   assert.equal(page.in('staffAlerts', '.kf-alert [data-dismiss-alert]'), null, 'cette alerte ne se ferme pas');
   await page.click(page.in('staffAlerts', '[data-alert-reconnect]'));
   assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'reconnect' });

@@ -83,7 +83,7 @@ function cyclesLus(reponse, produit) {
   for (const s of sorties) {
     const lisible = typeof s.name === 'string' && VERSION.test(s.name) && dateLisible(s.releaseDate)
       && typeof s.isLts === 'boolean' && typeof s.isEol === 'boolean' && typeof s.isMaintained === 'boolean'
-      && (s.eolFrom === null || dateLisible(s.eolFrom));
+      && (s.eolFrom === null || dateLisible(s.eolFrom)) && (s.ltsFrom == null || dateLisible(s.ltsFrom));
     if (!lisible) throw new Error(`endoflife.date, ${produit} : cycle illisible`);
   }
   return sorties;
@@ -94,14 +94,18 @@ function alertesCycle(cycle, enService, sorties, aujourdHui) {
   // Le Dockerfile nomme Debian par son nom de code (trixie), jamais par son numéro.
   const courante = sorties.find(s => cycle.id === 'debian' ? String(s.codename).toLowerCase() === voulue : s.name === voulue);
   if (!courante) throw new Error(`endoflife.date, ${cycle.produit} : version en service ${voulue} inconnue`);
-  const derniere = sorties.filter(s => s.releaseDate <= aujourdHui && (!cycle.lts || s.isLts)).map(s => s.name).sort(comparer).pop();
+  // LTS ce jour-là : isLts dit seulement que la ligne aura une LTS ; sa phase LTS
+  // commence à ltsFrom (Node : six mois après sa sortie), absent quand elle
+  // commence dès la sortie (documentation de l'API v1 d'endoflife.date).
+  const ltsCeJour = s => s.isLts && (s.ltsFrom == null || s.ltsFrom.slice(0, 10) <= aujourdHui);
+  const derniere = sorties.filter(s => s.releaseDate <= aujourdHui && (!cycle.lts || ltsCeJour(s))).map(s => s.name).sort(comparer).pop();
   // Aucune LTS lue : le sens du champ a changé, ce n'est pas « tout est à jour ».
   if (!derniere) throw new Error(`endoflife.date, ${cycle.produit} : aucune version ${cycle.lts ? 'LTS ' : ''}parue`);
   const alerte = (cle, raison) => ({ cle: `${cycle.id}:${cle}`, outil: cycle.nom, enService: courante.name, propose: derniere, raison,
     lien: `https://endoflife.date/${cycle.produit}` });
   const alertes = [];
   if (comparer(derniere, courante.name) > 0) alertes.push(alerte(derniere, cycle.lts ? 'nouvelle LTS' : 'nouvelle version stable'));
-  if (cycle.lts && !courante.isLts) alertes.push(alerte(`hors-lts:${courante.name}`, 'pas une LTS'));
+  if (cycle.lts && !ltsCeJour(courante)) alertes.push(alerte(`hors-lts:${courante.name}`, 'pas une LTS'));
   // Deux clés : la fin effective prévient de nouveau après la fin annoncée.
   if (courante.isEol || !courante.isMaintained) {
     alertes.push(alerte(`eol:${courante.name}`, 'plus maintenue'));

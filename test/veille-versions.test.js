@@ -12,8 +12,11 @@ const cycle = id => CYCLES.find(c => c.id === id);
 const outil = id => OUTILS.find(o => o.id === id);
 const AUJOURDHUI = '2026-11-06';
 const EN_SERVICE = { node: '26', debian: 'trixie', java: '25', maven: '3.10', ubuntu: '26.04', playwright: '1.64.1', actionlint: '1.7.12', trivy: '0.76.1', zizmor: '1.32.0' };
+// Une ligne LTS dont la phase LTS commence plus tard a, chez endoflife.date, isLts à
+// vrai et ltsFrom à cette date (ltsFrom n'est vide que si isLts est faux : leur
+// documentation de l'API v1).
 const NODE = [
-  { name: '27', releaseDate: '2027-04-22', isLts: false, ltsFrom: '2027-10-20', isEol: false, eolFrom: '2030-04-30', isMaintained: false },
+  { name: '27', releaseDate: '2027-04-22', isLts: true, ltsFrom: '2027-10-20', isEol: false, eolFrom: '2030-04-30', isMaintained: false },
   { name: '26', releaseDate: '2026-05-05', isLts: true, ltsFrom: '2026-10-28', isEol: false, eolFrom: '2029-04-30', isMaintained: true },
   { name: '25', releaseDate: '2025-10-15', isLts: false, ltsFrom: null, isEol: true, eolFrom: '2026-06-01', isMaintained: false },
 ];
@@ -59,6 +62,10 @@ test('V2 une nouvelle LTS alerte ; une version non LTS, même plus récente, jam
   assert.equal(alerte.propose, '27');
   // Annoncée comme LTS mais pas encore sortie : pas d'alerte tant qu'elle n'est pas parue.
   assert.deepEqual(alertes('node', devenue, EN_SERVICE, '2027-04-01'), []);
+  // Regression: relecture gstack-review de la branche finale (passe contradictoire) —
+  // parue, mais sa phase LTS pas encore commencée (isLts vrai, ltsFrom à venir) :
+  // elle était proposée comme « nouvelle LTS » six mois trop tôt.
+  assert.deepEqual(alertes('node', devenue, EN_SERVICE, '2027-06-01'), [], 'pas encore LTS le 1er juin');
   // Une ligne non LTS en service enfreint la règle, même si rien de plus récent n'est paru.
   const nonLts = [{ ...NODE[0], isMaintained: true }, NODE[1]];
   assert.deepEqual(alertes('node', nonLts, { ...EN_SERVICE, node: '27' }, '2027-05-01').map(a => [a.cle, a.enService, a.propose, a.raison]),
@@ -77,7 +84,8 @@ test('V3 Debian se reconnaît à son nom de code, Maven compare 3.10 à 3.9 comm
 });
 
 test('V4 une fin de support proche alerte, la version sans remplaçant compris', () => {
-  const proche = [{ ...NODE[1], eolFrom: '2027-04-30' }];
+  // LTS dès sa sortie (ltsFrom vide) : seule la fin de support est en jeu ici, même le 1er octobre.
+  const proche = [{ ...NODE[1], ltsFrom: null, eolFrom: '2027-04-30' }];
   assert.deepEqual(alertes('node', proche, EN_SERVICE, '2026-10-01'), [], '211 jours : trop tôt');
   const [fin] = alertes('node', proche, EN_SERVICE, '2026-11-01');
   assert.equal(fin.cle, 'node:fin:26');
