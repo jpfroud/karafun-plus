@@ -227,6 +227,100 @@ test('Spotify : alerte « message de KaraFun illisible », la période d’avant
   assert.equal(fresh.step('singing', opts), 'pause');
 });
 
+// Regression: relecture contradictoire du tour 5 (tour 1) — « blind »
+// n'ouvrait pas de période et l'automate ne comparait que l'état de la
+// soirée : un autre titre vu sur scène à la fin de l'alerte passait pour la
+// suite du titre d'avant (« singing » des deux côtés). Si le bar avait
+// relancé Spotify dans l'attente pendant l'alerte, Spotify jouait tout le
+// titre suivant par-dessus le chanteur. À l'inverse, le silence vu après un
+// titre chanté pendant l'alerte passait pour le silence d'avant, et Spotify
+// n'était plus relancé. Une période est propre à la scène vue (troisième
+// argument : clé du titre sur scène, null pour une scène libre).
+test('Spotify : une période par scène vue, à travers une alerte comme sans elle', () => {
+  let now = 0;
+  const opts = { autoResume: true, autoPause: true, resumeDelaySec: 3 };
+  // Reproduction de la relecture : A sur scène (pause), alerte à l'état figé
+  // (A encore vu), « ▶ Spotify » du bar pendant l'alerte, puis B sur scène à
+  // la fin de l'alerte.
+  const frozen = new SpotifyAutomation({ now: () => now });
+  assert.equal(frozen.step('singing', opts, 'A'), 'pause');
+  frozen.settle(true);
+  now += 60000;
+  assert.equal(frozen.step('blind', opts, 'A'), null);
+  frozen.handled('blind', 'A');
+  now += 60000;
+  assert.equal(frozen.step('blind', opts, 'A'), null);
+  assert.equal(frozen.step('singing', opts, 'B'), 'pause', 'fin de l’alerte, un autre titre sur scène : coupé');
+  frozen.settle(true);
+  now += 120000;
+  assert.equal(frozen.step('singing', opts, 'B'), null, 'une seule fois par titre');
+  // File seule illisible, état lisible : A finit (vu), le bar relance Spotify
+  // dans l'attente, B démarre (vu), l'alerte finit pendant B.
+  const live = new SpotifyAutomation({ now: () => now });
+  assert.equal(live.step('singing', opts, 'A'), 'pause');
+  live.settle(true);
+  assert.equal(live.step('blind', opts, 'A'), null);
+  now += 1000;
+  assert.equal(live.step('blind', opts, null), null, 'A fini, vu pendant l’alerte : rien d’office');
+  live.handled('blind', null);
+  now += 30000;
+  assert.equal(live.step('blind', opts, 'B'), null, 'B lancé pendant l’alerte : rien d’office');
+  assert.equal(live.step('singing', opts, 'B'), 'pause', 'fin de l’alerte pendant B : coupé');
+  // Choix du bar fait dans le silence vu pendant l'alerte (A fini) : il vaut
+  // pour ce silence, qui continue après l'alerte (relecture, S1).
+  const quiet = new SpotifyAutomation({ now: () => now });
+  quiet.step('singing', opts, 'A');
+  quiet.settle(true);
+  assert.equal(quiet.step('blind', opts, 'A'), null);
+  assert.equal(quiet.step('blind', opts, null), null);
+  quiet.handled('blind', null); // « ▶ Spotify »
+  quiet.handled('blind', null); // puis « ⏸ Spotify »
+  now += 10000;
+  assert.equal(quiet.step('silent', opts, null), null, 'fin de l’alerte, même silence : « ⏸ Spotify » tient');
+  now += 60000;
+  assert.equal(quiet.step('silent', opts, null), null);
+  // Silence vu pendant l'alerte sans geste du bar : relancé dès la fin de
+  // l'alerte, le délai compté depuis la fin du titre vue.
+  const untouched = new SpotifyAutomation({ now: () => now });
+  untouched.step('singing', opts, 'A');
+  untouched.settle(true);
+  untouched.step('blind', opts, 'A');
+  assert.equal(untouched.step('blind', opts, null), null);
+  now += 5000;
+  assert.equal(untouched.step('silent', opts, null), 'resume', 'silence depuis 5 s : relancé à la fin de l’alerte');
+  // Silence, puis un titre chanté en entier pendant l'alerte (vu) : le
+  // silence d'après est un nouveau silence (relecture, S2 quand l'état se lit).
+  const after = new SpotifyAutomation({ now: () => now });
+  assert.equal(after.step('silent', opts, null), null);
+  now += 3000;
+  assert.equal(after.step('silent', opts, null), 'resume');
+  after.settle(true);
+  assert.equal(after.step('blind', opts, null), null);
+  after.handled('blind', null); // « ⏸ Spotify » : un titre démarre dans KaraFun
+  assert.equal(after.step('blind', opts, 'C'), null, 'C vu sur scène pendant l’alerte');
+  now += 200000;
+  assert.equal(after.step('blind', opts, null), null, 'C fini, vu');
+  now += 1000;
+  assert.equal(after.step('silent', opts, null), null, 'fin de l’alerte : le silence d’après C, relance dans 3 s');
+  now += 2000;
+  assert.equal(after.step('silent', opts, null), 'resume', 'nouveau silence : relancé malgré le ⏸ fait pour C');
+  // Sans alerte : B qui remplace A sans scène libre vue entre les deux est un
+  // nouveau titre, même après « ▶ Spotify » pendant A.
+  const direct = new SpotifyAutomation({ now: () => now });
+  assert.equal(direct.step('singing', opts, 'A'), 'pause');
+  direct.settle(true);
+  direct.handled();
+  assert.equal(direct.step('singing', opts, 'A'), null, 'choix du bar pour A');
+  assert.equal(direct.step('singing', opts, 'B'), 'pause', 'B : coupé');
+  // KaraFun déconnecté (« unknown », scène inconnue) : la scène d'avant reste
+  // la référence, comme la période se rouvre au retour.
+  const offline = new SpotifyAutomation({ now: () => now });
+  assert.equal(offline.step('singing', opts, 'A'), 'pause');
+  offline.settle(true);
+  assert.equal(offline.step('unknown', opts, undefined), null);
+  assert.equal(offline.step('singing', opts, 'A'), 'pause', 'retour de KaraFun : nouvelle période, comme avant');
+});
+
 // Regression: retours de la soirée du 4 octobre — le contrôle de Spotify
 // lâchait : identifiant d'appareil périmé (404 sur la lecture, la liste
 // retombait sur « Appareil actif »), 204 affiché en vert, erreur ancienne

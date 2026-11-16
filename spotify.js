@@ -462,11 +462,19 @@ const RECOVER_EVERY_MS = 10 * 60000;
 // suivant ; relance comme en silence), « unknown » (KaraFun déconnecté : on ne
 // touche à rien). Une seule action par période : si le bar coupe lui-même
 // Spotify pendant un silence, l'application ne le relance pas.
+// Une période vaut pour une scène (`stage` : clé du titre sur scène, null pour
+// une scène libre ; undefined : rien de vu, KaraFun déconnecté) : un autre
+// titre, ou le silence après un titre, en ouvre une nouvelle, même sans autre
+// état vu entre les deux (titre suivant enchaîné, alerte).
 // « blind » (message de KaraFun illisible : ce que voit la file est peut-être
-// figé) n'est pas une période : rien n'est fait, et la période d'avant
-// l'alerte continue, avec le choix du bar (handled, fait avant ou pendant
-// l'alerte). Sinon la fin de l'alerte ouvrirait un nouveau silence, et Spotify
-// repartirait malgré « ⏸ Spotify ».
+// figé) n'ouvre pas de période d'après l'état : rien n'est fait, et la
+// période d'avant l'alerte continue, avec le choix du bar (handled), tant que
+// la scène vue ne change pas. Un changement de scène vu pendant l'alerte
+// (l'état de KaraFun se lit encore quand seule sa file est illisible) en
+// ouvre une, sans action : un choix du bar fait ensuite vaut pour elle, et la
+// première vue lisible la reprend si la scène n'a plus changé. Un état figé
+// ne montre aucun changement : la fin de l'alerte compare la scène d'avant à
+// celle qu'elle montre.
 class SpotifyAutomation {
   constructor({ now = Date.now } = {}) {
     this.now = now;
@@ -478,24 +486,47 @@ class SpotifyAutomation {
     // Dernière action de la période en échec : { action, status, actionCall, checkFailed }.
     this.failure = null;
     this.recoveredAt = -Infinity;
+    // Dernière scène vue, changements de scène vus, et le nombre au début de
+    // la période en cours.
+    this.stage = undefined;
+    this.turn = 0;
+    this.periodTurn = 0;
   }
 
   step(karaoke, { autoResume = DEFAULTS.autoResume, autoPause = DEFAULTS.autoPause,
-    resumeDelaySec = DEFAULTS.resumeDelaySec } = {}) {
+    resumeDelaySec = DEFAULTS.resumeDelaySec } = {}, stage = undefined) {
     const now = this.now();
-    this._enter(karaoke, now);
+    this._enter(karaoke, now, stage);
     if (this.done || karaoke === 'unknown' || karaoke === 'blind' || now < this.retryAt) return null;
     if (karaoke === 'singing') return autoPause ? 'pause' : null;
     if ((karaoke === 'silent' || karaoke === 'battle') && autoResume && now - this.since >= resumeDelaySec * 1000) return 'resume';
     return null;
   }
 
-  // Nouvelle période : une action de plus permise. « blind » n'en ouvre pas
-  // (voir plus haut), ni par step() ni par handled() : un choix du bar fait
-  // pendant l'alerte vaut pour la période d'avant.
-  _enter(karaoke, now = this.now()) {
-    if (karaoke === this.phase || karaoke === 'blind') return;
-    this.phase = karaoke;
+  // Nouvelle période : une action de plus permise (voir plus haut). Pendant
+  // l'alerte, seule une scène qui change en ouvre une (« blind »), sans
+  // action ; la vue lisible qui suit sans autre changement la reprend telle
+  // quelle (son début, le choix du bar), comme la période d'avant l'alerte.
+  _enter(karaoke, now = this.now(), stage = undefined) {
+    if (stage !== undefined && stage !== this.stage) {
+      if (this.stage !== undefined) this.turn++;
+      this.stage = stage;
+    }
+    const sameStage = this.turn === this.periodTurn;
+    if (karaoke === 'blind') {
+      if (!sameStage) this._open('blind', now);
+      return;
+    }
+    if (sameStage && (karaoke === this.phase || this.phase === 'blind')) {
+      this.phase = karaoke;
+      return;
+    }
+    this._open(karaoke, now);
+  }
+
+  _open(phase, now) {
+    this.phase = phase;
+    this.periodTurn = this.turn;
     this.since = now;
     this.done = false;
     this.attempts = 0;
@@ -509,10 +540,11 @@ class SpotifyAutomation {
   // changement (titre qui démarre, ou nouveau silence). `karaoke` : la période
   // en cours, que l'automate n'a peut-être pas encore vue (geste juste après
   // la fin d'un titre ; le serveur ne la donne que pour l'attente de la
-  // Battle) ; sans elle, ou pendant une alerte (« blind »), le choix vaut pour
-  // la dernière période vue.
-  handled(karaoke = this.phase) {
-    this._enter(karaoke);
+  // Battle, ou pendant une alerte, « blind », avec la scène vue `stage`) ;
+  // sans elle, le choix vaut pour la dernière période vue. Pendant l'alerte,
+  // c'est la période de la scène vue au moment du geste (voir plus haut).
+  handled(karaoke = this.phase, stage = undefined) {
+    this._enter(karaoke, this.now(), stage);
     this.done = true;
     this.failure = null;
   }

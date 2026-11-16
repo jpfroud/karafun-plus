@@ -57,7 +57,7 @@ function harness({ setTimeout: later = () => ({ unref() {} }), Date: clock = nul
       resendWithoutOptions, restoreKaraFunDefaults: typeof restoreKaraFunDefaults === 'function' ? restoreKaraFunDefaults : null,
       safeSync: typeof safeSync === 'function' ? safeSync : null, wireBridge, connectionAnswer,
       syncAfterChange: typeof syncAfterChange === 'function' ? syncAfterChange : null,
-      connectKaraFun, spotify, karaokeOutlook, spotifyTick,
+      connectKaraFun, spotify, karaokeOutlook, spotifyTick, spotifyAutomation, setCode: code => { CODE = code; }, rememberBattleSongs,
       tracked: () => tracked, pending: () => pending, setBridge: b => { bridge = b; },
       handle: server.listeners('request')[0], STAFF_KEY, PORT };
   `, context, { filename: 'server.js' });
@@ -3159,4 +3159,356 @@ test('filet de la synchronisation : hors requête, ou dans une minuterie partie 
   assert.deepEqual([answer.status, answer.body], [200, { ok: true, geste: 'fait' }]);
   assert.equal(await later, 'TypeError: Cannot convert object to primitive value', 'minuterie partie après la réponse : hors requête');
   assert.equal(f.sched.log.filter(line => line.kind === 'error').length, 1, 'un seul avis au bar');
+});
+
+// ---------------------------------------------------------------- relecture contradictoire du tour 5 (tour 1)
+// État de KaraFun illisible (numéro d'état en texte), titre `current` sur scène.
+const unreadableStatus = current => ({ type: 'remote.StatusEvent', payload: { status: { state: '4', pitch: 0, tempo: 0, tracks: [], current } } });
+
+// Regression: relecture contradictoire du tour 5 (tour 1) — « blind »
+// n'ouvrait pas de période et l'automate ne comparait que l'état de la
+// soirée : B, lancé pendant l'alerte après la fin de A, passait à la fin de
+// l'alerte pour la suite de A (« singing » des deux côtés). Le bar ayant
+// relancé Spotify dans l'attente (« ▶ Spotify », comme le guide le demande
+// pendant l'alerte), Spotify jouait tout B par-dessus le chanteur. Sur
+// 974e589 comme sur main, B était coupé. Une période est propre à la scène
+// vue : B en ouvre une, coupée à la fin de l'alerte. Alerte de l'état (A vu
+// jusqu'au bout, figé) ou de la file seule (A fini puis B vus pendant
+// l'alerte).
+test('valeurs imprévues : un autre titre sur scène à la fin de l’alerte, Spotify coupé même après « ▶ Spotify » pendant l’alerte', async t => {
+  for (const alert of ['état', 'file']) {
+    const f = harness();
+    const { frames } = replayBridge(t, f);
+    const calls = fakeSpotify(f);
+    const A = isoItem('A-id', 777, { singer: 'Quelqu’un' });
+    const B = isoItem('B-id', 778, { singer: 'Autre' });
+    frames(queueEvent(), isoStatus(1, null));
+    await f.spotifyTick();
+    frames(queueEvent(B), isoStatus(4, A));
+    await f.spotifyTick();
+    assert.deepEqual(calls, ['lecture', 'pause'], `${alert} : A sur scène, Spotify coupé`);
+    frames(alert === 'état' ? unreadableStatus(A) : queueEvent(B, ODD_ITEM));
+    assert.equal(f.karaokeOutlook(), 'blind', alert);
+    await f.spotifyTick();
+    if (alert === 'file') frames(isoStatus(1, null)); // A fini, vu pendant l'alerte
+    await f.call('POST /api/staff/spotify', { action: 'play' }); // dans l'attente
+    await f.spotifyTick();
+    // Le bar lance B dans KaraFun, puis l'alerte finit pendant B.
+    if (alert === 'état') frames(queueEvent(), isoStatus(4, B));
+    else {
+      frames(isoStatus(4, B));
+      assert.equal(f.karaokeOutlook(), 'blind');
+      await f.spotifyTick();
+      frames(queueEvent());
+    }
+    assert.equal(f.karaokeOutlook(), 'singing', alert);
+    for (let i = 0; i < 3; i++) await f.spotifyTick();
+    assert.deepEqual(calls, ['lecture', 'pause', 'lecture', 'pause'], `${alert} : B vu après l’alerte, Spotify coupé`);
+  }
+});
+
+// Regression: relecture contradictoire du tour 5 (tour 1), S1 — A sur scène,
+// file illisible (alerte), A finit (l'état se lit encore), le bar touche
+// « ▶ Spotify » puis « ⏸ Spotify » dans ce silence ; l'alerte finit sur le
+// même silence : Spotify était relancé 3 s après, ce qui défaisait le choix
+// fait pendant l'alerte. Le choix vaut pour la scène vue au moment du geste.
+// L'état figé, lui, ne montre pas la fin de A : la fin de l'alerte ouvre le
+// silence d'après A, et Spotify est relancé (GUIDE-BAR.md le dit).
+test('valeurs imprévues : « ⏸ Spotify » fait pendant l’alerte dans le silence vu après un titre, gardé à sa fin', async t => {
+  for (const alert of ['file', 'état']) {
+    const f = harness();
+    const { frames } = replayBridge(t, f);
+    const calls = fakeSpotify(f);
+    const A = isoItem('A-id', 777, { singer: 'Quelqu’un' });
+    frames(queueEvent(), isoStatus(1, null));
+    await f.spotifyTick();
+    frames(queueEvent(), isoStatus(4, A));
+    await f.spotifyTick();
+    assert.deepEqual(calls, ['lecture', 'pause'], alert);
+    if (alert === 'file') frames(queueEvent(ODD_ITEM), isoStatus(1, null));
+    else frames(unreadableStatus(A));
+    assert.equal(f.karaokeOutlook(), 'blind', alert);
+    await f.call('POST /api/staff/spotify', { action: 'play' });
+    await f.call('POST /api/staff/spotify', { action: 'pause' });
+    for (let i = 0; i < 3; i++) await f.spotifyTick();
+    assert.deepEqual(calls, ['lecture', 'pause', 'lecture', 'pause'], `${alert} : gestes du bar seulement pendant l’alerte`);
+    frames(queueEvent(), isoStatus(1, null));
+    assert.equal(f.karaokeOutlook(), 'silent', alert);
+    for (let i = 0; i < 3; i++) await f.spotifyTick();
+    if (alert === 'file') assert.deepEqual(calls, ['lecture', 'pause', 'lecture', 'pause'], 'file : même silence, « ⏸ Spotify » tient');
+    else assert.deepEqual(calls, ['lecture', 'pause', 'lecture', 'pause', 'lecture'], 'état figé : la fin de A n’était pas vue, nouveau silence');
+  }
+});
+
+// Poignée de main de KaraFun sur la connexion rouverte par « Reconnecter »
+// (dernier FakeWS), puis `messages` (sa file et son état).
+function reopened(bridge, ...messages) {
+  const ws = FakeWS.last;
+  const receive = message => ws.emit('message', { data: JSON.stringify(message) });
+  ws.emit('open');
+  receive({ type: 'core.AuthenticatedEvent', payload: {} });
+  receive({ type: 'remote.UsernameUpdateEvent', payload: { username: bridge.username } });
+  receive({ type: 'remote.ConfigurationUpdateEvent', payload: { configuration: BAR_CONFIGURATION } });
+  receive({ type: 'remote.PermissionsUpdateEvent', payload: { permissions: ADMIN } });
+  for (const message of messages) receive(message);
+  return ws;
+}
+
+// Regression: relecture contradictoire du tour 5 (tour 1) — « Reconnecter »,
+// la sortie propre à l'alerte, rouvre la connexion : le pont n'est plus prêt
+// jusqu'à la nouvelle file et le nouvel état. Un passage de l'automate (toutes
+// les 3 s) y voyait « unknown », une période : le silence vu ensuite était
+// nouveau, et Spotify relancé malgré « ⏸ Spotify » fait pendant l'alerte.
+// La reconnexion demandée depuis l'alerte en fait partie (« blind ») jusqu'à
+// la première vue complète de KaraFun ; une connexion perdue, elle, rend
+// KaraFun déconnecté (« unknown »), comme sans alerte.
+test('valeurs imprévues : « Reconnecter » de l’alerte, « ⏸ Spotify » gardé jusqu’à la vue de KaraFun ; connexion perdue : déconnecté', async t => {
+  const f = harness();
+  const rb = replayBridge(t, f);
+  const { bridge, frames } = rb;
+  const calls = fakeSpotify(f);
+  frames(queueEvent(), isoStatus(1, null));
+  await f.spotifyTick();
+  assert.deepEqual(calls, ['lecture'], 'silence : Spotify relancé');
+  // Code connu du serveur et URL KCS gardée, comme après une vraie connexion.
+  bridge.code = '123456';
+  bridge._kcs = { code: '123456', url: 'wss://kcs.exemple.invalid/remote' };
+  assert.equal(f.connectKaraFun('123456'), 'kept');
+  frames(queueEvent(ODD_ITEM), unreadableStatus(ODD_ITEM));
+  assert.equal(f.karaokeOutlook(), 'blind');
+  await f.call('POST /api/staff/spotify', { action: 'pause' });
+  assert.deepEqual(calls, ['lecture', 'pause'], '« ⏸ Spotify » pendant l’alerte');
+  // « Reconnecter » de l'alerte, par la vraie route.
+  let before = FakeWS.last;
+  assert.deepEqual(plain(await f.call('POST /api/staff/kf', { action: 'reconnect' })), { ok: true, kept: false });
+  assert.notEqual(FakeWS.last, before, 'connexion rouverte');
+  assert.equal(bridge.ready, false);
+  assert.equal(f.karaokeOutlook(), 'blind', 'reconnexion demandée depuis l’alerte : l’alerte continue pour Spotify');
+  await f.spotifyTick();
+  f.sync();
+  assert.equal(f.karaokeOutlook(), 'blind', 'toujours en cours');
+  // KaraFun renvoie sa file et son état : même silence, le choix du bar tient.
+  reopened(bridge, queueEvent(), isoStatus(1, null));
+  f.sync();
+  assert.equal(bridge.ready, true);
+  assert.equal(f.karaokeOutlook(), 'silent');
+  for (let i = 0; i < 3; i++) await f.spotifyTick();
+  assert.deepEqual(calls, ['lecture', 'pause'], '« ⏸ Spotify » pas défait');
+  // Plus tard, KaraFun déconnecté sans alerte, puis « Connecter » : KaraFun
+  // déconnecté (« unknown ») jusqu'à sa vue, comme avant.
+  bridge.disconnect();
+  assert.equal(f.karaokeOutlook(), 'unknown', 'déconnexion après la reconnexion : KaraFun déconnecté');
+  assert.equal(f.connectKaraFun('123456'), 'started');
+  assert.equal(bridge.connectionState().phase, 'opening');
+  assert.equal(f.karaokeOutlook(), 'unknown', 'connexion sans alerte : KaraFun déconnecté');
+  // Nouvelle alerte, « Reconnecter », puis la connexion rouverte est perdue
+  // (nouvel essai prévu) : KaraFun est déconnecté.
+  rb.reconnect();
+  frames(queueEvent(), isoStatus(1, null));
+  frames(queueEvent(ODD_ITEM));
+  assert.equal(f.karaokeOutlook(), 'blind');
+  before = FakeWS.last;
+  assert.deepEqual(plain(await f.call('POST /api/staff/kf', { action: 'reconnect' })), { ok: true, kept: false });
+  assert.notEqual(FakeWS.last, before);
+  assert.equal(f.karaokeOutlook(), 'blind');
+  FakeWS.last.emit('close', { code: 1006 });
+  assert.equal(bridge.connectionState().phase, 'retry');
+  assert.equal(f.karaokeOutlook(), 'unknown', 'connexion perdue : KaraFun déconnecté');
+  f.sync();
+  assert.equal(f.karaokeOutlook(), 'unknown');
+});
+
+// Regression: relecture contradictoire du tour 5 (tour 1) — le délai d'un
+// retrait annulé (PULL_LATE_MS : retrait de fermeture annulé par une heure
+// décalée, duo défait), que KaraFun applique quand même, se comptait au
+// verdict, donc à la fin d'une alerte de l'état, au lieu de la sortie du
+// titre de la file. Une alerte de plus de 20 s concluait « passée dans
+// KaraFun avant la lecture » : titre perdu pour son chanteur, au lieu de lui
+// revenir (974e589 : « pulled-closing » ou « pulled-duo »). La sortie de la
+// file vue pendant l'alerte est datée, et le délai compté depuis elle.
+test('valeurs imprévues : retrait annulé que KaraFun fait pendant une longue alerte de l’état, le titre revient à son chanteur', async t => {
+  for (const reason of ['closing', 'duo']) {
+    const clock = clockAt('2026-11-14T22:00:00.000Z');
+    const f = harness({ Date: clock.Date });
+    const { frames } = replayBridge(t, f);
+    f.sched.opts.requirePresence = false;
+    const tb = openTable(f, '1');
+    const people = [singer(f, tb, 'Léa', 101), singer(f, tb, 'Tom', 201)];
+    const a = sendNext(f, 'A-id'), b = sendNext(f, 'B-id');
+    const owner = people.find(s => s.person.id === a.sel.ids[0]).person;
+    const item = tr => isoItem(tr.queueId, tr.sel.song.songId, { singer: tr.sel.label });
+    const C = isoItem('C-id', 555, { singer: 'Autre' });
+    frames(queueEvent(item(a), item(b)), isoStatus(4, C));
+    // Retrait déjà envoyé, puis annulé : il peut encore aboutir.
+    a.unpulled = { reason, at: clock.now };
+    frames(unreadableStatus(C));
+    assert.equal(f.karaokeOutlook(), 'blind');
+    clock.now += 5000;
+    frames(queueEvent(item(b))); // KaraFun fait le retrait
+    assert.deepEqual(f.events('turn.unsent'), [], `${reason} : verdict à la fin de l’alerte`);
+    clock.now += 60000;
+    frames(isoStatus(4, C)); // fin de l'alerte, 65 s après l'annulation
+    assert.deepEqual(f.events('turn.unsent').map(e => [e.queueId, e.reason]), [['A-id', `pulled-${reason}`]], reason);
+    assert.ok(f.sched.songsOf(owner).some(song => song.songId === a.sel.song.songId), `${reason} : le titre revient à son chanteur`);
+    assert.equal(notes(f).some(line => /passée dans KaraFun avant la lecture/.test(line)), false, reason);
+    assert.ok(notes(f).includes(reason === 'duo' ?
+      `« ${a.sel.song.title} » (${a.sel.label}) retiré de KaraFun malgré l’annulation du duo : il revient en tête de la liste de son chanteur.` :
+      `« ${a.sel.song.title} » (${a.sel.label}) retiré de KaraFun juste avant le changement de l’heure de fermeture : il revient dans la liste de son chanteur.`), reason);
+    // Sortie de la file au-delà du délai, même pendant l'alerte : passée dans
+    // KaraFun, comme sans alerte.
+    const late = sendNext(f, 'D-id');
+    frames(queueEvent(item(b), item(late)), isoStatus(4, C));
+    late.unpulled = { reason, at: clock.now };
+    frames(unreadableStatus(C));
+    clock.now += 25000;
+    frames(queueEvent(item(b)));
+    clock.now += 1000;
+    frames(isoStatus(4, C));
+    assert.deepEqual(f.events('turn.unsent').map(e => [e.queueId, e.reason]).at(-1), ['D-id', 'skipped-in-karafun'], `${reason} : délai dépassé`);
+  }
+});
+
+// Panne de référence : un vrai pont KaraFun prêt dont l'état ne se lit plus
+// (getter qui lève) ; sync() échoue, et toute lecture de KaraFun aussi.
+function breakStatus(bridge) {
+  const status = bridge.status;
+  const broken = { on: true };
+  Object.defineProperty(bridge, 'status', { configurable: true, get() {
+    if (broken.on) throw new TypeError('Cannot convert object to primitive value');
+    return status;
+  } });
+  return broken;
+}
+const barErrors = f => f.sched.log.filter(line => line.kind === 'error').map(line => line.msg);
+const SYNC_FAILED = 'La mise à jour avec KaraFun a échoué (Cannot convert object to primitive value) : la file ne pilote plus KaraFun et réessaie seule. Pilote dans KaraFun en attendant.';
+
+// Regression: relecture contradictoire du tour 5 (tour 1) — syncAfterChange
+// absorbait la panne de sync(), mais ces routes relisaient KaraFun après le
+// geste (avis de titre déjà chanté : repeatNotice puis publicState, lien de
+// la Battle), dans le mode de panne même de la reproduction : le geste était
+// fait (titre ajouté, invitation créée, vote compté), puis la route
+// répondait 400 « Cannot convert object to primitive value », sans activité
+// ni soirée enregistrée, et le téléphone qui refaisait le geste lisait « déjà
+// dans la liste ». Le complément relu après le geste est sous le même filet :
+// la route répond sans lui.
+test('filet de la synchronisation : panne qui empêche de lire KaraFun, gestes des téléphones répondus, comptés et enregistrés', async () => {
+  const f = harness({ persistent: true });
+  const { bridge } = kcsBridge(f);
+  f.setCode('123456'); // lien de la Battle relu après un vote
+  const tb = openTable(f, '1', 6);
+  const lea = singer(f, tb, 'Léa', 101);
+  const tom = singer(f, tb, 'Tom', 201);
+  const zoe = singer(f, tb, 'Zoé', 301);
+  const max = singer(f, tb, 'Max', 401);
+  const sam = singer(f, tb, 'Sam', 501);
+  f.battleVote.propose({ personId: max.person.id, personName: 'Max', eligiblePersonIds: [lea, tom, zoe, max, sam].map(s => s.person.id),
+    songs: [{ songId: 900, title: 'Tube', artist: 'Groupe' }, { songId: 901, title: 'Autre tube', artist: 'Groupe' }], proposerChoice: 900 });
+  breakStatus(bridge);
+  const saved = person => f.saves.at(-1)?.scheduler.people.find(p => p.id === person.id);
+  const answer = async (url, body, who) => {
+    const saves = f.saves.length;
+    who.person.lastActionAt = 0;
+    const reply = await post(f, url, body);
+    assert.equal(reply.status, 200, `${url} : ${JSON.stringify(reply.body)}`);
+    assert.ok(f.saves.length > saves, `${url} : soirée enregistrée`);
+    assert.ok(who.person.lastActionAt > 0, `${url} : activité comptée`);
+    return reply.body;
+  };
+  // Ajouter un titre (téléphone de la table, puis ancienne route au jeton).
+  assert.deepEqual(await answer('/api/table/song', { ...lea.body, song: { songId: 555, title: 'Nouveau', artist: 'Artiste' } }, lea),
+    { ok: true, notice: null });
+  assert.deepEqual(f.sched.songsOf(lea.person).map(s => s.songId), [101, 555]);
+  assert.ok(saved(lea.person), 'la sauvegarde a Léa');
+  assert.deepEqual(await answer('/api/song', { token: zoe.person.token, song: { songId: 556, title: 'Autre', artist: 'Artiste' } }, zoe),
+    { ok: true });
+  assert.deepEqual(f.sched.songsOf(zoe.person).map(s => s.songId), [556], 'titre de Zoé remplacé');
+  // Inviter en duo, ouvrir un duo à toute la salle.
+  const invited = await answer('/api/table/duet', { ...lea.body, partnerId: tom.person.id, song: { songId: 557, title: 'Duo', artist: 'Artiste' } }, lea);
+  assert.deepEqual(invited, { ok: true, notice: null });
+  assert.ok(f.sched.songsOf(lea.person).some(s => s.songId === 557 && s.duet?.partnerId === tom.person.id), 'invitation créée');
+  f.rememberBattleSongs([{ songId: 558, title: 'Ouvert', artist: 'Artiste' }]); // titre lu dans le catalogue
+  const opened = await answer('/api/table/duet/open', { ...tom.body, song: { songId: 558, title: 'Ouvert', artist: 'Artiste' } }, tom);
+  assert.equal(opened.notice, null);
+  assert.ok(f.sched.songsOf(tom.person).some(s => s.entryId === opened.entryId && s.duet?.state === 'open'), 'duo ouvert');
+  // Voter pour la Battle : vote compté, sans le lien de KaraFun relu après.
+  const voted = await answer('/api/table/battle/vote', { ...tom.body, choice: 900 }, tom);
+  assert.equal(voted.battle.joinUrl, null);
+  assert.ok(f.battleVote.ballot.votes.some(([voter]) => voter === tom.person.id), 'vote compté');
+  assert.deepEqual(barErrors(f), [SYNC_FAILED], 'un seul avis au bar pendant la panne');
+});
+
+// Même regression, gestes du bar : « Sélectionner » (retrait groupé) retirait
+// les titres de la file, puis lisait la scène pour ceux de KaraFun et
+// levait ; « ⏸ Spotify » coupait Spotify, puis lisait la soirée avant de
+// noter le choix du bar (handled), jamais noté ; « Réordonner » était refusé
+// par la lecture de KaraFun faite avant le geste (nombre de titres déjà
+// chargés, pour le message). Ils répondent : les titres de la file sont
+// retirés et ceux de KaraFun signalés ignorés (rien n'y est retiré sans voir
+// la scène), le choix Spotify est noté, le passage déplacé. Un geste qui doit
+// d'abord lire KaraFun pour décider (annuler un duo improvisé : ses titres
+// encore dans KaraFun y restent) est refusé avant tout changement : il
+// défaisait le duo à moitié.
+test('filet de la synchronisation : panne qui empêche de lire KaraFun, gestes du bar répondus, ou refusés sans rien changer', async () => {
+  const f = harness({ persistent: true });
+  const { bridge, sent } = kcsBridge(f);
+  const calls = fakeSpotify(f);
+  const tb = openTable(f, '1', 6);
+  const lea = singer(f, tb, 'Léa', 101);
+  const tom = singer(f, tb, 'Tom', 201);
+  const zoe = singer(f, tb, 'Zoé', 301);
+  const max = singer(f, tb, 'Max', 401);
+  singer(f, tb, 'Sam', 501);
+  f.sched.opts.requirePresence = false;
+  // A sur scène, avec un duo improvisé noté par le bar ; B déjà chargé dans KaraFun.
+  const a = sendNext(f, 'A-id'), b = sendNext(f, 'B-id');
+  const itemA = kfItem('A-id', a.sel.song.songId, a.sel.label), itemB = kfItem('B-id', b.sel.song.songId, b.sel.label);
+  bridge.queue = [itemA, itemB];
+  bridge.status = playing(itemA);
+  f.sync();
+  assert.ok(a.startedAt, 'A sur scène');
+  const partner = [lea, tom, zoe, max].find(s => !a.sel.ids.includes(s.person.id) && !b.sel.ids.includes(s.person.id));
+  await f.call('POST /api/staff/duo-mark', { queueId: 'A-id', partnerId: partner.person.id });
+  assert.deepEqual(plain(a.sel.ids), [a.sel.ids[0], partner.person.id], 'duo noté');
+  await f.call('POST /api/staff/spotify', { action: 'play' });
+  const broken = breakStatus(bridge);
+  const staff = async (route, body) => post(f, `${route}?key=${f.STAFF_KEY}`, body);
+  // « Sélectionner » : un titre de la file et le titre B de KaraFun.
+  const waiting = [lea, tom, zoe, max].find(s => !a.sel.ids.includes(s.person.id) && !b.sel.ids.includes(s.person.id) &&
+    f.sched.songsOf(s.person).length);
+  const entry = f.sched.songsOf(waiting.person)[0];
+  let saves = f.saves.length;
+  const many = await staff('/api/staff/remove-many', { items: [{ personId: waiting.person.id, entryId: entry.entryId }], queueIds: ['B-id'] });
+  assert.equal(many.status, 200, JSON.stringify(many.body));
+  assert.deepEqual(many.body, { ok: true, removed: 1, skipped: 1,
+    message: '1 titre retiré ; 1 ignoré (état de KaraFun illisible : retire-le dans KaraFun).' });
+  assert.equal(f.sched.songsOf(waiting.person).some(s => s.entryId === entry.entryId), false, 'titre de la file retiré');
+  assert.deepEqual(removals(sent), [], 'rien retiré de KaraFun sans voir la scène');
+  assert.ok(f.saves.length > saves, 'soirée enregistrée');
+  // « ⏸ Spotify » : Spotify coupé, et le choix du bar noté.
+  f.spotifyAutomation.step('silent', { autoResume: false });
+  assert.equal(f.spotifyAutomation.done, false);
+  const paused = await staff('/api/staff/spotify', { action: 'pause' });
+  assert.deepEqual([paused.status, paused.body], [200, { ok: true, result: 'done' }]);
+  assert.deepEqual(calls, ['lecture', 'pause']);
+  assert.equal(f.spotifyAutomation.done, true, 'choix du bar noté');
+  // « Réordonner » : le deuxième passage de la file passe en tête.
+  saves = f.saves.length;
+  const [first, second] = f.sched.presenceView().filter(v => !v.future).map(v => v.ids[0]);
+  assert.ok(first && second, 'deux passages dans la file');
+  const moved = await staff('/api/staff/move', { personId: second, toIndex: 0 });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal(moved.body.changed, undefined, 'déplacé');
+  assert.deepEqual(f.sched.presenceView().filter(v => !v.future).map(v => v.ids[0]).slice(0, 2), [second, first]);
+  assert.ok(f.saves.length > saves, 'soirée enregistrée');
+  // Annuler le duo improvisé : refusé avant tout changement.
+  const undo = await staff('/api/staff/duo-unmark', { queueId: 'A-id' });
+  assert.deepEqual([undo.status, undo.body.error], [400, 'Cannot convert object to primitive value']);
+  assert.deepEqual(plain(a.sel.ids), [a.sel.ids[0], partner.person.id], 'duo toujours noté');
+  assert.ok(a.sel.staffDuo, 'reçu du duo gardé');
+  assert.deepEqual(barErrors(f), [SYNC_FAILED], 'un seul avis au bar');
+  // Mise à jour rétablie : le duo s'annule.
+  broken.on = false;
+  f.safeSync();
+  await f.call('POST /api/staff/duo-unmark', { queueId: 'A-id' });
+  assert.deepEqual(plain(a.sel.ids), [a.sel.ids[0]]);
 });

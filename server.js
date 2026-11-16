@@ -1012,9 +1012,10 @@ function shielded(label, run) {
 
 // Filet de la synchronisation avec KaraFun lancée en arrière-plan (événements
 // du pont, minuterie de 2 s, relance 300 ms après une commande du bar ou
-// « Connecter »), et de celle d'un geste dans une requête (syncAfterChange) :
-// une valeur imprévue qui ferait échouer sync() ne doit jamais arrêter le
-// serveur. Pendant la panne, la file ne pilote plus KaraFun. Elle est notée
+// « Connecter »), et de celle d'un geste dans une requête (syncAfterChange,
+// avec les lectures de KaraFun de la route, routeRead) : une valeur imprévue
+// qui ferait échouer sync() ne doit jamais arrêter le serveur. Pendant la
+// panne, la file ne pilote plus KaraFun. Elle est notée (noteSyncFailure)
 // une fois pour le bar et dans le journal du serveur,
 // avec l'endroit du code (fichier et ligne, sans le dossier d'installation :
 // la première ligne de la pile qui en a, pas une fonction de Node comme
@@ -1030,26 +1031,32 @@ function safeSync() {
   try {
     sync();
   } catch (error) {
-    const reason = errorReason(error), now = Date.now();
-    if (!syncFailure) {
-      syncFailure = { count: 1, loggedAt: now };
-      const lines = typeof error?.stack === 'string' ? error.stack.split('\n') : [];
-      const where = lines.map(line => /^\s+at .*?([\w.-]+\.js:\d+)/.exec(line)?.[1]).find(Boolean);
-      appLog(`Synchronisation avec KaraFun interrompue : ${reason}${where ? ` (${where})` : ''}`);
-      sched.note(`La mise à jour avec KaraFun a échoué (${reason}) : la file ne pilote plus KaraFun et réessaie seule. Pilote dans KaraFun en attendant.`, 'error');
-    } else {
-      syncFailure.count++;
-      if (now - syncFailure.loggedAt >= SYNC_FAILURE_LOG_EVERY_MS) {
-        syncFailure.loggedAt = now;
-        appLog(`Synchronisation avec KaraFun toujours en échec (${syncFailure.count} essais) : ${reason}`);
-      }
-    }
+    noteSyncFailure(error);
     return;
   }
   if (syncFailure && bridge?.ready && !bridge.unreadable && !serverUpdate.isBusy()) {
     appLog(`Synchronisation avec KaraFun rétablie après ${syncFailure.count} échec${syncFailure.count > 1 ? 's' : ''}.`);
     sched.note('Mise à jour avec KaraFun rétablie : la file pilote de nouveau KaraFun.', 'info');
     syncFailure = null;
+  }
+}
+// Panne de la mise à jour (safeSync), ou de la lecture de KaraFun dans une
+// route (routeRead) : notée une fois pour le bar et dans le journal, puis une
+// ligne par minute au plus.
+function noteSyncFailure(error) {
+  const reason = errorReason(error), now = Date.now();
+  if (!syncFailure) {
+    syncFailure = { count: 1, loggedAt: now };
+    const lines = typeof error?.stack === 'string' ? error.stack.split('\n') : [];
+    const where = lines.map(line => /^\s+at .*?([\w.-]+\.js:\d+)/.exec(line)?.[1]).find(Boolean);
+    appLog(`Synchronisation avec KaraFun interrompue : ${reason}${where ? ` (${where})` : ''}`);
+    sched.note(`La mise à jour avec KaraFun a échoué (${reason}) : la file ne pilote plus KaraFun et réessaie seule. Pilote dans KaraFun en attendant.`, 'error');
+  } else {
+    syncFailure.count++;
+    if (now - syncFailure.loggedAt >= SYNC_FAILURE_LOG_EVERY_MS) {
+      syncFailure.loggedAt = now;
+      appLog(`Synchronisation avec KaraFun toujours en échec (${syncFailure.count} essais) : ${reason}`);
+    }
   }
 }
 
@@ -1065,12 +1072,29 @@ const routeRequest = new AsyncLocalStorage();
 // technique qui ferait croire au bar le geste refusé, et le refaire ;
 // l'enveloppe compte l'activité et enregistre la soirée comme pour une
 // réussite. La file transmet le geste à KaraFun quand la mise à jour
-// reprend. Hors requête (minuteries, essais qui appellent un traitement
+// reprend. Ce que la route relit ensuite de KaraFun passe par routeRead.
+// Hors requête (minuteries, essais qui appellent un traitement
 // directement), l'erreur remonte, comme avec sync().
 function syncAfterChange() {
   const request = routeRequest.getStore();
   if (!request || request.finished) return sync();
   safeSync();
+}
+
+// Lecture de l'état de KaraFun dans une route, sous le même filet. La panne
+// qui fait échouer sync() fait souvent échouer aussi cette lecture (même état
+// de KaraFun) : relue après le geste (avis de titre déjà chanté, lien de la
+// Battle, choix Spotify noté), elle refaisait de la route une erreur alors que
+// le geste était fait. Dans une requête, la route continue sans elle
+// (`fallback`), panne notée comme par safeSync. Une lecture qui décide du
+// geste reste nue, faite avant tout changement : la route est alors refusée
+// sans rien changer. Hors requête, l'erreur remonte, comme avec
+// syncAfterChange.
+function routeRead(read, fallback = null) {
+  const request = routeRequest.getStore();
+  if (!request || request.finished) return read();
+  try { return read(); }
+  catch (error) { noteSyncFailure(error); return fallback; }
 }
 
 function syncBattle({ current, upcoming, q }, now) {
@@ -1753,10 +1777,13 @@ function sync() {
     return;
   }
   if (!bridge || !bridge.ready) {
+    if (alertReconnect && reconnectLost()) alertReconnect = false;
     notePhase('unknown', 'offline');
     if (songGap) songGap.clean = false;
     return;
   }
+  // Première vue complète de KaraFun après « Reconnecter » depuis l'alerte.
+  alertReconnect = false;
   rememberKaraFunDefaults();
   if (settings.auto && bridge.permissions?.addToQueue === false) {
     settings.auto = false;
@@ -1959,13 +1986,21 @@ function sync() {
     // retire de sa file le titre qu'il lance. Un titre pas encore commencé qui
     // en sort a peut-être été lancé : son verdict (passé dans KaraFun, annulé,
     // absent, retiré) attend une vue lisible, où un titre sur scène est compté
-    // normalement (plus haut) et un titre disparu reçoit son verdict.
+    // normalement (plus haut) et un titre disparu reçoit son verdict. Sa
+    // sortie de la file, vue pendant l'alerte (état seul illisible), est datée
+    // (`goneAt`) : le délai d'un retrait annulé qui aboutit quand même
+    // (PULL_LATE_MS) se compte depuis elle, comme sans alerte, et non depuis la
+    // fin de l'alerte, qui ferait perdre son titre au chanteur.
     const statusId = bridge.status && (bridge.status.current || bridge.status.songPlaying || {}).queueId;
-    if (!qids.has(tr.queueId) && !onStage && statusId !== tr.queueId && !(blind && !tr.startedAt)) {
+    const gone = !qids.has(tr.queueId) && !onStage && statusId !== tr.queueId;
+    if (!gone) delete tr.goneAt;
+    else if (blind && !tr.startedAt) tr.goneAt ??= now;
+    else {
+      const unpulledLate = !!tr.unpulled && (tr.goneAt ?? now) - tr.unpulled.at < PULL_LATE_MS;
       if (!tr.startedAt) {
         journalEvent('turn.unsent', { entryId: tr.sel.song.entryId || null, ids: tr.sel.ids, queueId: tr.queueId,
           reason: tr.cancelled ? 'cancelled' : tr.absent ? 'absent' : tr.pulled ? `pulled-${tr.pulled.reason}` :
-            tr.unpulled && now - tr.unpulled.at < PULL_LATE_MS ? `pulled-${tr.unpulled.reason}` : 'skipped-in-karafun' });
+            unpulledLate ? `pulled-${tr.unpulled.reason}` : 'skipped-in-karafun' });
       }
       if (tr.cancelled) {
         // Un accusé tardif d'un envoi annulé peut avoir été suivi sans
@@ -1980,7 +2015,7 @@ function sync() {
       }
       else if (tr.absent) restore(tr, 'retirée (absent à l\'appel)');
       // Retrait de fermeture annulé, mais déjà envoyé à KaraFun : il aboutit.
-      else if (tr.pulled || (tr.unpulled && now - tr.unpulled.at < PULL_LATE_MS)) restorePulled(tr);
+      else if (tr.pulled || unpulledLate) restorePulled(tr);
       else {
         sched.rollbackUnplayed(tr.sel, { requeue: true });
         // Le titre n'est pas renvoyé : un duo sort de la liste de son auteur
@@ -2325,6 +2360,10 @@ function staffDuoTooLate(record) {
 // l'invité retirés de KaraFun (gardés s'ils y sont encore). Renvoie la
 // phrase à ajouter au message du bar.
 function undoStaffDuo(target, record) {
+  // Titres encore dans KaraFun, lus avant tout changement : KaraFun illisible
+  // (panne de la mise à jour), l'annulation est refusée sans rien défaire,
+  // au lieu de lever à moitié faite.
+  const inKaraFun = new Set(analyze().upcoming.map(item => String(item.queueId)));
   const partner = sched.people.get(record.partnerId);
   sched.staffUncountPartner(record, target.tr?.sel || null, tracked.map(item => item.sel));
   if (target.tr) {
@@ -2338,7 +2377,6 @@ function undoStaffDuo(target, record) {
     sched.setStagePeople(target.entry, target.entry.ids.filter(pid => pid !== record.partnerId), record.kindBefore || 'solo');
     delete target.entry.staffDuo;
   }
-  const inKaraFun = new Set(analyze().upcoming.map(item => String(item.queueId)));
   const kept = [], back = [];
   for (const item of record.pulled || []) {
     const tr = item.entryId ? tracked.find(x => x.sel.song?.entryId === item.entryId) : null;
@@ -2464,7 +2502,10 @@ function sentDuo(tr, p, current) {
 // KaraFun déconnecté, sa file n'est plus lue (`analyze` la rend vide).
 function battleJoinUrl() {
   if (DEMO || !CODE) return null;
-  const { current, upcoming } = analyze();
+  // Relu après un vote (routeRead) : sans lien si KaraFun ne se lit plus.
+  const view = routeRead(analyze);
+  if (!view) return null;
+  const { current, upcoming } = view;
   return isBattleItem(current) || (!current && isBattleItem(upcoming[0])) || battleStarting() ? `https://www.karafun.fr/${CODE}` : null;
 }
 
@@ -3932,7 +3973,9 @@ function chooseFor(p, song, mode) {
   choice.certify(sched.songsOf(p).find(item => item.songId === songId));
   syncAfterChange();
   const added = sched.songsOf(p).find(item => item.songId === songId);
-  return added ? repeatNotice(added, p.tableId, added.entryId) : null;
+  // Avis relu après le geste (la file de KaraFun comprise) : sans lui si
+  // KaraFun ne se lit plus (routeRead), le titre est ajouté.
+  return added ? routeRead(() => repeatNotice(added, p.tableId, added.entryId)) : null;
 }
 
 // « Duos uniquement » : un client n'ajoute plus de solo (titre ou
@@ -4492,11 +4535,15 @@ let spotifyWork = null;
 // « blind » : KaraFun prêt, mais un message illisible (alerte rouge, voir
 // sync()) : la vue de la file peut être figée, et KaraFun jouer un titre
 // qu'elle ne voit pas. Ni silence ni titre : l'automate ne touche pas à
-// Spotify, le bar s'en charge, et la période d'avant l'alerte continue avec
-// le choix du bar (« ⏸ Spotify » ou « ▶ Spotify », fait avant ou pendant
-// l'alerte), jusqu'au prochain titre ou au prochain silence vus ensuite.
+// Spotify, le bar s'en charge. La période continue avec le choix du bar
+// (« ⏸ Spotify » ou « ▶ Spotify », fait avant ou pendant l'alerte) tant que
+// la scène vue (spotifyStage) ne change pas ; un autre titre, ou la scène
+// libérée, en ouvre une nouvelle (SpotifyAutomation). « Reconnecter »
+// demandé depuis l'alerte en fait partie jusqu'à la première vue complète de
+// KaraFun (alertReconnect) : le pont n'est pas prêt entre-temps, et ce
+// passage par « unknown » défaisait le choix du bar.
 function karaokeOutlook() {
-  if (!bridge?.ready) return 'unknown';
+  if (!bridge?.ready) return alertReconnect && !reconnectLost() ? 'blind' : 'unknown';
   if (bridge.unreadable) return 'blind';
   const { current, upcoming } = analyze();
   if (current) return 'singing';
@@ -4508,6 +4555,21 @@ function karaokeOutlook() {
   if (settings.auto && !settings.queueClearPending && sched.presenceView().some(turn => turn.song)) return 'between';
   return 'silent';
 }
+// Scène vue par l'automate de Spotify : clé du titre sur scène (stageKey),
+// null pour une scène libre ; undefined quand KaraFun n'est pas prêt (rien de
+// vu). Pendant une alerte, un état figé ne montre aucun changement ; un état
+// lisible (file seule illisible) montre les vrais.
+function spotifyStage() {
+  return bridge?.ready ? stageKey(analyze().current) : undefined;
+}
+// « Reconnecter » (ou « Connecter » avec le même code) pendant l'alerte d'un
+// message de KaraFun illisible : connexion rouverte (connectKaraFun), en
+// attente de la file et de l'état de KaraFun. Effacé à la première vue
+// complète (sync()), ou quand la connexion rouverte est perdue (nouvel essai
+// prévu, essais arrêtés, déconnexion) : KaraFun est alors déconnecté, comme
+// sans alerte.
+let alertReconnect = false;
+const reconnectLost = () => !bridge || ['idle', 'retry', 'stopped'].includes(bridge.connectionState?.().phase);
 
 // Spotify reprend en fin de file : la lecture automatique attend que le bar
 // lance le titre suivant, le temps de redonner le micro.
@@ -4546,7 +4608,9 @@ let afterBattleStarting = null;
 // change (il ne relance jamais entre deux chansons). Rien à couper : null, et
 // le lancement part aussitôt.
 function pauseSpotifyBeforeStart() {
-  if (karaokeOutlook() === 'battle') spotifyAutomation.handled('battle');
+  // Avec la scène vue : sinon le passage suivant de l'automate la verrait
+  // changer et rouvrirait l'attente, relancée malgré ce choix.
+  if (karaokeOutlook() === 'battle') spotifyAutomation.handled('battle', spotifyStage());
   return spotify.connected && spotify.config.autoPause && !spotify.blocked ? pauseSpotifyThenWait() : null;
 }
 async function pauseSpotifyThenWait() {
@@ -4626,7 +4690,7 @@ async function spotifyTick() {
   // reprise automatique est coupée (une pause faite au bar reste respectée).
   const closed = karaoke === 'silent' && closingBlocksStart(null);
   const trigger = closed ? 'closing' : karaoke === 'battle' ? 'battle' : 'auto';
-  const action = spotifyAutomation.step(karaoke, closed ? { ...spotify.config, autoResume: true } : spotify.config);
+  const action = spotifyAutomation.step(karaoke, closed ? { ...spotify.config, autoResume: true } : spotify.config, spotifyStage());
   // Après un échec, Spotify n'est pas rappelé avant le délai ; seule la pause
   // d'un titre qui démarre passe outre (sauf si Spotify demande d'attendre).
   // Sans action : vérification toutes les minutes (ou après un échec).
@@ -5042,7 +5106,7 @@ const handlers = {
     assertNotInKaraFun(p, body.song);
     const choice = catalogChoice(body.song);
     const duet = choice.certify(sched.inviteDuet(p, String(body.partnerId || ''), choice.song)); syncAfterChange();
-    return { ok: true, notice: repeatNotice(duet, p.tableId, duet.entryId) };
+    return { ok: true, notice: routeRead(() => repeatNotice(duet, p.tableId, duet.entryId)) };
   },
   // « Qui veut chanter en duo avec moi ? » : un titre du catalogue (`song`)
   // ou de sa liste pas encore envoyé (`entryId`) cherche un partenaire dans
@@ -5055,7 +5119,7 @@ const handlers = {
     else assertNotSending(body.entryId);
     const { request, certify } = openDuetSong(p, body);
     const song = certify(sched.openDuet(p, request)); syncAfterChange();
-    return { ok: true, entryId: song.entryId, ...(body.song ? { notice: repeatNotice(song, p.tableId, song.entryId) } : {}) };
+    return { ok: true, entryId: song.entryId, ...(body.song ? { notice: routeRead(() => repeatNotice(song, p.tableId, song.entryId)) } : {}) };
   },
   'POST /api/table/duet/open/close': async (req, res, body) => {
     const p = personAtTable(body);
@@ -5539,7 +5603,10 @@ const handlers = {
     const toIndex = Number(body.toIndex);
     const priority = body.priority === true && toIndex === 0;
     const visible = sched.presenceView(excluded, provisional).filter(v => !v.future);
-    const nativeAhead = analyze().upcoming.length + (pending ? 1 : 0);
+    // Titres déjà chargés dans KaraFun, pour les messages : sans eux si
+    // KaraFun ne se lit plus (routeRead), le passage se déplace dans la file.
+    // Le retrait d'un titre chargé (pullLoaded), lui, lit KaraFun pour décider.
+    const nativeAhead = routeRead(() => analyze().upcoming.length, 0) + (pending ? 1 : 0);
     const from = visible.findIndex(v => v.ids[0] === personId);
     // « Faire passer X avant « titre chargé » ? » confirmé par le bar : rien
     // ne change si ce titre n'attend plus dans KaraFun (commencé entre-temps,
@@ -5579,9 +5646,11 @@ const handlers = {
     // titre retiré ; une annonce plus ancienne le suivait dans KaraFun
     // (Scheduler#returnFromKaraFun, relecture, passe 17).
     if (pull && sched.reservedNext?.byStaff && sched.reservedNext.personId === personId) pull.pulled.forAt = sched.reservedNext.reservedAt;
+    // Empreinte de KaraFun (annulation exacte) : sans elle, l'annulation
+    // reprend l'ordre comme après un autre changement.
     const change = sched.recordManualChange({
       kind: priority ? 'priority' : 'move', personId, name,
-      from: from + 1, to: placed + 1, before, native: priorityNativeFingerprint(),
+      from: from + 1, to: placed + 1, before, native: routeRead(priorityNativeFingerprint),
     });
     // Le geste lui-même : annulé ou tombé, le titre retiré reprend la tête à
     // son retour (Scheduler#returnFromKaraFun).
@@ -5597,8 +5666,9 @@ const handlers = {
         message: `« ${pull.sel.song.title} » sort de KaraFun : ${name} ${passes} d’abord, « ${pull.sel.song.title} » juste après.` };
     }
     // Sans retrait, la priorité passe juste après notre titre déjà chargé.
-    const loaded = priority && nativeAhead === 1 && !pending ? tracked.find(tr => !tr.startedAt && !tr.pulled && !tr.cancelled &&
-      String(tr.queueId) === String(analyze().upcoming[0]?.queueId)) : null;
+    const head = priority && nativeAhead === 1 && !pending ? routeRead(() => analyze().upcoming[0]?.queueId) : null;
+    const loaded = head != null ? tracked.find(tr => !tr.startedAt && !tr.pulled && !tr.cancelled &&
+      String(tr.queueId) === String(head)) : null;
     return { ok: true, firstFreePosition: nativeAhead + 1,
       message: placed > toIndex ? `${name} ${passes} juste après les passages déjà annoncés : seule « Priorité » passe devant eux.` :
         loaded ? `${name} ${passes} juste après « ${loaded.sel.song.title} », déjà chargé dans KaraFun.` :
@@ -5640,6 +5710,11 @@ const handlers = {
     const items = Array.isArray(body.items) ? body.items.slice(0, 200) : [];
     const queueIds = Array.isArray(body.queueIds) ? body.queueIds.slice(0, 50).map(String) : [];
     if (!items.length && !queueIds.length) throw new Error('Coche au moins un titre à retirer.');
+    // La scène, avant tout retrait : un titre de KaraFun n'est retiré que s'il
+    // n'y est pas. KaraFun ne se lit plus (panne de la mise à jour,
+    // routeRead) : ceux de la file partent quand même, ceux de KaraFun sont
+    // signalés ignorés, à retirer dans KaraFun.
+    const view = queueIds.length ? routeRead(analyze) : null;
     let removed = 0;
     const skipped = [];
     for (const item of items) {
@@ -5655,8 +5730,8 @@ const handlers = {
     }
     for (const queueId of queueIds) {
       const tr = tracked.find(item => String(item.queueId) === queueId && !item.cancelled);
-      const { current } = analyze();
-      if (!tr || isOnStage(tr, current)) { skipped.push('titre déjà sur scène ou absent de KaraFun'); continue; }
+      if (!view) { skipped.push('état de KaraFun illisible : retire-le dans KaraFun'); continue; }
+      if (!tr || isOnStage(tr, view.current)) { skipped.push('titre déjà sur scène ou absent de KaraFun'); continue; }
       try { bridge?.remove(tr.queueId); removed++; }
       catch (error) { skipped.push(error.message); }
     }
@@ -5838,10 +5913,14 @@ const handlers = {
       // titre. Attente de la Battle : le choix vaut pour elle, même fait juste
       // après la fin du titre d'avant, avant que l'automate l'ait vue ; hors
       // Battle, comme avant, pour la période que l'automate a vue. Pendant une
-      // alerte « message illisible » (« blind »), c'est la période d'avant
-      // l'alerte, qui continue après elle (SpotifyAutomation).
+      // alerte « message illisible » (« blind »), c'est la période de la scène
+      // vue au moment du geste : celle d'avant l'alerte, ou celle d'un
+      // changement de scène vu pendant l'alerte (SpotifyAutomation). L'état
+      // de KaraFun illisible (panne de la mise à jour, routeRead) : le choix
+      // est noté quand même, pour la dernière période vue.
       const result = action === 'play' ? await spotify.resume() : await spotify.pause();
-      if (karaokeOutlook() === 'battle') spotifyAutomation.handled('battle');
+      const seen = routeRead(() => ({ karaoke: karaokeOutlook(), stage: spotifyStage() }));
+      if (seen?.karaoke === 'battle' || seen?.karaoke === 'blind') spotifyAutomation.handled(seen.karaoke, seen.stage);
       else spotifyAutomation.handled();
       journalEvent('spotify', { action: action === 'play' ? 'resume' : 'pause', result: String(result || ''), trigger: 'staff' });
       return { ok: true, result };
@@ -6388,7 +6467,15 @@ function connectKaraFun(code = CODE) {
     bridge = new KaraFunBridge(karafunBridgeOptions());
     wireBridge(bridge);
   }
+  // Pendant l'alerte d'un message de KaraFun illisible, le même code rouvre
+  // la connexion (KaraFunBridge#connect) : l'alerte continue pour Spotify
+  // jusqu'à la vue de KaraFun (alertReconnect). Un autre code : un autre
+  // KaraFun, déconnecté d'ici là.
+  const sameCode = bridge.code === String(code).replace(/\D/g, '');
+  const fromAlert = sameCode && !!bridge.connectionState?.().canReconnect;
   const result = bridge.connect(code);
+  if (!sameCode) alertReconnect = false;
+  else if (fromAlert && result === 'started') alertReconnect = true;
   // Budget de l'heure épuisé et connexion prête : le pont garde son code
   // (faute de frappe probable). Le code retenu suit toujours le pont.
   CODE = bridge.code || code;
