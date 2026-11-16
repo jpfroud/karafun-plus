@@ -1528,6 +1528,73 @@ test('fermeture atteinte : plus de demande « Je suis là », personne n’est s
   assert.equal(f.adds.length, 0);
 });
 
+// Relecture 2, tour 2 (tests) : rien n'essayait que la Battle attende la fin
+// d'une alerte « message de KaraFun illisible » avant de partir.
+test('message de KaraFun illisible : la Battle attend un message lisible', () => {
+  const f = harness();
+  f.bridge.unreadable = 'remote.StatusEvent';
+  f.battleVote.staffLaunch({ song: song(5091, 'Battle collective') });
+  f.sync();
+  assert.deepEqual(f.battleAdds, []);
+  f.bridge.unreadable = null;
+  f.sync();
+  assert.deepEqual(f.battleAdds.map(add => add.songId), [5091]);
+});
+
+// Regression: relecture 2, tour 2 (passe adverse, machines à états) — pendant
+// l'alerte, la copie normale de la Battle était passée en mode Battle d'après
+// la file figée (la trame illisible pouvait justement porter ce mode), et
+// l'attente de 15 s concluait « n'a pas confirmé l'ajout Battle » alors que la
+// file de KaraFun ne se lisait plus. Le passage en mode Battle attend la fin
+// de l'alerte, et l'échec une file lisible.
+test('message de KaraFun illisible : copie normale passée en mode Battle, ou Battle en échec, seulement d’après une file lisible', () => {
+  const f = harness();
+  f.battleVote.staffLaunch({ song: SARA });
+  f.sync();
+  const copy = saraCopy('copie-normale');
+  f.bridge.queue = [copy];
+  f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  Object.assign(f.bridge, { unreadable: 'remote.QueueEvent', queueUnreadable: true });
+  f.sync();
+  assert.equal(f.battleModes.length, 1, 'pas de passage en mode Battle pendant l’alerte');
+  f.battleVote.automation.sentAt -= 16000;
+  f.battleVote.automation.plainSince -= 16000;
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'sending', 'pas d’échec pendant une file illisible');
+  // La trame illisible portait le mode Battle : la file lisible suivante le montre.
+  Object.assign(f.bridge, { unreadable: null, queueUnreadable: false, queue: [saraCopy(copy.queueId, { mod: SARA_MOD })] });
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'queued');
+  assert.equal(f.battleModes.length, 1, 'aucune commande de mode');
+});
+
+// Regression: relecture 2, tour 2 (passe adverse) — la reprise après une
+// Battle lançait le titre suivant d'après une vue figée pendant l'alerte.
+test('message de KaraFun illisible : la reprise après Battle ne lance rien avant un message lisible', () => {
+  const f = harness();
+  const choice = song(5091, 'Battle collective');
+  f.battleVote.staffLaunch({ song: choice });
+  f.sync();
+  const battle = battleItem('battle-uuid', choice);
+  f.bridge.queue = [battle];
+  f.sync();
+  f.bridge.status = { state: 'playing', current: battle };
+  f.sync();
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'after');
+  f.battleVote.updateAutomation('resuming'); // clic du bar
+  f.bridge.queue = [item('suivant', song(91), 'Alice')];
+  f.bridge.unreadable = 'remote.StatusEvent';
+  f.sync();
+  assert.deepEqual(f.plays, [], 'pas de « Lecture » d’après une vue figée');
+  f.bridge.unreadable = null;
+  f.sync();
+  assert.equal(f.plays.length, 1, 'message lisible : la reprise lance le titre');
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {

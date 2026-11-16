@@ -3,6 +3,31 @@
 // Canal JSON de la télécommande actuelle. L'URL authentifiée reste en mémoire.
 const EventEmitter = require('events');
 
+// Profondeur d'un message de KaraFun : 10 niveaux au plus dans les vraies
+// trames (file avec un mode Battle, journaux de septembre et de novembre
+// 2026). Au-delà de 32, le contenu est coupé (remplacé par null) : copier ou
+// écrire un objet aussi imbriqué épuiserait la pile (structuredClone,
+// JSON.stringify). Le reste du message sert : des options trop imbriquées
+// dans un seul titre ne font pas ignorer toute la file.
+const MAX_DEPTH = 32;
+// Coupe sur place ce qui dépasse `room` niveaux (celui de `value` compris) et
+// dit si quelque chose a été coupé. Récursion bornée par la limite (32 appels
+// imbriqués au plus), sans copie ni pile par valeur : une trame très large ne
+// coûte pas plus de mémoire que ses propres objets (une mémoire épuisée
+// arrêterait le serveur, aucun filet n'y peut rien). Une boucle pour une liste
+// comme pour un objet : celle d'une liste ne construit aucune liste de clés.
+function prune(value, room) {
+  let cut = false;
+  for (const key of Array.isArray(value) ? value.keys() : Object.keys(value)) {
+    const child = value[key];
+    if (child === null || typeof child !== 'object') continue;
+    if (room <= 1) { value[key] = null; cut = true; } else if (prune(child, room - 1)) cut = true;
+  }
+  return cut;
+}
+// Raison d'une erreur pour le journal, sans rien convertir d'imprévu.
+const reasonOf = error => (typeof error === 'string' ? error : typeof error?.message === 'string' ? error.message : 'erreur inconnue');
+
 class KcsTransport extends EventEmitter {
   constructor(url) {
     super();
@@ -25,20 +50,36 @@ class KcsTransport extends EventEmitter {
       try { message = JSON.parse(String(event.data)); }
       catch { this.emit('transport-error', 'Message KaraFun illisible.'); return; }
       if (!message || typeof message.type !== 'string') return;
-      this.emit('message', message);
-      if (this.closed) return;
-      if (message.type === 'core.PingRequest') {
-        this._send('core.PingResponse', {}, message.id);
-      } else if (message.type === 'core.TimestampRequest') {
-        this._send('core.TimestampResponse', { timestamp: { _type: 'timestamp', value: new Date().toISOString() } }, message.id);
-      } else if (this.pending.has(message.id)) {
-        // Réponse (ou Error) portant l'identifiant d'une demande : elle est
-        // rattachée à cette demande, pour que le pont sache laquelle a réussi.
-        const request = this.pending.get(message.id);
-        clearTimeout(request.timer);
-        this.pending.delete(message.id);
-        this.emit('reply', request.type, message);
+      // Identifiant renvoyé tel quel : un nombre ou un texte, jamais un objet.
+      const id = typeof message.id === 'number' || typeof message.id === 'string' ? message.id : undefined;
+      // Message coupé au-delà de 32 niveaux : signalé au pont, qui le note
+      // dans le journal de KaraFun, puis lu comme les autres.
+      if (prune(message, MAX_DEPTH)) {
+        try { this.emit('message-pruned', message.type); } catch { /* rien de plus à faire */ }
       }
+      // Filet : l'erreur d'un écouteur du WebSocket, Node la relance hors de
+      // toute portée et le serveur du bar s'arrêterait. Le message est
+      // ignoré ('message-error') et la lecture continue : Ping et réponses
+      // servent.
+      try { this.emit('message', message); } catch (error) { this._ignore(message.type, error); }
+      if (this.closed) return;
+      // Connexion déjà en train de se fermer : plus de réponse possible, et ce
+      // n'est pas un message illisible.
+      const open = this.ws.readyState === WebSocket.OPEN;
+      try {
+        if (message.type === 'core.PingRequest') {
+          if (open) this._send('core.PingResponse', {}, id);
+        } else if (message.type === 'core.TimestampRequest') {
+          if (open) this._send('core.TimestampResponse', { timestamp: { _type: 'timestamp', value: new Date().toISOString() } }, id);
+        } else if (this.pending.has(id)) {
+          // Réponse (ou Error) portant l'identifiant d'une demande : elle est
+          // rattachée à cette demande, pour que le pont sache laquelle a réussi.
+          const request = this.pending.get(id);
+          clearTimeout(request.timer);
+          this.pending.delete(id);
+          this.emit('reply', request.type, message);
+        }
+      } catch (error) { this._ignore(message.type, error); }
     });
     this.ws.addEventListener('error', () => {
       if (!this.closed) this.emit('transport-error', 'Connexion WebSocket KaraFun interrompue.');
@@ -62,6 +103,12 @@ class KcsTransport extends EventEmitter {
   // de son essai, entre deux passages du chien de garde.
   isStale() {
     return Date.now() - this.lastMessageAt > (this.opened ? 10000 : 15000);
+  }
+
+  // Message ignoré : signalé au pont, qui le note dans ses journaux. Une erreur
+  // de ce signalement même ne sort pas non plus de l'écouteur.
+  _ignore(type, error) {
+    try { this.emit('message-error', type, reasonOf(error)); } catch { /* rien de plus à faire */ }
   }
 
   _send(type, payload, id) {

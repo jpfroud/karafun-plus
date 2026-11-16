@@ -2363,6 +2363,23 @@ test('réglages de titre : bouton sur chaque titre à venir, fiche, enregistreme
   assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓ · envoyé à KaraFun');
 });
 
+// Relecture 2, tour 4 : pendant une alerte « message de KaraFun illisible »,
+// le réglage d'un titre déjà dans KaraFun n'y part pas tout de suite, et n'y
+// part jamais si le titre commence avant la fin de l'alerte (réponse
+// « unreadable ») : le téléphone le dit et renvoie au bar, en français comme
+// en anglais.
+test('réglages de titre : message de KaraFun illisible, le téléphone dit « pas encore envoyé » et renvoie au bar', async () => {
+  for (const [languages, text] of [[undefined, 'Enregistré ✓ · pas encore envoyé à KaraFun : demande au bar'],
+    [['en'], 'Saved ✓ · not sent to KaraFun yet: ask the bar']]) {
+    const page = await open({ state: tuneState(), languages, respond: (url, body, self) => url === '/api/table/song/settings'
+      ? { ...keepSettings(self, body), applied: 'unreadable' } : undefined });
+    await page.tap('peopleList', '[data-song-settings="k1"]');
+    await page.tap('songSettingsBody', '[data-tune="tempo"][data-step="5"]');
+    await page.runTimers(600);
+    assert.equal(page.node('tuneStatus').textContent, text);
+  }
+});
+
 test('réglages de titre : le rafraîchissement n’écrase pas un réglage en cours d’envoi ; fermer la fiche l’envoie', async () => {
   const waiting = [];
   const page = await open({ state: tuneState(), respond: (url, body, self) => url === '/api/table/song/settings'

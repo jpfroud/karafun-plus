@@ -7,7 +7,31 @@ const path = require('path');
 const io = require('socket.io-client');
 const { KcsTransport } = require('./kcs-transport');
 const { rangesFrom, addOptions, queueItemOptions, clampSettings, songTracksOf, guideVoicesOf, liveFromStatus, TRACK,
-  DEFAULTS: SETTINGS_DEFAULTS } = require('./song-settings');
+  kcsNumber, DEFAULTS: SETTINGS_DEFAULTS } = require('./song-settings');
+// Lectures typées des trames KaraFun : une valeur d'un type imprévu compte
+// pour absente, sans exception, et le reste du message sert. String() et
+// Number() échouent sur un objet dont `toString` n'est pas une fonction
+// (`{ "toString": 1 }`) ; sans ces lectures, le filet de kcs-transport.js
+// ferait ignorer tout le message (_ignoredMessage).
+const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+// Valeur simple (texte, nombre, booléen, null) telle quelle ; un objet ou une liste ne compte pas.
+const kcsScalar = value => (value !== null && typeof value === 'object' ? undefined : value);
+// Texte : un texte, ou un nombre fini écrit en texte ; sinon vide.
+const kcsText = value => (typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : '');
+// Numéro d'un titre de KaraFun (file ou titre en cours) : un texte ou un
+// nombre, en texte comme avant (kcsText). null s'il manque ou s'il est vide,
+// ou pour un objet, une liste ou un booléen : on ne saurait pas retrouver le
+// titre, et tous les titres sans numéro auraient le même (« undefined »).
+// KaraFun numérote chaque titre d'un texte (journaux réels).
+const kcsKey = value => kcsText(value) || null;
+// Raison d'un refus de KaraFun montrée au bar : un texte (kcsText) de 200
+// caractères au plus, comme les raisons du journal. Sans fin, elle figerait le
+// serveur (consigne de la Battle, server.js failPlainBattleCopy) et la page du
+// bar.
+const kcsReason = value => kcsText(value).slice(0, 200);
+// Nom d'un message de KaraFun pour les journaux : choisi par KaraFun, il est
+// nettoyé, ni retour à la ligne ni nom sans fin.
+const messageName = type => String(type).replace(/[^\w.:-]/g, '?').slice(0, 64);
 // Valeur en direct d'un réglage essayé : 'pitch', 'tempo', 'backing' ou
 // 'voice:<type>' (volume d'une voix guide).
 const probedValue = (live, field) => (/^voice:/.test(field) ? live?.voices?.[field.slice(6)] : live?.[field]) ?? null;
@@ -40,8 +64,8 @@ function readSettings(html) {
 // jamais par le seul envoi.
 const BATTLE_MOD = Object.freeze({ id: 1, caption: 'Battle', data: Object.freeze({ battle: Object.freeze({ subtype: 1 }) }) });
 function isBattleMod(mod) {
-  const id = Number(mod?.id);
-  return Number.isSafeInteger(id) && id > 0 && Number(mod?.data?.battle?.subtype) === 1;
+  const id = kcsNumber(mod?.id);
+  return Number.isSafeInteger(id) && id > 0 && kcsNumber(mod?.data?.battle?.subtype) === 1;
 }
 function isBattleItem(item) {
   return isBattleMod(item?.options?.mod || item?.song?.options?.mod);
@@ -52,24 +76,30 @@ function isBattleItem(item) {
 // 10 octobre ; sinon « Battle ».
 function battleModFor(songTracks) {
   const tracks = Array.isArray(songTracks) ? songTracks : [];
-  const voices = guideVoicesOf(tracks.map(track => Number(track?.type))) || [];
-  const first = voices.length >= 2 ? tracks.find(track => Number(track?.type) === voices[0]) : null;
+  const voices = guideVoicesOf(tracks.map(track => kcsNumber(track?.type))) || [];
+  const first = voices.length >= 2 ? tracks.find(track => kcsNumber(track?.type) === voices[0]) : null;
   const caption = typeof first?.caption === 'string' ? first.caption.trim().slice(0, 100) : '';
   return caption ? { id: 2, caption, data: { battle: { subtype: 1 } } } : BATTLE_MOD;
 }
 
 // `songTracks` : pistes vocales du titre (4 chœurs, 5, 6… voix guides),
 // seulement si KaraFun les donne ; `battleMod` : mode Battle de ce titre
-// (battleModFor). `options` : réglages du titre dans KaraFun.
+// (battleModFor). `options` : réglages du titre dans KaraFun. Chaque valeur
+// est lue avec son type ; null pour un titre qui n'est pas un objet ou dont
+// le numéro est illisible (kcsKey) : on ne saurait pas le retrouver.
 function normalizeKcsItem(item) {
-  const song = item.song || {}, quiz = item.quiz || {};
+  if (!isRecord(item)) return null;
+  const queueId = kcsKey(item.id);
+  if (queueId == null) return null;
+  const song = isRecord(item.song) ? item.song : {}, quiz = isRecord(item.quiz) ? item.quiz : {};
+  const options = isRecord(song.options) ? song.options : {};
   const tracks = songTracksOf(song);
   return {
-    queueId: String(item.id), id: String(item.id), songId: song.id && song.id.id,
-    title: song.title || quiz.title || '', artist: song.artist || '',
-    singer: song.options && song.options.singer || '', options: song.options || {},
+    queueId, id: queueId, songId: song.id && kcsScalar(song.id.id),
+    title: kcsText(song.title) || kcsText(quiz.title), artist: kcsText(song.artist),
+    singer: kcsText(options.singer), options,
     ...(tracks ? { songTracks: tracks, battleMod: battleModFor(song.songTracks) } : {}),
-    ...(quiz.id ? { quizId: quiz.id.id } : {}),
+    ...(quiz.id ? { quizId: kcsScalar(quiz.id.id) } : {}),
   };
 }
 
@@ -169,6 +199,9 @@ const BATTLE_MODS_MAX = 2000;
 const RETRY_BASE_MS = 3000;
 const RETRY_MAX_MS = 30000;
 const LINK_STABLE_MS = 10000;
+// Messages de KaraFun ignorés : une ligne au plus par minute dans le journal
+// du serveur (chacun reste dans le journal de KaraFun).
+const IGNORED_LOG_EVERY_MS = 60000;
 // 20 connexions de suite closes aussitôt par AppLeftEvent (environ 10 min) :
 // l'URL gardée est peut-être périmée, la page est relue une fois (budgétée).
 // Sans ce filet, même « Reconnecter » réessaierait la même URL. Si l'URL que
@@ -403,6 +436,10 @@ class KaraFunBridge extends EventEmitter {
     this._observedBacking = null; // chœurs du premier état vu du titre `_observedFor`
     this._lastBacking = null; // chœurs du dernier état du titre `_observedFor`
     this._loadingSeen = new Set(); // titres vus annoncés ou se charger (états 1 à 3)
+    this._ignored = { count: 0, loggedAt: null }; // messages de KaraFun ignorés (_ignoredMessage)
+    // Nom du dernier message de KaraFun illisible, par sorte : la page du bar
+    // l'affiche jusqu'à la prochaine file ou au prochain état lisibles.
+    this._unreadable = { queue: null, status: null };
     // Numéro de la session KCS (voir _forgetSession) et celui de la session
     // qui a donné `status` : le serveur ne confond pas deux sessions.
     this.kcsSession = 0;
@@ -669,7 +706,7 @@ class KaraFunBridge extends EventEmitter {
     if (message && message.type !== 'Error') this.settingsSupport[kind] = 'ok';
     else if (message) {
       this.settingsSupport[kind] = 'refused';
-      this.settingsNotices[kind] = `KaraFun refuse de régler ${what} : ${message.payload?.message || 'erreur inconnue'}`;
+      this.settingsNotices[kind] = `KaraFun refuse de régler ${what} : ${kcsReason(message.payload?.message) || 'erreur inconnue'}`;
       this._record('info', 'reglage-refuse', { request: kind, message: this.settingsNotices[kind] });
     } else {
       if (this.settingsSupport[kind] !== 'ok') this.settingsSupport[kind] = 'silent';
@@ -696,6 +733,37 @@ class KaraFunBridge extends EventEmitter {
     this._settingsProbe[kind] = { field, value, before: probedValue(liveFromStatus(this.status), field) };
   }
 
+  // Filet : message de KaraFun que le pont n'a pas pu lire jusqu'au bout
+  // (valeur imprévue, titre illisible, file ou état mal formés ; voir aussi
+  // kcs-transport.js, qui coupe le contenu au-delà de 32 niveaux et le fait
+  // lire quand même). Il est ignoré et la connexion continue : chaque fois
+  // dans le journal de KaraFun, une ligne par minute au plus dans celui du
+  // serveur, et un avis (lastError). Le nom du message est nettoyé
+  // (messageName). Une file ou un état ignorés : la file garde ce qu'elle
+  // savait (le pont reste prêt, les états lisibles suivent toujours la scène),
+  // mais ne voit plus les changements de ce côté de KaraFun. La page du bar
+  // l'affiche en alerte (connectionState) jusqu'à la prochaine file ou au
+  // prochain état lisibles de cette sorte, ou jusqu'à « Reconnecter », qui
+  // rouvre alors la connexion (connect) ; pendant ce temps, la file ne
+  // pilote plus KaraFun d'elle-même (unreadable), et une file illisible bloque
+  // la vérification d'un envoi interrompu (queueUnreadable), sinon elle
+  // conclurait à tort qu'il n'est pas parti.
+  _ignoredMessage(type, reason) {
+    const name = messageName(type);
+    const why = String(reason).replace(/\s+/g, ' ').slice(0, 200);
+    this._ignored.count++;
+    this._record('info', 'message-ignore', { type: name, reason: why });
+    this.lastError = `Un message de KaraFun illisible (${name}) a été ignoré ; la connexion continue.`;
+    const kind = /^remote\.Queue(?:Event|Response)$/.test(type) ? 'queue' : /^remote\.Status(?:Event|Response)$/.test(type) ? 'status' : null;
+    if (kind) this._unreadable[kind] = name;
+    this.emit('change');
+    const now = Date.now();
+    if (this._ignored.loggedAt != null && now - this._ignored.loggedAt < IGNORED_LOG_EVERY_MS) return;
+    this._ignored.loggedAt = now;
+    const count = this._ignored.count > 1 ? ` ${this._ignored.count} messages ignorés depuis le démarrage.` : '';
+    this._log(`KaraFun : message ${name} ignoré (${why}) ; la connexion continue.${count}`);
+  }
+
   _record(dir, name, data, id) {
     const entry = { t: new Date().toISOString(), dir, name, ...(id === undefined ? {} : { id }), data };
     if (NOISE.has(name)) this.noiseCount++;
@@ -711,9 +779,13 @@ class KaraFunBridge extends EventEmitter {
 
   // « Connecter » ou « Reconnecter ». Avec le même code, une connexion prête
   // ou en cours n'est pas coupée : la couper recréerait un conflit de nom avec
-  // la connexion qu'on vient de fermer. L'URL KCS gardée pour ce code est
-  // essayée d'abord, sans relire la page. Sinon, la page n'est relue que si
-  // KaraFun ne limite pas les essais et s'il reste du budget dans l'heure.
+  // la connexion qu'on vient de fermer. Sauf pendant l'alerte d'un message de
+  // KaraFun illisible (_unreadableAlert) : seul KaraFun la lève, et un KaraFun
+  // à l'arrêt ne renvoie rien de lui-même. La connexion est alors rouverte :
+  // KaraFun renvoie sa file et son état, l'alerte repart de zéro (_open).
+  // L'URL KCS gardée pour ce code est essayée d'abord, sans relire la page.
+  // Sinon, la page n'est relue que si KaraFun ne limite pas les essais et
+  // s'il reste du budget dans l'heure.
   // Essais arrêtés (KaraFun fermé ou code changé) : page relue tout de suite ;
   // relances rapides de nouveau à partir de l'heure pleine qui suit l'arrêt,
   // ou pour un nouveau code.
@@ -722,7 +794,7 @@ class KaraFunBridge extends EventEmitter {
   connect(code) {
     code = String(code || '').replace(/\D/g, '');
     if (!code) throw new Error('Code KaraFun manquant');
-    if (this.code === code && this._keepCurrent()) return 'kept';
+    if (this.code === code && !this._unreadableAlert() && this._keepCurrent()) return 'kept';
     const sameCode = this.code === code;
     if (!this._isLocal() && !(sameCode && this._kcs?.code === code)) {
       const now = Date.now(), limit = this._limitActive(now);
@@ -804,6 +876,7 @@ class KaraFunBridge extends EventEmitter {
     const active = () => generation === this._generation && attempt === this._attempt;
     const base = this.base;
     this._fresh = { queue: false, status: false };
+    this._unreadable = { queue: null, status: null };
     this._link = {};
     this.ready = false;
     this.connected = false;
@@ -984,6 +1057,7 @@ class KaraFunBridge extends EventEmitter {
     if (name === 'status') this.statusSession = this.kcsSession;
     if (name === 'permissions') this._checkPermissions(data);
     if (name === 'queue' || name === 'status') {
+      this._unreadable[name] = null;
       this._fresh[name] = true;
       this.ready = this._fresh.queue && this._fresh.status;
       if (this.ready) {
@@ -1053,18 +1127,39 @@ class KaraFunBridge extends EventEmitter {
         if (p.username && p.username !== this.username) return;
         this._nameAccepted();
       } else if (m.type === 'remote.QueueEvent' || m.type === 'remote.QueueResponse') {
-        if (!p.queue || !Array.isArray(p.queue.items)) return;
+        if (!isRecord(p.queue) || !Array.isArray(p.queue.items)) {
+          // File mal formée ou absente (jamais dans les journaux réels : une
+          // clé renommée par KaraFun) : illisible, comme un titre illisible.
+          this._ignoredMessage(m.type, 'file illisible');
+          return;
+        }
         proven();
+        // Un titre illisible, laissé de côté, passerait pour retiré de
+        // KaraFun : toute la file reçue est ignorée, la file garde l'ancienne.
+        const items = p.queue.items.map(item => normalizeKcsItem(item));
+        if (items.includes(null)) { this._ignoredMessage(m.type, 'titre illisible dans la file'); return; }
         this.raw.queue = p.queue;
-        const items = p.queue.items.map(normalizeKcsItem);
         this._learnBattleMods(items);
         this._accept('queue', items);
       } else if (m.type === 'remote.StatusEvent' || m.type === 'remote.StatusResponse') {
-        if (!p.status || typeof p.status.state !== 'number') return;
+        if (!isRecord(p.status) || typeof p.status.state !== 'number') {
+          // État mal formé (numéro d'état en texte…) ou absent : illisible.
+          this._ignoredMessage(m.type, 'état illisible');
+          return;
+        }
         proven();
-        const status = p.status || {};
-        this.raw.status = status;
-        if (status.current) this._learnBattleMods([normalizeKcsItem(status.current)]);
+        // `songPlaying` : titre en cours de l'ancien protocole, jamais envoyé
+        // en KCS ; il ne doit pas passer devant `current`, lu avec ses types.
+        const { songPlaying: _, ...status } = p.status;
+        // Titre en cours illisible (pas un objet, numéro absent ou illisible,
+        // voir kcsKey) : sans lui, le premier titre de la file passerait pour
+        // celui sur scène. Tout l'état reçu est ignoré, la file garde
+        // l'ancien. Seul null (ou son absence) veut dire « aucun titre en
+        // cours ».
+        const current = status.current != null ? normalizeKcsItem(status.current) : null;
+        if (status.current != null && !current) { this._ignoredMessage(m.type, 'titre en cours illisible'); return; }
+        this.raw.status = p.status;
+        if (current) this._learnBattleMods([current]);
         this._noteLoading(status);
         this._observeDefaults(status);
         this._confirmFromStatus(status);
@@ -1074,15 +1169,16 @@ class KaraFunBridge extends EventEmitter {
           ...status,
           state: ({ 1: 'idle', 2: 'loading', 3: 'idle', 4: 'playing', 5: 'paused' })[status.state] || 'idle',
           kcsState: status.state,
-          current: status.current ? normalizeKcsItem(status.current) : null,
+          current,
         });
       } else if (m.type === 'remote.PermissionsUpdateEvent') {
         this.raw.permissions = p.permissions;
-        const v = p.permissions || {};
+        const v = isRecord(p.permissions) ? p.permissions : {};
         this._accept('permissions', { ...v, managePlayer: !!v.managePlayback, manageKaraoke: !!v.manageVolumes, uploadPicture: !!v.sendPhotos });
       } else if (m.type === 'remote.PreferencesUpdateEvent') {
         this.raw.preferences = p.preferences;
-        this._accept('preferences', { ...p.preferences, askSingerName: !!(p.preferences && p.preferences.askOptions) });
+        const v = isRecord(p.preferences) ? p.preferences : {};
+        this._accept('preferences', { ...v, askSingerName: !!v.askOptions });
       } else if (m.type === 'remote.ConfigurationUpdateEvent') {
         this.raw.configuration = p.configuration;
         this.emit('change');
@@ -1109,7 +1205,9 @@ class KaraFunBridge extends EventEmitter {
         this._forgetKcs(null, 'AppLeftEvent répétés');
         this._retry(reason, { mode: 'page' });
       } else if (m.type === 'Error') {
-        if (p.type === 4 && /username is already used/i.test(p.message || '')) {
+        // Raison entière pour reconnaître le conflit de nom ; bornée pour le bar.
+        const reason = kcsText(p.message);
+        if (p.type === 4 && /username is already used/i.test(reason)) {
           // L'Error répond à la demande de nom, même sans son identifiant.
           if (m.id === undefined) socket.settle('remote.UpdateUsernameRequest');
           this._nameUsed(askName);
@@ -1118,7 +1216,7 @@ class KaraFunBridge extends EventEmitter {
         // Réglage de titre refusé : traité avec sa demande (événement 'reply').
         if (m.id !== undefined && (SETTING_REQUESTS[socket.requestType(m.id)] || this._optionAdds.has(m.id) ||
           this._battleModes.has(m.id))) return;
-        this.lastError = `Commande KaraFun refusée : ${p.message || p.type || 'erreur inconnue'}`;
+        this.lastError = `Commande KaraFun refusée : ${kcsReason(reason) || kcsReason(p.type) || 'erreur inconnue'}`;
         this.emit('change');
       }
     });
@@ -1182,6 +1280,10 @@ class KaraFunBridge extends EventEmitter {
       this._record('info', 'connect_error', message);
       this.emit('change');
     });
+    socket.on('message-error', (type, reason) => { if (active()) this._ignoredMessage(type, reason); });
+    // Message coupé au-delà de 32 niveaux (kcs-transport.js), puis lu : noté
+    // dans le journal de KaraFun seulement, sans alerte.
+    socket.on('message-pruned', type => { if (active()) this._record('info', 'message-coupe', { type: messageName(type) }); });
     socket.on('close', ({ code }) => lost(`Télécommande KaraFun déconnectée (code ${code}). Vérifie le code affiché dans KaraFun.`,
       `KaraFun a fermé la connexion (code ${code})`, code ?? null));
   }
@@ -1311,17 +1413,30 @@ class KaraFunBridge extends EventEmitter {
       // Plus d'essai automatique : le bar clique « Reconnecter » à l'ouverture.
       stopped: ['error', `${CLOSED_REASON} : essais arrêtés`],
     };
-    const [level, label] = labels[phase];
+    // File ou état de KaraFun illisibles (_ignoredMessage) : connecté, mais la
+    // file ne voit plus ces changements de KaraFun et ne le pilote plus
+    // d'elle-même. Une alerte à part, avec son propre « Reconnecter » : la
+    // connexion marche, mais seul KaraFun lève l'alerte, et « Reconnecter »
+    // la rouvre pour qu'il renvoie sa file et son état (connect). KaraFun
+    // perdu, c'est l'alerte de relance qui compte.
+    const unread = this._unreadableAlert();
+    const unreadable = unread ? `Message de KaraFun illisible (${unread}) : la file ne voit plus ces changements de KaraFun ` +
+      'et ne lui envoie plus rien d’elle-même. Pilote dans KaraFun en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.' : null;
+    const [level, label] = unreadable ? ['error', unreadable] : labels[phase];
     return {
       phase, level, label, since: this._phaseSince, attempt: this._tries, protocol: this.protocol,
       retryAt: phase === 'retry' ? this.retryAt : null,
       nameConflict: conflict,
       // Bouton « Prendre un autre nom maintenant » : POST /api/staff/kf { action: 'new-name' }.
       canRename: !!conflict,
-      // Alerte que le bar ne peut pas fermer : conflit de nom ou limite de
-      // KaraFun. Essais arrêtés : KaraFun absent, rien d'autre à signaler.
+      // Bouton « Reconnecter » dans l'alerte d'un message illisible :
+      // POST /api/staff/kf { action: 'reconnect' }, qui rouvre la connexion.
+      canReconnect: !!unreadable,
+      // Alerte que le bar ne peut pas fermer : conflit de nom, limite de
+      // KaraFun ou message de KaraFun illisible. Essais arrêtés : KaraFun
+      // absent, rien d'autre à signaler.
       alert: phase !== 'stopped' && conflict ? `KaraFun garde encore l’ancienne connexion de ${conflict.holder} (KaraFun relancé trop vite, ou une autre File karaoké ouverte avec le même nom). La file redemande ce nom toutes les 4 s pour garder ses droits d’administrateur et en prendra un autre ${later}. Tu peux aussi prendre un autre nom maintenant, puis lui redonner les droits dans KaraFun.` :
-        limited ? limitMessage(limit.until, this.appMode) : null,
+        limited ? limitMessage(limit.until, this.appMode) : unreadable,
       // Pages de découverte de l'heure pleine en cours (sans secret).
       discovery: { used: pages.used, limit: PAGE_LIMIT, hourEndsAt: (pages.hour + 1) * HOUR_MS, limitedUntil: limit ? limit.until : null },
     };
@@ -1429,7 +1544,7 @@ class KaraFunBridge extends EventEmitter {
     this._battleModes.delete(id);
     const refused = message?.type === 'Error';
     this.emit('battle-mode-answer', { ...request, ok: message ? !refused : null,
-      message: refused ? String(message.payload?.message || message.payload?.type || 'erreur inconnue') : null });
+      message: refused ? kcsReason(message.payload?.message) || kcsReason(message.payload?.type) || 'erreur inconnue' : null });
   }
   _localFake() { return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(this.base).hostname); }
 
@@ -1495,12 +1610,23 @@ class KaraFunBridge extends EventEmitter {
   // trame par trame : un titre vu pour la première fois déjà en lecture (après
   // un redémarrage ou une coupure) n'en est pas un. Les derniers seulement.
   _noteLoading(status) {
-    const id = status.current?.id;
-    if (id == null || !(status.state >= 1 && status.state <= 3) || this._loadingSeen.has(String(id))) return;
-    this._loadingSeen.add(String(id));
+    const id = kcsKey(status.current?.id);
+    if (id == null || !(status.state >= 1 && status.state <= 3) || this._loadingSeen.has(id)) return;
+    this._loadingSeen.add(id);
     if (this._loadingSeen.size > 50) this._loadingSeen.delete(this._loadingSeen.values().next().value);
   }
   seenLoading(id) { return id != null && this._loadingSeen.has(String(id)); }
+  // File de KaraFun illisible depuis la dernière file lue : un envoi
+  // interrompu n'y est pas vérifiable (voir _ignoredMessage).
+  get queueUnreadable() { return this._unreadable.queue != null; }
+  // Nom du message illisible, file ou état, depuis la dernière file ou le
+  // dernier état lus, sinon null : la file ne pilote plus KaraFun d'elle-même
+  // d'après ce qu'elle ne voit plus (sync() dans server.js).
+  get unreadable() { return this._unreadable.queue || this._unreadable.status || null; }
+  // Le même nom, seulement quand la page du bar en affiche l'alerte
+  // (connectionState) : connecté, prêt ou en réception de la file. KaraFun
+  // perdu, la connexion se rouvre déjà par la relance.
+  _unreadableAlert() { return this._phase === 'ready' || this._phase === 'waiting-data' ? this.unreadable : null; }
 
   // Nouvelle soirée ou nouveau code : chœurs par défaut à relever de nouveau,
   // provisoires jusqu'à une remise par KaraFun au chargement (_observeDefaults).
@@ -1537,7 +1663,9 @@ class KaraFunBridge extends EventEmitter {
 
   // Valeur par défaut des chœurs sur ce KaraFun (celui du bar les met à 53) :
   // relevée à la première trame d'un titre chargé (état 2 ou plus, pistes
-  // reçues) sans volumes dans ses options. L'état 1 annonce le titre sans
+  // reçues) sans volumes dans ses options. Depuis les essais du 6 novembre
+  // 2026, KaraFun renvoie les options d'un titre ajouté sans volumes avec une
+  // liste vide (`tracks: []`) : elle ne règle rien. L'état 1 annonce le titre sans
   // l'avoir chargé : pistes vides, ou celles d'avant. Un titre vu pour la
   // première fois déjà en lecture peut porter un réglage en direct : rien
   // n'en est relevé. Un KaraFun peut garder les volumes d'un titre au
@@ -1560,24 +1688,25 @@ class KaraFunBridge extends EventEmitter {
   // remise.
   _observeDefaults(status) {
     const current = status.current;
-    if (!current || current.id == null) return;
+    const id = kcsKey(current?.id);
+    if (id == null) return;
     if (!(status.state >= 2) || !Array.isArray(status.tracks) || !status.tracks.length) return;
     const backing = liveFromStatus({ tracks: status.tracks }).backing;
-    if (String(current.id) === this._observedFor) {
+    if (id === this._observedFor) {
       if (backing !== this._observedBacking) this._backingChanged = true;
       this._lastBacking = backing;
       return;
     }
     const carried = this._lastBacking;
-    this._observedFor = String(current.id);
+    this._observedFor = id;
     this._observedBacking = backing;
     this._lastBacking = backing;
     const optionTracks = current.song?.options?.tracks;
-    if (Array.isArray(optionTracks)) {
+    if (Array.isArray(optionTracks) && optionTracks.length) {
       if (liveFromStatus({ tracks: optionTracks }).backing != null) this._backingChanged = true;
       return;
     }
-    if (status.state >= 4 && !this.seenLoading(current.id)) this._carriedUnseen = true;
+    if (status.state >= 4 && !this.seenLoading(id)) this._carriedUnseen = true;
     else if (backing == null) return;
     else if (carried != null && backing !== carried) {
       this.observedDefaults.backing = backing;

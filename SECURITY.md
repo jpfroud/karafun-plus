@@ -87,7 +87,7 @@ Le dépôt reste sur la dernière LTS de ses outils (décision du mainteneur, 6 
   documents ; le test W11 de `test/workflows.test.js` refuse une montée partielle.
   Java : bilan avant/après d'une vraie soirée (`AGENTS.md`). Node : essai réel de la
   télécommande KaraFun, car le lien avec la télécommande actuelle passe par le
-  WebSocket de Node (`kcs-transport.js:9`), qu'aucun essai automatique n'ouvre vers
+  WebSocket de Node (`kcs-transport.js:34`), qu'aucun essai automatique n'ouvre vers
   le vrai KaraFun. Laisser passer le délai de 7 jours, sauf faille à corriger.
 - **Exception.** Socket.IO reste en 2.x (ci-dessous). Une migration se traite à part.
 

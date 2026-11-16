@@ -2249,7 +2249,9 @@
     else if (saved) {
       tone = 'ok';
       text = saved.applied === 'karafun' ? t('Enregistré ✓ · envoyé à KaraFun') : saved.applied === 'start' ? t('Enregistré ✓ · appliqué au début du titre')
-        : saved.applied === 'sending' ? t('Enregistré ✓ · appliqué dès que KaraFun reçoit le titre') : t('Enregistré ✓');
+        : saved.applied === 'sending' ? t('Enregistré ✓ · appliqué dès que KaraFun reçoit le titre')
+        // Message de KaraFun illisible : peut-être jamais appliqué, le bar le règle dans KaraFun.
+        : saved.applied === 'unreadable' ? t('Enregistré ✓ · pas encore envoyé à KaraFun : demande au bar') : t('Enregistré ✓');
     } else if (!lock) text = t('Chaque changement s’enregistre tout seul.');
     const status = `${esc(text)}${tone === 'bad' && !lock ? ` · <button type="button" class="link-btn" data-tune-retry>${esc(t('Réessayer'))}</button>` : ''}`;
     $('tuneStatus').className = `tune-status${tone ? ` ${tone}` : ''}`;

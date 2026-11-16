@@ -384,3 +384,19 @@ test('J17 la sonde de la télécommande ne promet pas un journal que le conteneu
       'test/probe-kcs.js : dire que, dans le conteneur de l’essai, journal/kcs-probe.json part avec lui');
   }
 });
+
+test('J18 CONTEXTE-REPRISE.md cite les appels de l’automate Spotify tels que le code les fait', () => {
+  // Relecture contradictoire du tour 5 (tour 2) : le document disait encore
+  // `handled('battle')`, sans la scène vue, et ne parlait ni de « blind » ni
+  // de la période propre à chaque scène. Un mainteneur qui le suivait
+  // rouvrait l'attente de la Battle, relancée malgré le choix (mutation M16,
+  // vue par test/battle-spotify.test.js).
+  const code = read('server.js') + read('spotify.js');
+  const doc = read('CONTEXTE-REPRISE.md');
+  const cited = [...doc.matchAll(/`([^`\n]*\bhandled\([^`\n]*\))`/g)].map(match => match[1]);
+  assert.ok(cited.length, 'CONTEXTE-REPRISE.md : appels de SpotifyAutomation#handled');
+  for (const call of cited) assert.ok(code.includes(call), `CONTEXTE-REPRISE.md : appel absent du code : ${call}`);
+  assert.ok(cited.includes("handled('battle', spotifyStage())"), 'CONTEXTE-REPRISE.md : attente de la Battle close avec la scène vue');
+  assert.ok(cited.includes('handled(karaoke = this.phase, stage = undefined)'), 'CONTEXTE-REPRISE.md : période propre à une scène');
+  assert.match(flat(doc), /`karaokeOutlook\(\)` rend « blind »/, 'CONTEXTE-REPRISE.md : alerte « Message de KaraFun illisible »');
+});
