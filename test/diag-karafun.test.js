@@ -8,7 +8,7 @@
 // à F4 lisent un faux fetch préchargé, ce qu'ils vérifient sur leur sortie.
 // F3 et F4 : la sonde de la télécommande (test/probe-kcs.js) lit et classe la
 // page comme la file, puis ouvre le canal de la file (KcsTransport) sur un faux
-// WebSocket préchargé.
+// WebSocket préchargé et juge ses messages comme la file.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -587,27 +587,38 @@ test('F3 test/probe-kcs.js lit la page comme la file : page refusée ou sans ré
   } finally { fs.rmSync(dossier, { recursive: true, force: true }); }
 });
 
-test('F4 test/probe-kcs.js ouvre le canal de la file (KcsTransport) : code 0 ouvert avec des messages de KaraFun, sinon 1', async t => {
+test('F4 test/probe-kcs.js ouvre le canal de la file (KcsTransport) et le juge comme elle : code 0 au code accepté (core.AuthenticatedEvent), sinon 1', async t => {
   const { lecture, protocole } = valeursDeLaFile(t);
   const dossier = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-kcs-'));
   try {
     const page = pageSonde({ kcs_url: 'wss://kcs.example.invalid/socket' });
     const ouverture = `${lecture}WebSocket ${JSON.stringify(['wss://kcs.example.invalid/socket', protocole])}\n`;
     const ping = { id: 1, type: 'core.PingRequest', payload: {} }, authentifie = { type: 'core.AuthenticatedEvent', payload: {} };
+    // KaraFun absent : le serveur KCS rend encore son dernier état, puis AppLeftEvent (karafun.js).
+    const etat = { type: 'remote.StatusEvent', payload: { status: { state: 1 } } }, parti = { type: 'remote.AppLeftEvent', payload: {} };
+    const erreur = { type: 'Error', payload: { type: 1, message: 'Invalid request' } };
     const journal = path.join(dossier, 'journal', 'kcs-probe.json');
-    // Ouvert, des messages : le battement de KaraFun reçoit sa réponse, comme dans la file, et
-    // les messages restent dans journal/kcs-probe.json.
+    // Code accepté par KaraFun (core.AuthenticatedEvent, comme pour la file) : le battement de
+    // KaraFun reçoit sa réponse, comme dans la file, et les messages restent dans
+    // journal/kcs-probe.json du dossier où la sonde est lancée.
     const reussi = await sonde(dossier, { page, evenements: [['open'], ['message', ping], ['message', authentifie], ['close', 1000]] });
     assert.equal(reussi.code, 0, `${reussi.stdout} ${reussi.stderr}`);
     assert.ok(reussi.stdout.startsWith(`${ouverture}WebSocket ouvert\n`), reussi.stdout);
     assert.ok(reussi.stdout.includes(`envoi ${JSON.stringify({ id: 1, type: 'core.PingResponse', payload: {} })}\n`), reussi.stdout);
-    assert.match(reussi.stdout, /^Essai réussi : WebSocket ouvert, 2 messages de KaraFun\.$/m);
+    assert.match(reussi.stdout, /^Essai réussi : WebSocket ouvert, code accepté par KaraFun \(core\.AuthenticatedEvent\), 2 messages de KaraFun\.$/m);
     assert.deepEqual(JSON.parse(fs.readFileSync(journal, 'utf8')), [ping, authentifie]);
     fs.rmSync(journal);
-    // Échecs : jamais ouvert, aucun message, ou fermé par un refus de KaraFun (4210 ou 44xx,
-    // comme pour la file), même après des messages.
+    // Échecs : jamais ouvert, aucun message, code jamais accepté, KaraFun fermé ou télécommande
+    // désactivée (AppLeftEvent, même après le code accepté), Error de KaraFun, ou fermé par un
+    // refus de KaraFun (4210 ou 44xx, comme pour la file), même après des messages.
     for (const [cas, evenements, motif] of [['jamais ouvert', [['error'], ['close', 1006]], /Essai en échec : WebSocket jamais ouvert/],
       ['aucun message', [['open'], ['close', 1000]], /Essai en échec : aucun message de KaraFun/],
+      ['code jamais accepté', [['open'], ['message', ping], ['message', etat], ['close', 1000]],
+        /Essai en échec : code jamais accepté par KaraFun \(aucun core\.AuthenticatedEvent en 2 messages\)/],
+      ['AppLeftEvent après le code accepté', [['open'], ['message', authentifie], ['message', etat], ['message', parti], ['close', 1000]],
+        /Essai en échec : KaraFun est fermé ou sa télécommande a été désactivée \(remote\.AppLeftEvent\)/],
+      ['Error de KaraFun après le code accepté', [['open'], ['message', authentifie], ['message', erreur], ['close', 1000]],
+        /Essai en échec : KaraFun a répondu par une erreur \(Invalid request\)/],
       ['refus 4210 après un message', [['open'], ['message', authentifie], ['close', 4210]], /Essai en échec : KaraFun a refusé l'adresse KCS \(fermeture 4210/],
       ['refus 4403', [['open'], ['close', 4403]], /Essai en échec : KaraFun a refusé l'adresse KCS \(fermeture 4403/]]) {
       const run = await sonde(dossier, { page, evenements });
@@ -617,6 +628,16 @@ test('F4 test/probe-kcs.js ouvre le canal de la file (KcsTransport) : code 0 ouv
       assert.doesNotMatch(run.stdout, /Essai réussi/, cas);
       fs.rmSync(journal, { force: true });
     }
+    // KaraFun fermé, sans code accepté : dernier état puis AppLeftEvent. La sonde s'arrête aussitôt,
+    // comme la file ferme alors le canal, sans attendre la fermeture de KaraFun ; les messages
+    // reçus jusque-là restent au journal.
+    const ferme = await sonde(dossier, { page, evenements: [['open'], ['message', etat], ['message', parti], ['close', 1000]] });
+    assert.equal(ferme.code, 1, `${ferme.stdout} ${ferme.stderr}`);
+    assert.match(ferme.stderr, /^Essai en échec : KaraFun est fermé ou sa télécommande a été désactivée \(remote\.AppLeftEvent\)/m);
+    assert.doesNotMatch(ferme.stderr, /WebSocket fermé par KaraFun/);
+    assert.doesNotMatch(ferme.stdout, /Essai réussi/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(journal, 'utf8')), [etat, parti]);
+    fs.rmSync(journal);
     // Node sans WebSocket (trop ancien) : échec dit tel quel, code 1.
     const sansWebSocket = await sonde(dossier, { page, sansWebSocket: true });
     assert.equal(sansWebSocket.code, 1, sansWebSocket.stderr);

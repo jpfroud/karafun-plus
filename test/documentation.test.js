@@ -360,3 +360,27 @@ test('J15 une ligne de code citée dans un document montre toujours ce qu’il e
     }
   }
 });
+
+test('J16 ce qu’aucun essai automatique n’ouvre, c’est le WebSocket de Node vers le vrai KaraFun', () => {
+  // Un essai peut ouvrir le WebSocket de Node vers un faux KaraFun local (issue #59) : un document
+  // qui dit qu'aucun essai ne l'ouvre précise « vers le vrai KaraFun ».
+  for (const file of DOCS) {
+    for (const [phrase] of flat(read(file)).matchAll(/aucun (?:test|essai) automatique n['’]ouvre[^.;]*/g)) {
+      assert.match(phrase, /vers le vrai KaraFun/, `${file} : « ${phrase} » : un essai peut ouvrir ce WebSocket vers un faux KaraFun local`);
+    }
+  }
+});
+
+test('J17 la sonde de la télécommande ne promet pas un journal que le conteneur de l’essai efface', () => {
+  // test/comparer-images.js fait lancer la sonde dans l'image par docker run --rm : rien n'étant
+  // monté sur /app/journal (volume anonyme du Dockerfile, retiré avec le conteneur),
+  // journal/kcs-probe.json part avec le conteneur, et l'en-tête de la sonde le dit.
+  const essai = read('test/comparer-images.js').match(/const essaiKaraFun = [^;]+;/);
+  assert.ok(essai, 'test/comparer-images.js : commande de l’essai de la télécommande (essaiKaraFun)');
+  assert.match(essai[0], /docker run --rm /);
+  const entete = flat(read('test/probe-kcs.js').split('\n').filter(ligne => ligne.startsWith('//')).map(ligne => ligne.slice(2)).join(' '));
+  if (!/:\/app\/journal\b/.test(essai[0])) {
+    assert.match(entete, /dans le conteneur de l'essai de \.github\/RELEASE\.md .*les messages ne restent qu'à l'écran/,
+      'test/probe-kcs.js : dire que, dans le conteneur de l’essai, journal/kcs-probe.json part avec lui');
+  }
+});

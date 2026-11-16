@@ -4,14 +4,20 @@
 // tools/diag-karafun.js) : premier domaine de la file, mêmes en-têtes, même délai,
 // classifyDiscovery. Le canal de la télécommande actuelle s'ouvre ensuite comme dans la
 // file, par KcsTransport (kcs-transport.js : WebSocket de Node, sous-protocole, réponses aux
-// battements de KaraFun), pendant 12 s ; ses messages s'affichent et restent dans
-// journal/kcs-probe.json (.github/RELEASE.md, essai de la télécommande).
-// Codes de sortie : 0 WebSocket ouvert et au moins un message de KaraFun ; 1 WebSocket en
-// échec (impossible à créer, jamais ouvert, aucun message, ou fermé par un refus de
-// KaraFun, 4210 ou 44xx comme pour la file) ; 2 rien d'essayé : usage, page que la file
-// refuse ou qui ne répond pas (aucun WebSocket ouvert), ou page sans adresse KCS, que la
-// file lit par le protocole historique (Socket.IO), sans le WebSocket de Node : rien à
-// sonder ici.
+// battements de KaraFun), pendant 12 s, et ses messages se jugent comme dans la file
+// (karafun.js, _openKcs) : core.AuthenticatedEvent, le code accepté ; remote.AppLeftEvent,
+// KaraFun fermé ou sa télécommande désactivée (le serveur KCS répond encore, avec son
+// dernier état) ; Error, une erreur de KaraFun.
+// Les messages s'affichent. Lancée depuis la racine du dépôt, la sonde les garde aussi dans
+// journal/kcs-probe.json ; dans le conteneur de l'essai de .github/RELEASE.md (docker run
+// --rm, rien de monté sur /app/journal), ce fichier part avec le conteneur : les messages ne
+// restent qu'à l'écran.
+// Codes de sortie : 0 WebSocket ouvert et code accepté par KaraFun, sans AppLeftEvent ni
+// Error ; 1 WebSocket en échec (impossible à créer, jamais ouvert, aucun message, code jamais
+// accepté, AppLeftEvent, Error, ou fermé par un refus de KaraFun, 4210 ou 44xx comme pour la
+// file) ; 2 rien d'essayé : usage, page que la file refuse ou qui ne répond pas (aucun
+// WebSocket ouvert), ou page sans adresse KCS, que la file lit par le protocole historique
+// (Socket.IO), sans le WebSocket de Node : rien à sonder ici.
 // Cette lecture compte dans la limite horaire de KaraFun : ne pas lancer la sonde en boucle.
 const fs = require('fs');
 const { KaraFunBridge, DISCOVERY_HEADERS, classifyDiscovery, urlRejected } = require('../karafun');
@@ -58,7 +64,8 @@ const RAISONS = {
     process.exit(1);
   }
   const messages = [];
-  let ouvert = false, refus = null, fini = false;
+  // Ce qu'en dirait la file (karafun.js, _openKcs) : code accepté, KaraFun parti, erreur de KaraFun.
+  let ouvert = false, accepte = false, parti = false, erreur = null, refus = null, fini = false;
   const minuteur = setTimeout(() => finir(), DUREE_MS);
   const finir = () => {
     if (fini) return;
@@ -72,14 +79,26 @@ const RAISONS = {
       fs.mkdirSync('journal', { recursive: true });
       fs.writeFileSync('journal/kcs-probe.json', JSON.stringify(messages, null, 2));
     } catch (error) { console.error(`journal/kcs-probe.json non écrit (${error.code || error.message}).`); }
+    const nombre = `${messages.length} message${messages.length > 1 ? 's' : ''}`;
     if (refus !== null) console.error(`Essai en échec : KaraFun a refusé l'adresse KCS (fermeture ${refus} : session finie, KaraFun fermé ou code changé).`);
     else if (!ouvert) console.error('Essai en échec : WebSocket jamais ouvert.');
+    else if (parti) console.error('Essai en échec : KaraFun est fermé ou sa télécommande a été désactivée (remote.AppLeftEvent), comme la file l\'afficherait.');
+    else if (erreur !== null) console.error(`Essai en échec : KaraFun a répondu par une erreur (${erreur}).`);
     else if (!messages.length) console.error('Essai en échec : aucun message de KaraFun.');
-    else console.log(`Essai réussi : WebSocket ouvert, ${messages.length} message${messages.length > 1 ? 's' : ''} de KaraFun.`);
-    process.exitCode = refus === null && ouvert && messages.length ? 0 : 1;
+    else if (!accepte) console.error(`Essai en échec : code jamais accepté par KaraFun (aucun core.AuthenticatedEvent en ${nombre}).`);
+    else console.log(`Essai réussi : WebSocket ouvert, code accepté par KaraFun (core.AuthenticatedEvent), ${nombre} de KaraFun.`);
+    process.exitCode = refus === null && ouvert && accepte && !parti && erreur === null ? 0 : 1;
   };
   canal.on('open', () => { ouvert = true; console.log('WebSocket ouvert'); });
-  canal.on('message', message => { messages.push(message); console.log(JSON.stringify(message)); });
+  canal.on('message', message => {
+    messages.push(message);
+    console.log(JSON.stringify(message));
+    if (message.type === 'core.AuthenticatedEvent') accepte = true;
+    // La sonde n'envoie que les réponses aux battements : une Error de KaraFun n'est jamais attendue.
+    else if (message.type === 'Error') erreur ??= message.payload?.message || message.payload?.type || 'erreur inconnue';
+    // KaraFun fermé : la file ferme alors le canal (karafun.js), la sonde s'arrête aussi.
+    else if (message.type === 'remote.AppLeftEvent') { parti = true; finir(); }
+  });
   canal.on('transport-error', message => console.error(`Erreur : ${message}`));
   // Le canal se ferme seul après 10 s sans message une fois ouvert.
   canal.on('stale', () => { console.error('KaraFun ne répond plus : canal fermé.'); finir(); });
