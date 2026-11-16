@@ -540,9 +540,12 @@ class SpotifyAutomation {
   // changement (titre qui démarre, ou nouveau silence). `karaoke` : la période
   // en cours, que l'automate n'a peut-être pas encore vue (geste juste après
   // la fin d'un titre ; le serveur ne la donne que pour l'attente de la
-  // Battle, ou pendant une alerte, « blind », avec la scène vue `stage`) ;
-  // sans elle, le choix vaut pour la dernière période vue. Pendant l'alerte,
-  // c'est la période de la scène vue au moment du geste (voir plus haut).
+  // Battle, ou pendant une alerte, « blind ») ; sans elle, le choix vaut pour
+  // la sorte de période que l'automate a vue. `stage` : la scène vue au
+  // moment du geste, que le serveur donne toujours : un titre enchaîné que
+  // l'automate n'a pas encore vu ouvre la période du geste. Pendant
+  // l'alerte, c'est la période de la scène vue au moment du geste (voir plus
+  // haut).
   handled(karaoke = this.phase, stage = undefined) {
     this._enter(karaoke, this.now(), stage);
     this.done = true;

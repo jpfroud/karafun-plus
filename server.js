@@ -5910,18 +5910,21 @@ const handlers = {
       ...('pauseLeadSec' in body ? { pauseLeadSec: Number(body.pauseLeadSec) } : {}) });
     else if (action === 'play' || action === 'pause') {
       // Choix du bar : l'automate ne le défait pas pendant ce silence ou ce
-      // titre. Attente de la Battle : le choix vaut pour elle, même fait juste
-      // après la fin du titre d'avant, avant que l'automate l'ait vue ; hors
-      // Battle, comme avant, pour la période que l'automate a vue. Pendant une
-      // alerte « message illisible » (« blind »), c'est la période de la scène
-      // vue au moment du geste : celle d'avant l'alerte, ou celle d'un
+      // titre. Il vaut pour la scène vue au moment du geste (une période vaut
+      // pour une scène, SpotifyAutomation) : un titre enchaîné sans scène
+      // libre vue, que l'automate n'a pas encore vu, est celui du geste.
+      // Attente de la Battle : le choix vaut pour elle, même fait juste après
+      // la fin du titre d'avant, avant que l'automate l'ait vue ; hors Battle,
+      // comme avant, pour la sorte de période que l'automate a vue. Pendant
+      // une alerte « message illisible » (« blind »), c'est la période de la
+      // scène vue au moment du geste : celle d'avant l'alerte, ou celle d'un
       // changement de scène vu pendant l'alerte (SpotifyAutomation). L'état
       // de KaraFun illisible (panne de la mise à jour, routeRead) : le choix
       // est noté quand même, pour la dernière période vue.
       const result = action === 'play' ? await spotify.resume() : await spotify.pause();
       const seen = routeRead(() => ({ karaoke: karaokeOutlook(), stage: spotifyStage() }));
       if (seen?.karaoke === 'battle' || seen?.karaoke === 'blind') spotifyAutomation.handled(seen.karaoke, seen.stage);
-      else spotifyAutomation.handled();
+      else spotifyAutomation.handled(undefined, seen?.stage);
       journalEvent('spotify', { action: action === 'play' ? 'resume' : 'pause', result: String(result || ''), trigger: 'staff' });
       return { ok: true, result };
     }

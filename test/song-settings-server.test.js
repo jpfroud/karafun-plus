@@ -3240,6 +3240,36 @@ test('valeurs imprévues : « ⏸ Spotify » fait pendant l’alerte dans le sil
   }
 });
 
+// Regression: relecture contradictoire du tour 5 (tour 2) — une période de
+// l'automate vaut pour une scène, mais la route du bar ne passait la scène
+// vue qu'en « battle » et en « blind ». B enchaîné après A sans scène libre
+// vue (« Suivant » dans KaraFun), « ▶ Spotify » touché pendant B avant le
+// passage suivant de l'automate (toutes les 3 s) : ce passage ouvrait la
+// période de B et coupait Spotify, ce qui défaisait le choix pendant le titre
+// (GUIDE-BAR.md : « l'automatisme ne les défait pas avant le prochain titre
+// ou le prochain silence »). Sur 974e589 comme sur main, le choix tenait.
+test('« ▶ Spotify » touché pendant un titre enchaîné que l’automate n’a pas encore vu, gardé jusqu’au titre suivant', async t => {
+  const f = harness();
+  const { frames } = replayBridge(t, f);
+  const calls = fakeSpotify(f);
+  const A = isoItem('A-id', 777, { singer: 'Quelqu’un' });
+  const B = isoItem('B-id', 778, { singer: 'Autre' });
+  const C = isoItem('C-id', 779, { singer: 'Encore' });
+  frames(queueEvent(), isoStatus(1, null));
+  await f.spotifyTick();
+  frames(queueEvent(B, C), isoStatus(4, A));
+  await f.spotifyTick();
+  assert.deepEqual(calls, ['lecture', 'pause'], 'A sur scène, Spotify coupé');
+  frames(queueEvent(C), isoStatus(4, B)); // « Suivant » dans KaraFun : B aussitôt
+  assert.equal(f.karaokeOutlook(), 'singing');
+  await f.call('POST /api/staff/spotify', { action: 'play' });
+  for (let i = 0; i < 3; i++) await f.spotifyTick();
+  assert.deepEqual(calls, ['lecture', 'pause', 'lecture'], '« ▶ Spotify » pendant B, pas défait');
+  frames(queueEvent(), isoStatus(4, C)); // C enchaîné, vu par l'automate : un nouveau titre
+  await f.spotifyTick();
+  assert.deepEqual(calls, ['lecture', 'pause', 'lecture', 'pause'], 'titre suivant : Spotify coupé de nouveau');
+});
+
 // Poignée de main de KaraFun sur la connexion rouverte par « Reconnecter »
 // (dernier FakeWS), puis `messages` (sa file et son état).
 function reopened(bridge, ...messages) {
