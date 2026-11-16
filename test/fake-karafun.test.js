@@ -423,7 +423,7 @@ test('pont local sans WebSocket de Node : nouvel essai prévu, message clair', a
   bridge.connect(CODE);
   await until(() => bridge.connectionState().phase === 'retry', 'nouvel essai prévu');
   assert.equal(bridge.ready, false);
-  assert.match(bridge.lastError, /WebSocket indisponible.*Node 22/);
+  assert.match(bridge.lastError, /WebSocket indisponible.*Node 26/);
 });
 
 // protects=le vrai pont (karafun.js → kcs-transport.js → WebSocket de Node) avec le faux, comme la démo
