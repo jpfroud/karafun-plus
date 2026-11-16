@@ -2872,14 +2872,19 @@ test('barre du haut : état KaraFun du pont, alerte impossible à manquer, recon
   assert.deepEqual(page.toast(), { text: 'Action refusée', bad: true });
   delete page.replies['/api/staff/kf'];
   // Message de KaraFun illisible, KaraFun connecté (pont prêt) : la même
-  // alerte à part, sans « Reconnecter », qui couperait la connexion qui marche.
+  // alerte à part, impossible à fermer, avec « Reconnecter » (relecture 2,
+  // tour 2) : le pont rouvre alors la connexion, KaraFun renvoie sa file et
+  // son état. Sans ce bouton, l'alerte restait tant que KaraFun était à l'arrêt.
   const unreadable = 'Message de KaraFun illisible (remote.QueueEvent) : la file ne voit plus ces changements de KaraFun ' +
-    'et ne lui envoie plus rien d’elle-même. Pilote dans KaraFun en attendant.';
+    'et ne lui envoie plus rien d’elle-même. Pilote dans KaraFun en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.';
   await page.update({ kf: { ...world.kf, connection: { phase: 'ready', level: 'error', label: unreadable, since: Date.now(), attempt: 1,
-    canRename: false, nameConflict: null, alert: unreadable } } });
+    canRename: false, nameConflict: null, alert: unreadable, canReconnect: true } } });
   assert.equal(pill.className, 'pill bad');
   assert.equal(page.in('staffAlerts', '.kf-alert span').textContent, unreadable);
-  assert.equal(page.in('staffAlerts', '[data-alert-reconnect]'), null, 'pas de « Reconnecter » : il couperait la connexion');
+  assert.equal(page.in('staffAlerts', '.kf-alert [data-dismiss-alert]'), null, 'cette alerte ne se ferme pas');
+  await page.click(page.in('staffAlerts', '[data-alert-reconnect]'));
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'reconnect' });
+  assert.equal(page.toast().text, 'Reconnexion…');
   // Code vide : le refus du serveur s'affiche en erreur.
   page.replies['/api/staff/connect'] = { status: 400, error: 'Saisis le code affiché par KaraFun.' };
   page.$('code').value = '';

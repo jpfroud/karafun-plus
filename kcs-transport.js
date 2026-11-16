@@ -14,21 +14,14 @@ const MAX_DEPTH = 32;
 // dit si quelque chose a été coupé. Récursion bornée par la limite (32 appels
 // imbriqués au plus), sans copie ni pile par valeur : une trame très large ne
 // coûte pas plus de mémoire que ses propres objets (une mémoire épuisée
-// arrêterait le serveur, aucun filet n'y peut rien).
+// arrêterait le serveur, aucun filet n'y peut rien). Une boucle pour une liste
+// comme pour un objet : celle d'une liste ne construit aucune liste de clés.
 function prune(value, room) {
   let cut = false;
-  if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) {
-      const child = value[i];
-      if (child === null || typeof child !== 'object') continue;
-      if (room <= 1) { value[i] = null; cut = true; } else if (prune(child, room - 1)) cut = true;
-    }
-  } else {
-    for (const key in value) {
-      const child = value[key];
-      if (child === null || typeof child !== 'object') continue;
-      if (room <= 1) { value[key] = null; cut = true; } else if (prune(child, room - 1)) cut = true;
-    }
+  for (const key of Array.isArray(value) ? value.keys() : Object.keys(value)) {
+    const child = value[key];
+    if (child === null || typeof child !== 'object') continue;
+    if (room <= 1) { value[key] = null; cut = true; } else if (prune(child, room - 1)) cut = true;
   }
   return cut;
 }

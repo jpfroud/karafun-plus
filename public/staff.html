@@ -1425,17 +1425,18 @@
     // KaraFun perdu : impossible à fermer, avec la reconnexion à portée de doigt.
     const kf = kfStatus();
     // KaraFun qui limite les essais, ou un message de KaraFun illisible
-    // (connecté), d'abord : alerte du pont seule, sans bouton Reconnecter
-    // (inutile de cliquer, ou il couperait la connexion qui marche). Puis
-    // KaraFun fermé ou code changé, essais arrêtés :
-    // la file n'essaie plus seule, Reconnecter à l'ouverture ou nouveau code.
+    // (connecté), d'abord : alerte du pont seule. Limite : sans bouton
+    // Reconnecter, inutile de cliquer. Message illisible : avec son propre
+    // Reconnecter (canReconnect), qui rouvre la connexion pour que KaraFun
+    // renvoie sa file et son état. Puis KaraFun fermé ou code changé, essais
+    // arrêtés : la file n'essaie plus seule, Reconnecter à l'ouverture ou nouveau code.
     // Puis KaraFun perdu (Reconnecter), même pendant un conflit de nom :
     // KaraFun absent, le nom n'est pas redemandé. Enfin le nom encore tenu
     // par l'ancienne connexion (la file réessaie seule, ou prend un autre nom
     // tout de suite).
     const connection = S.kf?.connection;
     const kfAlert = !S.kf ? '<div class="staff-alert kf-alert"><span>KaraFun n’a pas de code : aucun titre ne part.</span><span class="alert-actions"><button type="button" class="btn small" data-alert-goto="kfPanel">Saisir le code</button></span></div>' :
-      connection?.alert && !connection.nameConflict && !connection.canRename ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span></div>` :
+      connection?.alert && !connection.nameConflict && !connection.canRename ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span>${connection.canReconnect ? '<span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button></span>' : ''}</div>` :
       connection?.phase === 'stopped' ? '<div class="staff-alert kf-alert kf-stopped"><span>KaraFun fermé ou code changé : la file n’essaie plus seule, les titres ne partent plus. Une fois KaraFun ouvert (télécommande activée), clique sur « Reconnecter » ; si le code a changé, utilise « Saisir le code ».</span><span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button><button type="button" class="btn small" data-alert-goto="kfPanel">Saisir le code</button></span></div>' :
       kf.down ? `<div class="staff-alert kf-alert"><span>${esc(kf.text)} : les titres ne partent plus.</span><span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button></span></div>` :
       connection?.alert ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span>${connection.canRename ? '<span class="alert-actions"><button type="button" class="btn small primary" data-alert-rename>Prendre un autre nom maintenant</button></span>' : ''}</div>` : '';

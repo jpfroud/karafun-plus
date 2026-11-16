@@ -392,6 +392,28 @@ test('KcsTransport : message de plus de 32 niveaux coupé au-delà et lu, Ping e
   assert.equal(pruned.length, 4);
 });
 
+// Relecture 2, tour 2 (tests) : la coupe d'une liste n'était jamais essayée,
+// tous les messages trop imbriqués des essais étaient faits d'objets. Une
+// liste sur 100 000 niveaux est coupée à 32 comme un objet, puis lue.
+test('KcsTransport : liste imbriquée au-delà de 32 niveaux coupée, puis lue', t => {
+  mockTime(t);
+  fakes(t);
+  const transport = new KcsTransport(KCS_URL);
+  t.after(() => transport.close());
+  const ws = FakeWebSocket.instances[0];
+  const messages = [], pruned = [];
+  transport.on('message', m => messages.push(m));
+  transport.on('message-pruned', type => pruned.push(type));
+  ws.open();
+  const depth = value => (value !== null && typeof value === 'object' ? 1 + Math.max(0, ...Object.values(value).map(depth)) : 0);
+  ws.receive(`{"type":"remote.QueueEvent","payload":{"list":${'['.repeat(100000)}1${']'.repeat(100000)}}}`);
+  assert.deepEqual([messages.length, depth(messages[0]), pruned], [1, 32, ['remote.QueueEvent']]);
+  // Liste coupée à sa place, au 32e niveau.
+  let list = messages[0].payload.list;
+  for (let level = 3; level < 32; level++) list = list[0];
+  assert.deepEqual(list, [null]);
+});
+
 // Le filet du transport tient aussi quand l'écouteur qui reçoit le message
 // ignoré ('message-error') ou coupé ('message-pruned') échoue à son tour :
 // la lecture continue et les Ping reçoivent leur réponse.
@@ -2173,8 +2195,9 @@ test('valeurs imprévues : file de KaraFun lue avec ses types ; un titre illisib
   const alerted = bridge.connectionState();
   assert.equal(alerted.level, 'error', 'bandeau rouge sur la page du bar');
   assert.equal(alerted.alert, 'Message de KaraFun illisible (remote.QueueEvent) : la file ne voit plus ces changements de KaraFun ' +
-    'et ne lui envoie plus rien d’elle-même. Pilote dans KaraFun en attendant.');
-  assert.deepEqual([alerted.canRename, alerted.nameConflict], [false, null], 'alerte à part, sans « Reconnecter »');
+    'et ne lui envoie plus rien d’elle-même. Pilote dans KaraFun en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.');
+  assert.deepEqual([alerted.canRename, alerted.nameConflict, alerted.canReconnect], [false, null, true],
+    'alerte à part, avec « Reconnecter »');
   // Un état lisible ne lève pas l'alerte de la file.
   ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 1, current: null } } });
   assert.equal(bridge.queueUnreadable, true);
@@ -2195,7 +2218,8 @@ test('valeurs imprévues : file de KaraFun lue avec ses types ; un titre illisib
   assert.equal(ignoredMessages(bridge).length, bads.length, 'lues avec leur type, sans le filet');
   assert.equal(bridge.lastError, null, 'une file lisible efface l’avis');
   assert.equal(bridge.queueUnreadable, false);
-  assert.deepEqual([bridge.connectionState().level, bridge.connectionState().alert], ['ok', null], 'alerte levée');
+  assert.deepEqual([bridge.connectionState().level, bridge.connectionState().alert, bridge.connectionState().canReconnect],
+    ['ok', null, false], 'alerte levée');
 });
 
 // Regression: tour 3 de la relecture — une file sans liste de titres, ou un
@@ -2263,10 +2287,13 @@ test('valeurs imprévues : alerte d’un message illisible seulement connecté, 
 
 // Tour 3 de la relecture — une file illisible dès la connexion (titre déjà
 // dans KaraFun quand la file se reconnecte) s'affiche aussi, et une nouvelle
-// connexion l'oublie, comme un état illisible (relecture 2). Pendant
-// l'alerte, « Reconnecter » garde la connexion qui marche : la couper
-// créerait un conflit de nom.
-test('valeurs imprévues : file illisible dès la connexion, file et état illisibles oubliés à la reconnexion ; « Reconnecter » garde la connexion', async t => {
+// connexion l'oublie, comme un état illisible (relecture 2). Regression:
+// relecture 2, tour 2 (équipe rouge) — l'alerte n'avait pas de sortie quand
+// KaraFun est à l'arrêt : il ne renvoie rien de lui-même, et « Reconnecter »
+// gardait la connexion. Pendant l'alerte, « Reconnecter » la rouvre : KaraFun
+// renvoie sa file et son état, l'alerte repart de zéro. Sans alerte, une
+// connexion qui marche reste gardée (la couper créerait un conflit de nom).
+test('valeurs imprévues : file illisible dès la connexion, file et état illisibles oubliés à la reconnexion ; « Reconnecter » rouvre la connexion pendant l’alerte', async t => {
   mockTime(t);
   const { bridge, ws, env } = await connected(t, { ready: false });
   t.after(() => bridge.disconnect());
@@ -2280,19 +2307,24 @@ test('valeurs imprévues : file illisible dès la connexion, file et état illis
   ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
   ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 1, current: null } } });
   assert.equal(bridge.ready, true);
+  assert.equal(bridge.connect(CODE), 'kept', 'sans alerte : connexion gardée');
   ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [null] } } });
   ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 3, current: 'texte' } } });
-  assert.equal(bridge.connect(CODE), 'kept', 'connexion gardée malgré l’alerte');
-  assert.equal(ws.closeCalls, 0);
-  bridge.disconnect();
-  bridge.connect(CODE);
+  const fetches = env.calls.length;
+  assert.equal(bridge.connect(CODE), 'started', 'alerte : connexion rouverte');
+  assert.equal(ws.closeCalls, 1);
   await flush();
+  assert.equal(env.calls.length, fetches, 'adresse gardée : la page de KaraFun n’est pas relue');
   const again = env.sockets.at(-1);
   assert.notEqual(again, ws);
   again.open();
   named(again);
   assert.deepEqual([bridge.queueUnreadable, bridge.unreadable, bridge.connectionState().level, bridge.connectionState().alert],
     [false, null, 'wait', null], 'nouvelle connexion : file et état illisibles oubliés');
+  again.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
+  again.receive({ type: 'remote.StatusEvent', payload: { status: { state: 1, current: null } } });
+  assert.deepEqual([bridge.ready, bridge.connectionState().level, bridge.connectionState().alert], [true, 'ok', null]);
+  assert.equal(bridge.connect(CODE), 'kept');
 });
 
 // Regression: relecture de cette correction — un titre en cours illisible
@@ -2364,6 +2396,31 @@ test('valeurs imprévues : refus de KaraFun dont la raison est d’un type impr�
   assert.doesNotThrow(() => ws.receive({ id: mode.id, type: 'Error', payload: { type: piege(), message: piege() } }));
   assert.deepEqual(answers.map(answer => [answer.ok, answer.message]), [[false, 'erreur inconnue']]);
   assert.deepEqual(ignoredMessages(bridge), []);
+});
+
+// Regression: relecture 2, tour 2 (passe adverse) — la raison d'un refus de
+// KaraFun passait entière au bar : une raison de 400 ko (des espaces sans fin)
+// figeait le serveur deux minutes dans la consigne de la Battle (server.js,
+// failPlainBattleCopy, dont le nettoyage coûte le carré de la longueur). Elle
+// est bornée à 200 caractères, comme les raisons du journal.
+test('valeurs imprévues : raison d’un refus de KaraFun bornée, pour le bar comme pour la Battle', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  const long = `Refus${' '.repeat(400000)}fin`;
+  ws.receive({ type: 'Error', payload: { type: 1, message: long } });
+  assert.equal(bridge.lastError, `Commande KaraFun refusée : ${long.slice(0, 200)}`);
+  bridge.setPitch(2);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'Error', payload: { type: 1, message: long } });
+  assert.equal(bridge.settingsNotices.pitch, `KaraFun refuse de régler la tonalité : ${long.slice(0, 200)}`);
+  const answers = [];
+  bridge.on('battle-mode-answer', answer => answers.push(answer));
+  bridge.setBattleMode('q-1', BATTLE_MOD);
+  ws.receive({ id: ws.sent.at(-1).id, type: 'Error', payload: { type: 3, message: long } });
+  assert.deepEqual(answers.map(answer => answer.message), [long.slice(0, 200)]);
+  // Nom déjà pris : reconnu sur toute la raison, même longue.
+  ws.receive({ type: 'Error', payload: { type: 4, message: `${' '.repeat(300)}Username is already used` } });
+  assert.notEqual(bridge.nameConflictSince, null);
 });
 
 // Filet du pont : un message que le pont ne peut pas lire jusqu'au bout est

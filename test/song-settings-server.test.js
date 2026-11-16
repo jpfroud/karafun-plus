@@ -39,7 +39,7 @@ function harness({ setTimeout: later = () => ({ unref() {} }), Date: clock = nul
     globalThis.fixture = { sched, settings, handlers, access, journal, sync, staffState, publicState, battleVote, clearEvening,
       resendWithoutOptions, restoreKaraFunDefaults: typeof restoreKaraFunDefaults === 'function' ? restoreKaraFunDefaults : null,
       safeSync: typeof safeSync === 'function' ? safeSync : null, wireBridge, connectionAnswer,
-      connectKaraFun,
+      connectKaraFun, spotify,
       tracked: () => tracked, pending: () => pending, setBridge: b => { bridge = b; },
       handle: server.listeners('request')[0], STAFF_KEY, PORT };
   `, context, { filename: 'server.js' });
@@ -781,7 +781,7 @@ function replayBridge(t, f, { permissions = ADMIN } = {}) {
     open();
     ws.out.length = 0;
   };
-  return { bridge, get ws() { return ws; }, frames, reconnect };
+  return { bridge, get ws() { return ws; }, frames, reconnect, receive };
 }
 const bare = messages => messages.map(({ type, payload }) => ({ type, payload }));
 const DJ_ID = 'a0c6bc1b-7a57-4537-846b-d4ded79e830c';
@@ -2465,4 +2465,332 @@ test('filet de la synchronisation : endroit du code noté quand Number() échoue
     ['error', 'La mise à jour avec KaraFun a échoué (Cannot convert object to primitive value) : la file ne pilote plus KaraFun et réessaie seule. Pilote dans KaraFun en attendant.'],
     ['info', 'Mise à jour avec KaraFun rétablie : la file pilote de nouveau KaraFun.'],
   ]);
+});
+
+// ---------------------------------------------------------------- relecture 2, tour 2
+// Regression: relecture 2, tour 2 (passe adverse) — une erreur dans sync()
+// juste après le compte d'un passage (relevé du journal) laissait l'envoi en
+// attente : le filet relançait sync(), qui retrouvait le même titre dans
+// KaraFun et comptait le passage une seconde fois, à chaque essai. L'envoi
+// est détaché avant d'être compté.
+test('filet de la synchronisation : passage compté une seule fois quand la mise à jour échoue juste après', async t => {
+  const f = harness();
+  const { frames, receive } = replayBridge(t, f);
+  const lea = singer(f, openTable(f, '1'), 'Léa', 101);
+  f.settings.auto = true;
+  const [add] = frames();
+  f.settings.auto = false;
+  assert.equal(add.type, 'remote.AddToQueueRequest');
+  // Panne juste après le compte : le relevé du journal échoue, une fois par compte.
+  const commit = f.sched.commit.bind(f.sched), presenceView = f.sched.presenceView.bind(f.sched);
+  let armed = false;
+  f.sched.commit = sel => { const done = commit(sel); armed = true; return done; };
+  f.sched.presenceView = (...args) => {
+    if (armed) { armed = false; throw new TypeError('panne simulée'); }
+    return presenceView(...args);
+  };
+  receive({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} });
+  receive(queueEvent(isoItem('A-id', 101, add.payload.options)));
+  for (let i = 0; i < 3; i++) f.safeSync();
+  assert.ok(notes(f).some(line => line.startsWith('La mise à jour avec KaraFun a échoué (panne simulée)')));
+  assert.equal(lea.person.sung, 1, 'un seul passage compté');
+  assert.equal(f.events('turn.sent').length, 1);
+  assert.equal(f.pending(), null);
+});
+
+// Regression: relecture 2, tour 2 (design) — pendant une file illisible, le
+// rattrapage du début d'un titre lisait ses options dans la file figée : la
+// tonalité que le bar venait de régler dans KaraFun (comme l'alerte le
+// demande) était remise à 0. Pendant l'alerte, rien n'est rattrapé ni remis,
+// et le titre ne l'est pas non plus après elle, en pleine chanson.
+test('valeurs imprévues : file de KaraFun illisible, la tonalité réglée dans KaraFun n’est pas remise à 0', async t => {
+  const { frames, A, B } = aThenB(t);
+  frames(queueEvent(A, B, ODD_ITEM));
+  const B2 = { ...B, song: { ...B.song, options: { ...B.song.options, pitch: -2 } } };
+  const sent = [isoStatus(1, B2), queueEvent(B2, ODD_ITEM), isoStatus(2, B2, { pitch: -2 }), isoStatus(3, B2, { pitch: -2 }),
+    isoStatus(4, B2, { pitch: -2 })].flatMap(m => bare(frames(m)));
+  assert.deepEqual(sent, [], 'pendant l’alerte');
+  assert.deepEqual(bare(frames(queueEvent(B2), isoStatus(4, B2, { pitch: -2 }))), [], 'après l’alerte, en pleine chanson');
+});
+
+// Même règle pour un titre ajouté directement dans KaraFun qui se charge
+// pendant l'alerte : ses valeurs neutres ne sont pas visées (le bar le règle
+// dans KaraFun), ni pendant l'alerte ni après elle.
+test('valeurs imprévues : file de KaraFun illisible, titre ajouté dans KaraFun chargé sans remise à zéro', async t => {
+  const { f, frames, A, B } = aThenB(t);
+  await f.call('POST /api/staff/kf', { action: 'pitch', value: 2, queueId: 'A-id' });
+  frames(isoStatus(4, A, { pitch: 2 }));
+  frames(queueEvent(A, B, ODD_ITEM));
+  const own = isoItem('C-id', 777, { singer: 'Quelqu’un' });
+  const sent = [isoStatus(1, own), isoStatus(2, own, { pitch: 2 }), isoStatus(3, own, { pitch: 2 }), isoStatus(4, own, { pitch: 2 })]
+    .flatMap(m => bare(frames(m)));
+  assert.deepEqual(sent, [], 'pendant l’alerte');
+  assert.deepEqual(bare(frames(queueEvent(own, B), isoStatus(4, own, { pitch: 2 }))), [], 'après l’alerte, en pleine chanson');
+  assert.deepEqual(f.events('song.settingsReset'), []);
+});
+
+// Regression: relecture 2, tour 2 (passe adverse) — pendant une file
+// illisible, un réglage changé sur un titre déjà dans KaraFun lui renvoyait
+// toutes ses options, tirées de la file figée (nom, mode, volumes) : ce que le
+// bar venait de changer dans KaraFun était écrasé. L'envoi attend une file
+// lisible, et part alors si le titre n'a pas commencé.
+test('valeurs imprévues : file de KaraFun illisible, réglages d’un titre déjà dans KaraFun envoyés après l’alerte', async t => {
+  const { f, frames, A, B, trB } = aThenB(t);
+  frames(queueEvent(A, B, ODD_ITEM));
+  const answer = await f.call('POST /api/staff/song/settings', { personId: trB.sel.ids[0], entryId: trB.sel.song.entryId,
+    settings: { pitch: 2 } });
+  assert.equal(answer.applied, 'start');
+  assert.deepEqual(frames(), [], 'rien n’est envoyé pendant l’alerte');
+  assert.deepEqual(frames(queueEvent(A, B)).map(m => [m.type, m.payload.queueItemId, m.payload.options?.pitch]),
+    [['remote.SetQueueItemOptionsRequest', 'B-id', 2]], 'file lisible : envoyé');
+});
+
+// Regression: relecture 2, tour 2 (maintenabilité, passe adverse) — pendant
+// une file illisible, la copie d'une relance ⏮ n'y était jamais vue : 15 s
+// plus tard, « rien n'a été passé », puis la file retirait d'elle-même la
+// copie à la file lisible suivante. Pendant l'alerte, ⏮ est refusé, et une
+// relance déjà en cours attend une vue lisible, sans commande ni conclusion.
+test('valeurs imprévues : relance ⏮ refusée pendant l’alerte', async t => {
+  const f = harness();
+  const { frames } = replayBridge(t, f);
+  singer(f, openTable(f, '1'), 'Léa', 101);
+  const a = sendNext(f, 'A-id');
+  const A = isoItem('A-id', 101, { singer: a.sel.label });
+  frames(queueEvent(A), isoStatus(4, A));
+  a.liveChecked = 'A-id';
+  frames(queueEvent(A, ODD_ITEM));
+  await assert.rejects(f.call('POST /api/staff/kf', { action: 'restart' }),
+    /^Error: Un message de KaraFun est illisible : relance le titre depuis KaraFun\.$/);
+  assert.deepEqual(frames(), []);
+});
+
+test('valeurs imprévues : relance ⏮ en cours pendant une file illisible : copie gardée, pas de fausse alerte', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  singer(f, openTable(f, '1'), 'Léa', 101);
+  const a = sendNext(f, 'A-id');
+  const A = isoItem('A-id', 101, { singer: a.sel.label });
+  frames(queueEvent(A), isoStatus(4, A));
+  a.liveChecked = 'A-id';
+  await f.call('POST /api/staff/kf', { action: 'restart' });
+  const add = frames().find(m => m.type === 'remote.AddToQueueRequest');
+  assert.ok(add, 'copie demandée à KaraFun');
+  const C = isoItem('C-id', 101, add.payload.options);
+  // KaraFun ajoute la copie, mais sa file arrive illisible.
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C, ODD_ITEM));
+  clock.now += 16000;
+  assert.deepEqual(frames(), [], 'ni commande ni conclusion pendant l’alerte');
+  assert.equal(notes(f).some(line => /n’a pas confirmé la relance/.test(line)), false, 'pas de fausse alerte');
+  // File lisible : la copie est juste après le titre en cours, la relance reprend.
+  const after = frames(queueEvent(A, C));
+  assert.deepEqual(removals(after), [], 'copie gardée');
+  assert.deepEqual(after.map(m => m.type), ['remote.NextRequest']);
+  assert.equal(f.tracked().map(tr => tr.queueId).join(), 'C-id', 'le suivi passe à la copie');
+});
+
+// Regression: relecture 2, tour 2 (passe adverse) — un titre retiré par
+// « Pas prêt » restait dans la file figée : 45 s plus tard, le bar lisait
+// « KaraFun n'a pas retiré … : retire-le dans KaraFun », alors que KaraFun
+// l'avait retiré. Cette alerte attend une file lisible.
+test('valeurs imprévues : file de KaraFun illisible, pas de fausse alerte « KaraFun n’a pas retiré »', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  f.sched.opts.requirePresence = false;
+  const tb = openTable(f, '1');
+  const people = [singer(f, tb, 'Léa', 101), singer(f, tb, 'Tom', 201)];
+  const a = sendNext(f, 'A-id');
+  const owner = people.find(s => s.person.id === a.sel.ids[0]);
+  frames(queueEvent(isoItem('A-id', a.sel.song.songId, { singer: a.sel.label })));
+  await f.call('POST /api/table/defer', { ...owner.body, songs: 1 });
+  // KaraFun retire le titre, mais sa file arrive illisible.
+  frames(queueEvent(ODD_ITEM));
+  clock.now += 50000;
+  frames();
+  const notRemoved = () => notes(f).filter(line => line.startsWith('KaraFun n’a pas retiré'));
+  assert.deepEqual(notRemoved(), []);
+  // File lisible : le titre est bien sorti de KaraFun, il revient à son chanteur.
+  frames(queueEvent());
+  assert.deepEqual(notRemoved(), []);
+  assert.equal(f.tracked().length, 0);
+});
+
+// Regression: relecture 2, tour 2 (maintenabilité) — une mise à jour qui
+// réussissait de nouveau pendant une alerte « message illisible » annonçait
+// « la file pilote de nouveau KaraFun », alors que l'alerte rouge disait le
+// contraire. Le retour est annoncé à la fin de l'alerte.
+test('filet de la synchronisation : retour pendant une alerte « message illisible », annoncé à sa fin', async t => {
+  const f = harness();
+  const { bridge, frames, receive } = replayBridge(t, f);
+  frames(queueEvent(ODD_ITEM));
+  const status = bridge.status, trap = JSON.parse('{"toString":1}');
+  let fail = true;
+  Object.defineProperty(bridge, 'status', { configurable: true, get() { return fail ? Number(trap) : status; } });
+  f.safeSync();
+  fail = false;
+  f.safeSync();
+  const updates = () => notes(f).filter(line => /mise à jour avec KaraFun/i.test(line));
+  assert.equal(updates().length, 1, 'pendant l’alerte : seulement l’échec');
+  assert.equal(f.logs.some(line => line.startsWith('Synchronisation avec KaraFun rétablie')), false);
+  receive(queueEvent());
+  f.safeSync();
+  assert.equal(updates().at(-1), 'Mise à jour avec KaraFun rétablie : la file pilote de nouveau KaraFun.');
+  assert.ok(f.logs.includes('Synchronisation avec KaraFun rétablie après 1 échec.'));
+});
+
+// Regression: relecture 2, tour 2 — l'accusé d'un envoi annulé (chanteur
+// parti) arrivé pendant un état illisible faisait retirer le titre aussitôt,
+// d'après la scène figée, alors que KaraFun avait pu le lancer. Le titre est
+// suivi, et son retrait attend un état lisible.
+test('valeurs imprévues : envoi annulé confirmé pendant un état illisible, retiré seulement après l’alerte', async t => {
+  const f = harness();
+  const { frames } = replayBridge(t, f);
+  const lea = singer(f, openTable(f, '1'), 'Léa', 101);
+  f.settings.auto = true;
+  const [add] = frames();
+  f.settings.auto = false;
+  await f.call('POST /api/staff/person/leave', { personId: lea.person.id });
+  frames({ type: 'remote.StatusEvent', payload: { status: { state: '4', current: null } } });
+  const A = isoItem('A-id', 101, add.payload.options);
+  assert.deepEqual(removals(frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A))), [],
+    'état illisible : rien n’est retiré');
+  assert.equal(f.pending(), null);
+  assert.deepEqual(plain(f.tracked().map(tr => [tr.queueId, !!tr.cancelled])), [['A-id', true]]);
+  assert.deepEqual(removals(frames(isoStatus(1, null))), ['A-id'], 'état lisible, titre hors scène : retiré');
+});
+
+// Cases de la relecture 2, tour 2 (machines à états) : envoi en attente
+// pendant une file illisible. Annulé ou non, il attend sans « n'a pas
+// confirmé », et « reprendre » est refusé (il n'y a pas d'envoi interrompu) ;
+// à la file lisible suivante, un titre absent depuis plus de 15 s est
+// déclaré non confirmé tout de suite.
+test('valeurs imprévues : envoi en attente pendant une file illisible, annulé ou non : ni verdict ni reprise avant la file lisible', async t => {
+  for (const cancelled of [false, true]) {
+    const clock = clockAt('2026-11-12T21:00:00.000Z');
+    const f = harness({ Date: clock.Date });
+    const { frames } = replayBridge(t, f);
+    const lea = singer(f, openTable(f, '1'), 'Léa', 101);
+    f.settings.auto = true;
+    frames();
+    f.settings.auto = false;
+    if (cancelled) await f.call('POST /api/staff/person/leave', { personId: lea.person.id });
+    frames(queueEvent(ODD_ITEM));
+    clock.now += 16000;
+    frames();
+    assert.deepEqual(unconfirmed(f), [], 'file illisible : l’attente continue');
+    await assert.rejects(f.call('POST /api/staff/reconcile-pending'), /^Error: Aucun envoi interrompu à vérifier\.$/);
+    assert.ok(f.pending(), 'envoi gardé');
+    assert.equal(!!f.pending().cancelled, cancelled);
+    if (cancelled) continue;
+    frames(queueEvent());
+    assert.equal(unconfirmed(f).length, 1, 'file lisible sans le titre : non confirmé tout de suite');
+  }
+});
+
+test('valeurs imprévues : file illisible, envoi annulé vu sur scène : il continue et compte, rien n’est retiré', async t => {
+  const f = harness();
+  const { frames } = replayBridge(t, f);
+  const lea = singer(f, openTable(f, '1'), 'Léa', 101);
+  f.settings.auto = true;
+  const [add] = frames();
+  f.settings.auto = false;
+  frames(queueEvent(ODD_ITEM));
+  await f.call('POST /api/staff/person/leave', { personId: lea.person.id });
+  const A = isoItem('A-id', 101, add.payload.options);
+  assert.deepEqual(removals(frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, isoStatus(4, A))), []);
+  assert.equal(f.pending(), null);
+  assert.deepEqual(plain(f.tracked().map(tr => [tr.queueId, !!tr.cancelled, !!tr.startedAt])), [['A-id', false, true]]);
+  // Passage compté (commit) ; une personne partie n'y gagne rien de plus.
+  assert.deepEqual(f.events('turn.sent').map(e => e.queueId), ['A-id']);
+});
+
+test('valeurs imprévues : file illisible, envoi à vérifier vu sur scène : confirmé, jamais renvoyé', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  singer(f, openTable(f, '1'), 'Léa', 101);
+  f.settings.auto = true;
+  const [add] = frames();
+  clock.now += 16000;
+  frames();
+  assert.equal(unconfirmed(f).length, 1);
+  const A = isoItem('A-id', 101, add.payload.options);
+  frames(queueEvent(ODD_ITEM));
+  frames(isoStatus(4, A));
+  assert.equal(f.pending(), null, 'titre en cours : envoi confirmé');
+  assert.deepEqual(plain(f.tracked().map(tr => [tr.queueId, !!tr.startedAt])), [['A-id', true]]);
+  clock.now += 200000;
+  const later = frames(isoStatus(1, null), queueEvent());
+  assert.deepEqual(later.filter(m => m.type === 'remote.AddToQueueRequest'), [], 'jamais renvoyé');
+  assert.deepEqual(f.events('turn.unsent'), []);
+});
+
+// Relecture 2, tour 2 (tests) : rien n'essayait la garde du vidage pendant un
+// état illisible ; le seul essai figeait une file vide. Le titre qu'un état
+// figé cache sur scène n'est pas retiré avant un état lisible.
+test('valeurs imprévues : état de KaraFun illisible, le vidage ne retire rien avant un état lisible', async t => {
+  const f = harness();
+  const { frames } = replayBridge(t, f);
+  const x = isoItem('X-id', 301, { singer: 'Quelqu’un' });
+  frames(queueEvent(x));
+  frames({ type: 'remote.StatusEvent', payload: { status: { state: '4', current: x } } });
+  f.settings.queueClearPending = true;
+  assert.deepEqual(removals(frames()), []);
+  assert.deepEqual(removals(frames(isoStatus(1, null))), ['X-id']);
+});
+
+// Regression: relecture 2, tour 2 (équipe rouge) — la lecture automatique ne
+// vérifiait l'alerte qu'à sa décision : avec Spotify, elle attend sa coupure
+// (jusqu'à 4 s, puis 2 s de silence). Une file illisible arrivée entre-temps
+// laissait la vue figée, notre titre en tête, et « Lecture » partait quand
+// même. L'alerte est revérifiée juste avant « Lecture ».
+test('valeurs imprévues : file illisible pendant la coupure de Spotify, la lecture automatique ne part pas', async t => {
+  const timers = [];
+  const f = harness({ setTimeout: (fn, ms, ...args) => { timers.push({ fn, ms, args }); return { unref() {} }; } });
+  const { frames, ws } = replayBridge(t, f);
+  f.sched.opts.requirePresence = false;
+  singer(f, openTable(f, '1'), 'Léa', 101);
+  const a = sendNext(f, 'A-id');
+  f.spotify.config = { ...f.spotify.config, clientId: 'x', refreshToken: 'y' };
+  f.spotify.pause = async () => 'done';
+  f.settings.autoPlay = true;
+  f.settings.playDelaySec = 0;
+  const decided = frames(queueEvent(isoItem('A-id', 101, { singer: a.sel.label })));
+  assert.deepEqual(decided.filter(m => m.type === 'remote.PlayRequest'), [], 'la lecture attend la coupure de Spotify');
+  await new Promise(resolve => setImmediate(resolve));
+  const lead = timers.filter(timer => timer.ms === 2000);
+  assert.ok(lead.length > 0, 'silence après la coupure de Spotify');
+  frames(queueEvent(isoItem('A-id', 101, { singer: a.sel.label }), ODD_ITEM));
+  for (const timer of lead) timer.fn(...timer.args);
+  for (let i = 0; i < 3; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(ws.out.filter(m => m.type === 'remote.PlayRequest'), []);
+});
+
+// Regression: relecture 2, tour 2 (équipe rouge) — pendant un état illisible,
+// « Pas prêt » retirait de KaraFun un titre qu'il pouvait être en train de
+// jouer : la scène vient de l'état figé (« Priorité » refuse ce retrait pour
+// la même raison). Le téléphone dit de demander au bar, qui voit l'alerte ;
+// rien n'est retiré ni repoussé.
+test('valeurs imprévues : état illisible, « Pas prêt » ne retire pas un titre peut-être lancé', async t => {
+  const f = harness();
+  const { frames, ws } = replayBridge(t, f);
+  f.sched.opts.requirePresence = false;
+  const tb = openTable(f, '1');
+  const people = [singer(f, tb, 'Léa', 101), singer(f, tb, 'Max', 102)];
+  const a = sendNext(f, 'A-id');
+  const owner = people.find(s => s.person.id === a.sel.ids[0]);
+  const item = isoItem('A-id', a.sel.song.songId, { singer: a.sel.label });
+  frames(queueEvent(item));
+  // KaraFun lance A : la file le garde en tête, l'état est illisible (numéro en texte).
+  frames(queueEvent(item), { type: 'remote.StatusEvent', payload: { status: { state: '4', pitch: 0, tempo: 0, tracks: [], current: item } } });
+  await assert.rejects(f.call('POST /api/table/defer', { ...owner.body, songs: 1 }),
+    /^Error: KaraFun ne dit plus ce qu’il joue : ton passage ne peut pas être repoussé pour l’instant\. Demande au bar\.$/);
+  assert.deepEqual(ws.out.filter(m => m.type === 'remote.RemoveFromQueueRequest'), []);
+  assert.equal(owner.person.deferral ?? null, null, 'rien n’est repoussé');
+  // État lisible, titre pas encore lancé : « Pas prêt » le retire de KaraFun.
+  frames(isoStatus(1, item));
+  const answer = await f.call('POST /api/table/defer', { ...owner.body, songs: 1 });
+  assert.equal(answer.deferral.pendingRemoval, true);
+  assert.deepEqual(removals(ws.out), ['A-id']);
 });

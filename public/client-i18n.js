@@ -756,6 +756,7 @@ window.CLIENT_TRANSLATIONS = {
       'Tu pourras repousser ton passage quand ta chanson sera la prochaine.': 'You can push back your turn once your song is next.',
       'Ta chanson est en cours d’envoi à KaraFun. Réessaie dans un instant.': 'Your song is being sent to KaraFun. Try again in a moment.',
       'Ton passage est déjà en train d’être repoussé. Réessaie dans un instant.': 'Your turn is already being pushed back. Try again in a moment.',
+      'KaraFun ne dit plus ce qu’il joue : ton passage ne peut pas être repoussé pour l’instant. Demande au bar.': 'KaraFun no longer says what is playing: your turn can’t be pushed back right now. Ask the bar.',
       'KaraFun est déconnecté : réessaie dans un instant ou demande au bar.': 'KaraFun is disconnected: try again in a moment or ask the bar.',
       'Ce titre est en cours d’envoi à KaraFun : le duo n’est plus possible.': 'This song is being sent to KaraFun: a duet is no longer possible.',
       'Trop tard : ce titre part déjà dans KaraFun en solo, l’invitation a expiré.': 'Too late: this song is already going to KaraFun as a solo, the invitation has expired.',
