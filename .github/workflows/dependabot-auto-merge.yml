@@ -6,8 +6,9 @@ name: Dependabot - fusion automatique
 # activé. Jamais pour une version majeure, l'optimiseur (Timefold et les autres
 # dépendances Maven de solver/ : bilan avant/après d'une vraie soirée exigé par
 # AGENTS.md), Socket.IO et sa pile (protocole KaraFun), une action GitHub
-# (droits de la publication) ni une PR dont un commit ne vient pas de
-# Dependabot ; une fusion activée plus tôt est alors retirée.
+# (droits de la publication), une image Node ou Java sans la même étiquette lue des
+# deux côtés (règle de la dernière LTS, SECURITY.md) ni une PR dont un commit ne
+# vient pas de Dependabot ; une fusion activée plus tôt est alors retirée.
 #
 # pull_request_target : le workflow exécuté est toujours celui de main, jamais
 # celui de la PR (un commit poussé sur la branche de Dependabot ne peut pas
@@ -78,7 +79,7 @@ jobs:
           case "$UPDATE_TYPE" in
             version-update:semver-patch | version-update:semver-minor)
               decision=fusion; raison="correctif mineur ou de version" ;;
-            *)
+            '')
               # Image Docker : même étiquette, nouvelle empreinte (correctifs de sécurité de
               # l'image), quand fetch-metadata lit l'étiquette des deux côtés ; sinon (empreintes
               # seules dans le message de Dependabot), relecture humaine.
@@ -96,9 +97,20 @@ jobs:
           if [ "$ECOSYSTEM" = maven ] || [[ $DEPENDENCIES == *ai.timefold* ]]; then
             decision=timefold; raison="l'optimiseur (Timefold et ses dépendances Maven) calcule la rotation : bilan avant/après exigé"
           fi
+          liste=",${DEPENDENCIES// /},"
+          # Images Node et Java : seule la même étiquette, lue des deux côtés, fusionne
+          # seule. Une autre étiquette change d'outil, même si Dependabot la classe en
+          # correctif (3.9-eclipse-temurin-26 lu comme 3.9.26, #48). Une nouvelle empreinte
+          # s'écrit « from `abc` to `def` », sans étiquette à comparer : à vérifier.
+          if [[ $ECOSYSTEM == docker* ]] && { [ -z "$PREVIOUS" ] || [ "$PREVIOUS" != "$NEW" ]; } && [[ $liste == *,node,* || $liste == *,eclipse-temurin,* || $liste == *,maven,* ]]; then
+            decision=relire
+            case "$PREVIOUS" in
+              '' | \`*) raison="nouvelle empreinte d'image Node ou Java, sans étiquette dans le message de Dependabot : vérifier que le diff ne change que l'empreinte" ;;
+              *) raison="autre étiquette d'image Node ou Java : montée d'un seul tenant, règle de la dernière LTS (SECURITY.md)" ;;
+            esac
+          fi
           # Pile du protocole de la télécommande KaraFun : Socket.IO 2.x, Engine.IO
           # et leurs transports (ws, xmlhttprequest-ssl).
-          liste=",${DEPENDENCIES// /},"
           if [[ $liste == *socket.io* || $liste == *engine.io* || $liste == *,ws,* || $liste == *,xmlhttprequest-ssl,* ]]; then
             decision=relire; raison="Socket.IO et sa pile portent le protocole de KaraFun : essais exigés"
           fi

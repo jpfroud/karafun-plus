@@ -23,6 +23,8 @@ de GitHub l'ignore aussi. Publier ensuite une version corrigée.
 **Veille.** Le workflow « Sécurité » analyse chaque lundi l'image `latest` publiée : s'il échoue, une faille
 corrigeable touche la version installée sur les serveurs. Fusionner les PR de Dependabot en attente
 (images de base, dépendances), puis publier une nouvelle version : la carte « Mise à jour » l'installera.
+Le workflow « Veille des versions » ouvre chaque lundi une issue quand une nouvelle LTS paraît ou qu'une fin de support
+approche : la montée se fait dans une PR d'un seul tenant (`SECURITY.md`, « Règle de la dernière LTS »).
 
 **Une seule fois :**
 
