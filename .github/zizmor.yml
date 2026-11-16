@@ -5,8 +5,8 @@ rules:
     ignore:
       # pull_request_target : le workflow exécuté est toujours celui de main
       # (un commit poussé sur la branche ne peut pas changer ses règles), sans
-      # extraction ni exécution du code de la PR : métadonnées lues par l'API et
-      # commandes gh fixes.
+      # extraction ni exécution du code de la PR : ses métadonnées et son diff,
+      # lus par l'API, et des commandes gh fixes.
       - dependabot-auto-merge.yml
   adhoc-packages:
     ignore:
