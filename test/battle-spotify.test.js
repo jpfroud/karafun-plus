@@ -458,3 +458,29 @@ test('après une Battle, pendant l’alerte d’un message illisible : « Lancer
   assert.deepEqual(order, [], 'Spotify pas coupé, rien envoyé');
   assert.equal(f.battleVote.automation.status, 'after');
 });
+
+// Relecture gstack-review de la branche finale, passe 2 (machines à états, case sans
+// essai) : Battle sur scène, finie pendant l'alerte d'une file de KaraFun illisible (file
+// figée, état lisible) : rien de conclu avant une vue lisible, puis la fin de l'alerte la
+// voit finie.
+test('Battle sur scène, finie pendant l’alerte d’une file illisible : rien de conclu avant une vue lisible', async () => {
+  const serverTime = serverClock();
+  const { f, order } = setup({ serverTime });
+  const bridge = fakeBridge(order, [battleItem(50)]);
+  f.setBridge(bridge);
+  f.sync();
+  bridge.queue.length = 0; // lancée : sortie de la file de KaraFun
+  bridge.status = { state: 'playing', songPlaying: { queueId: 50 } };
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'playing', 'Battle sur scène');
+  Object.assign(bridge, { unreadable: 'remote.QueueEvent', queueUnreadable: true, status: { state: 'idle' } });
+  f.sync();
+  await serverTime.advance(5000);
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'playing', 'rien de conclu pendant l’alerte');
+  assert.ok(!f.sched.log.some(line => /Battle terminée/.test(line.msg)), 'pas de « Battle terminée »');
+  Object.assign(bridge, { unreadable: null, queueUnreadable: false });
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'after', 'fin de l’alerte : Battle finie');
+  assert.ok(f.sched.log.some(line => /Battle terminée/.test(line.msg)));
+});

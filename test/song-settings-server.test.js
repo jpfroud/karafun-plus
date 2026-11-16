@@ -3897,3 +3897,21 @@ test('valeurs imprévues : relance abandonnée, longue alerte, ⏮ avant la sync
   await assert.rejects(f.call('POST /api/staff/kf', { action: 'restart' }), /La relance précédente vient d’échouer/);
   assert.deepEqual(removals(frames()), ['C-id'], 'copie tardive retirée');
 });
+
+// Relecture gstack-review de la branche finale, passe 2 (machines à états, case sans
+// essai) : relance ⏮ en cours, longue alerte, ⏮ touché de nouveau avant la
+// synchronisation : refusé, et le délai de la relance reprend où il en était.
+test('valeurs imprévues : relance ⏮ en cours, longue alerte, ⏮ avant la synchronisation : refusé, son délai reprend', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
+  clock.now += 5000;
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, ODD_ITEM));
+  clock.now += 70000;
+  frames();
+  FakeWS.last.emit('message', { data: JSON.stringify(queueEvent(A)) });
+  await assert.rejects(f.call('POST /api/staff/kf', { action: 'restart' }), /La relance du titre est déjà en cours/);
+  frames(queueEvent(A));
+  assert.deepEqual(restartNotConfirmed(f), [], '5 s avant l’alerte : délai pas encore écoulé');
+  clock.now += 11000;
+  frames(queueEvent(A));
+  assert.equal(restartNotConfirmed(f).length, 1, '15 s de file lisible écoulées : la relance conclut');
+});

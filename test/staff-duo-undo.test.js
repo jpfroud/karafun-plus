@@ -449,20 +449,35 @@ test('duo noté pendant l’envoi, accusé pendant l’alerte d’un message ill
   assert.ok(sent.pulled.at >= before, 'délai d’avertissement compté depuis l’envoi');
 });
 
+// Duo improvisé noté pendant l'envoi du titre de son partenaire (Zoé), puis accusé de
+// cet envoi pendant l'alerte d'un message illisible (état seul) : le retrait du titre de
+// Zoé (queueId 3) est noté sans être envoyé.
+function duoAckDuringAlert() {
+  const context = evening();
+  const { f, s, bridge, queue } = context;
+  const next = s.select();
+  const partner = s.people.get(next.ids[0]);
+  f.setPending({ sel: next, at: Date.now(), before: new Set(queue.map(item => item.queueId)) });
+  const ackDuringAlert = async () => {
+    await f.call('POST /api/staff/duo-mark', { queueId: 1, partnerId: partner.id });
+    bridge.unreadable = 'remote.StatusEvent';
+    queue.push({ queueId: 3, songId: next.song.songId, singer: next.label });
+    f.sync();
+    const sent = f.tracked().find(tr => tr.queueId === 3);
+    assert.equal(sent?.pulled?.reason, 'duo', 'retrait noté à l’accusé');
+    assert.deepEqual(bridge.removed, [], 'pas envoyé pendant l’alerte');
+    return sent;
+  };
+  return { ...context, next, partner, ackDuringAlert };
+}
+
 // Regression: relecture gstack-review de la branche finale, passe 2 (cinq relecteurs) —
 // le retrait d'un duo noté pendant l'alerte, pas encore envoyé, déclenchait au bout de
 // 45 s d'alerte « KaraFun n'a pas retiré … », puis étouffait l'avis du vrai retrait
 // ignoré après l'alerte. L'avis attend un retrait envoyé, et compte depuis l'envoi.
 test('duo noté pendant l’envoi, accusé pendant une longue alerte : pas d’avis avant le vrai retrait, puis l’avis du retrait ignoré', async () => {
-  const { f, s, bridge, queue } = evening();
-  const next = s.select();
-  const partner = s.people.get(next.ids[0]);
-  f.setPending({ sel: next, at: Date.now(), before: new Set(queue.map(item => item.queueId)) });
-  await f.call('POST /api/staff/duo-mark', { queueId: 1, partnerId: partner.id });
-  bridge.unreadable = 'remote.StatusEvent';
-  queue.push({ queueId: 3, songId: next.song.songId, singer: next.label });
-  f.sync();
-  const sent = f.tracked().find(tr => tr.queueId === 3);
+  const { f, s, bridge, ackDuringAlert } = duoAckDuringAlert();
+  const sent = await ackDuringAlert();
   const ignored = () => s.log.filter(line => /n’a pas retiré/.test(line.msg));
   sent.pulled.at -= 46000; // 46 s d'alerte
   f.sync();
@@ -541,3 +556,63 @@ for (const [geste, faire] of [
     assert.ok(entry?.endedAt, 'passage de Marine clos');
   });
 }
+
+// Relecture gstack-review de la branche finale, passe 2 (machines à états, cases sans
+// essai) : retrait d'un duo noté à l'accusé pendant l'alerte, puis le titre démarre,
+// quitte KaraFun ou voit le duo annulé avant la fin de l'alerte.
+test('duo noté pendant l’envoi, accusé pendant l’alerte, titre lancé dans KaraFun avant la fin : il continue et compte, rien retiré', async () => {
+  const { f, s, bridge, queue, ackDuringAlert } = duoAckDuringAlert();
+  const sent = await ackDuringAlert();
+  // KaraFun finit le titre de Marine et lance celui de Zoé pendant l'alerte.
+  queue.shift();
+  bridge.status = { state: 'playing', songPlaying: { queueId: 3 } };
+  bridge.unreadable = null;
+  f.sync();
+  assert.deepEqual(bridge.removed, [], 'rien retiré : il est sur scène');
+  assert.equal(sent.pulled, null, 'retrait abandonné');
+  assert.ok(sent.startedAt, 'passage compté');
+  assert.ok(s.log.some(line => /a commencé avant son retrait de KaraFun ; il continue/.test(line.msg)));
+});
+
+test('duo noté pendant l’envoi, accusé pendant l’alerte, titre retiré dans KaraFun avant la fin : jugé à la fin de l’alerte, il repassera plus tard', async () => {
+  const { f, s, bridge, queue, next, partner, ackDuringAlert } = duoAckDuringAlert();
+  const sent = await ackDuringAlert();
+  queue.pop(); // retiré dans KaraFun pendant l'alerte, jamais vu sur scène
+  f.sync();
+  assert.ok(f.tracked().includes(sent), 'rien de conclu pendant l’alerte');
+  bridge.unreadable = null;
+  f.sync();
+  assert.ok(!f.tracked().includes(sent), 'jugé à la première vue lisible');
+  assert.deepEqual(bridge.removed, [], 'aucun retrait envoyé');
+  assert.ok(s.log.some(line => /retiré de KaraFun après le duo improvisé : il repassera plus tard/.test(line.msg)));
+  assert.ok(s.songsOf(partner).some(song => song.title === next.song.title), 'titre rendu à Zoé');
+});
+
+test('duo noté pendant l’envoi, accusé pendant l’alerte, puis annulé avant l’envoi du retrait : rien retiré, rien gardé pour plus tard', async () => {
+  const { f, bridge, ackDuringAlert } = duoAckDuringAlert();
+  const sent = await ackDuringAlert();
+  await f.call('POST /api/staff/duo-unmark', { queueId: 1 });
+  assert.equal(sent.pulled, null, 'retrait abandonné');
+  assert.equal(sent.unpulled, undefined, 'jamais envoyé : rien qui puisse encore aboutir');
+  bridge.unreadable = null;
+  f.sync();
+  assert.deepEqual(bridge.removed, [], 'rien retiré');
+});
+
+// Même relecture, même case : un titre déjà commencé qui quitte la file de KaraFun
+// pendant l'alerte (état seul illisible, l'état vu montre déjà le titre suivant) est clos
+// tout de suite, une seule fois.
+test('titre déjà commencé sorti de KaraFun pendant l’alerte d’un état illisible : passage clos tout de suite, compté une fois', () => {
+  const { f, s, bridge, queue, marine, stage } = evening();
+  Object.assign(bridge, { unreadable: 'remote.StatusEvent', status: { state: 'playing', songPlaying: { queueId: 2 } } });
+  queue.shift();
+  f.sync();
+  const entries = () => s.stageHistory.filter(item => item.entryId === stage.song.entryId);
+  assert.ok(entries()[0]?.endedAt, 'passage de Marine clos pendant l’alerte');
+  assert.ok(!f.tracked().some(tr => tr.queueId === 1), 'titre de Marine plus suivi');
+  const sung = marine.sung;
+  bridge.unreadable = null;
+  f.sync();
+  assert.equal(marine.sung, sung, 'compté une seule fois');
+  assert.equal(entries().length, 1, 'un seul passage');
+});
