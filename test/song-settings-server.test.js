@@ -2503,14 +2503,22 @@ test('filet de la synchronisation : passage compté une seule fois quand la mise
 // tonalité que le bar venait de régler dans KaraFun (comme l'alerte le
 // demande) était remise à 0. Pendant l'alerte, rien n'est rattrapé ni remis,
 // et le titre ne l'est pas non plus après elle, en pleine chanson.
+// Relecture 2, tour 3 (tests) : l'essai ne montrait pas « ni après elle » :
+// réglée dans les options du titre, la tonalité se lit dans la file lisible
+// d'après l'alerte, et il n'y a plus rien à rattraper. Réglée en direct, elle
+// ne s'y lit pas : sans le titre marqué comme vérifié pendant l'alerte
+// (liveChecked), le rattrapage la remettrait à 0 en pleine chanson.
 test('valeurs imprévues : file de KaraFun illisible, la tonalité réglée dans KaraFun n’est pas remise à 0', async t => {
-  const { frames, A, B } = aThenB(t);
-  frames(queueEvent(A, B, ODD_ITEM));
-  const B2 = { ...B, song: { ...B.song, options: { ...B.song.options, pitch: -2 } } };
-  const sent = [isoStatus(1, B2), queueEvent(B2, ODD_ITEM), isoStatus(2, B2, { pitch: -2 }), isoStatus(3, B2, { pitch: -2 }),
-    isoStatus(4, B2, { pitch: -2 })].flatMap(m => bare(frames(m)));
-  assert.deepEqual(sent, [], 'pendant l’alerte');
-  assert.deepEqual(bare(frames(queueEvent(B2), isoStatus(4, B2, { pitch: -2 }))), [], 'après l’alerte, en pleine chanson');
+  for (const where of ['dans les options du titre', 'en direct']) {
+    const { frames, A, B } = aThenB(t);
+    frames(queueEvent(A, B, ODD_ITEM));
+    const B2 = where === 'en direct' ? B : { ...B, song: { ...B.song, options: { ...B.song.options, pitch: -2 } } };
+    const sent = [isoStatus(1, B2), queueEvent(B2, ODD_ITEM), isoStatus(2, B2, { pitch: -2 }), isoStatus(3, B2, { pitch: -2 }),
+      isoStatus(4, B2, { pitch: -2 })].flatMap(m => bare(frames(m)));
+    assert.deepEqual(sent, [], `pendant l’alerte, tonalité réglée ${where}`);
+    assert.deepEqual(bare(frames(queueEvent(B2), isoStatus(4, B2, { pitch: -2 }))), [],
+      `après l’alerte, en pleine chanson, tonalité réglée ${where}`);
+  }
 });
 
 // Même règle pour un titre ajouté directement dans KaraFun qui se charge
@@ -2564,7 +2572,9 @@ test('valeurs imprévues : relance ⏮ refusée pendant l’alerte', async t => 
   assert.deepEqual(frames(), []);
 });
 
-test('valeurs imprévues : relance ⏮ en cours pendant une file illisible : copie gardée, pas de fausse alerte', async t => {
+// Titre A en lecture, sa relance ⏮ demandée à KaraFun : rend de quoi jouer la
+// suite, avec l'ajout de la copie.
+async function restartRequested(t) {
   const clock = clockAt('2026-11-12T21:00:00.000Z');
   const f = harness({ Date: clock.Date });
   const { frames } = replayBridge(t, f);
@@ -2576,17 +2586,65 @@ test('valeurs imprévues : relance ⏮ en cours pendant une file illisible : cop
   await f.call('POST /api/staff/kf', { action: 'restart' });
   const add = frames().find(m => m.type === 'remote.AddToQueueRequest');
   assert.ok(add, 'copie demandée à KaraFun');
+  return { clock, f, frames, A, add };
+}
+const restartNotConfirmed = f => notes(f).filter(line => /n’a pas confirmé la relance/.test(line));
+
+test('valeurs imprévues : relance ⏮ en cours pendant une file illisible : copie gardée, pas de fausse alerte', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
   const C = isoItem('C-id', 101, add.payload.options);
   // KaraFun ajoute la copie, mais sa file arrive illisible.
   frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C, ODD_ITEM));
   clock.now += 16000;
   assert.deepEqual(frames(), [], 'ni commande ni conclusion pendant l’alerte');
-  assert.equal(notes(f).some(line => /n’a pas confirmé la relance/.test(line)), false, 'pas de fausse alerte');
+  assert.deepEqual(restartNotConfirmed(f), [], 'pas de fausse alerte');
   // File lisible : la copie est juste après le titre en cours, la relance reprend.
   const after = frames(queueEvent(A, C));
   assert.deepEqual(removals(after), [], 'copie gardée');
   assert.deepEqual(after.map(m => m.type), ['remote.NextRequest']);
   assert.equal(f.tracked().map(tr => tr.queueId).join(), 'C-id', 'le suivi passe à la copie');
+});
+
+// Relecture 2, tour 3 (tests) : rien n'essayait les délais mis en pause avec
+// la relance pendant l'alerte. Sans cette pause, « rien n'a été passé »
+// partirait dès la première file lisible, sans laisser à KaraFun le reste de
+// ses 15 s pour montrer la copie.
+test('valeurs imprévues : relance ⏮ en cours pendant une file illisible : son délai reprend après l’alerte', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
+  // 5 s après la demande, la file de KaraFun arrive illisible, et le reste 20 s.
+  clock.now += 5000;
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, ODD_ITEM));
+  clock.now += 20000;
+  assert.deepEqual(frames(), [], 'ni commande ni conclusion pendant l’alerte');
+  // Files lisibles sans la copie : 10 s restent à KaraFun pour la montrer.
+  frames(queueEvent(A));
+  clock.now += 9000;
+  frames(queueEvent(A));
+  assert.deepEqual(restartNotConfirmed(f), [], '5 s avant l’alerte et 9 s après : délai pas encore écoulé');
+  clock.now += 2000;
+  frames();
+  assert.equal(restartNotConfirmed(f).length, 1, '15 s de file lisible écoulées : la relance conclut');
+});
+
+// Même pause pour le retrait des copies tardives d'une relance abandonnée :
+// une copie ajoutée par KaraFun pendant une longue alerte ne s'y voit pas.
+// Sans la pause, le délai de 60 s serait passé à la première file lisible :
+// elle resterait dans KaraFun et rejouerait le titre après lui.
+test('valeurs imprévues : relance ⏮ abandonnée puis longue alerte : la copie tardive vue ensuite est retirée', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
+  // KaraFun ne montre pas la copie : 16 s plus tard, la relance est abandonnée.
+  clock.now += 16000;
+  frames(queueEvent(A));
+  assert.equal(restartNotConfirmed(f).length, 1);
+  // 10 s plus tard, la file arrive illisible, et le reste 70 s.
+  clock.now += 10000;
+  frames(queueEvent(A, ODD_ITEM));
+  clock.now += 70000;
+  assert.deepEqual(frames(), [], 'rien n’est retiré pendant l’alerte');
+  // File lisible : la copie ajoutée pendant l'alerte est retirée (50 s du délai restaient).
+  const C = isoItem('C-id', 101, add.payload.options);
+  assert.deepEqual(removals(frames(queueEvent(A, C))), ['C-id'], 'copie tardive retirée');
+  assert.equal(notes(f).at(-1), 'Copie tardive de « Titre 101 » retirée de KaraFun.');
 });
 
 // Regression: relecture 2, tour 2 (passe adverse) — un titre retiré par
