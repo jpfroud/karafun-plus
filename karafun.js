@@ -1807,4 +1807,4 @@ function normalizeResults(data) {
 
 module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, BATTLE_MODS_MAX, isBattleItem, battleModFor,
   maskCode, lockIdentity, unknownSettingsSupport: freshSupport,
-  CHALLENGE, DISCOVERY_HEADERS, classifyDiscovery, retryAfterAt, urlRejected };
+  CHALLENGE, DISCOVERY_HEADERS, classifyDiscovery, retryAfterAt, urlRejected, kcsReason };

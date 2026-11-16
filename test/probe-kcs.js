@@ -10,7 +10,8 @@
 // encore, avec son dernier état) ; Error, une erreur de KaraFun ; fermeture par KaraFun, ou
 // KaraFun muet plus longtemps que KcsTransport ne l'accepte (son chien de garde, 'stale', ou
 // isStale à la fin de l'essai), une connexion perdue (lost).
-// Les messages s'affichent. Lancée depuis la racine du dépôt, la sonde les garde aussi dans
+// Les messages s'affichent, et un contenu coupé au-delà de 32 niveaux est signalé. Lancée
+// depuis la racine du dépôt, la sonde les garde aussi dans
 // journal/kcs-probe.json ; dans le conteneur de l'essai de .github/RELEASE.md (docker run
 // --rm, rien de monté sur /app/journal), ce fichier part avec le conteneur : les messages ne
 // restent qu'à l'écran.
@@ -23,7 +24,7 @@
 // (Socket.IO), sans le WebSocket de Node : rien à sonder ici.
 // Cette lecture compte dans la limite horaire de KaraFun : ne pas lancer la sonde en boucle.
 const fs = require('fs');
-const { KaraFunBridge, DISCOVERY_HEADERS, classifyDiscovery, urlRejected } = require('../karafun');
+const { KaraFunBridge, DISCOVERY_HEADERS, classifyDiscovery, urlRejected, kcsReason } = require('../karafun');
 const { KcsTransport } = require('../kcs-transport');
 
 const DUREE_MS = 12000;
@@ -111,11 +112,16 @@ const RAISONS = {
     console.log(JSON.stringify(message));
     if (message.type === 'core.AuthenticatedEvent') accepte = true;
     // La sonde n'envoie que les réponses aux battements : une Error de KaraFun n'est jamais attendue.
-    else if (message.type === 'Error') erreur ??= message.payload?.message || message.payload?.type || 'erreur inconnue';
+    // Sa raison se lit comme dans la file (karafun.js, kcsReason) : un texte, 200 caractères au plus.
+    else if (message.type === 'Error') erreur ??= kcsReason(message.payload?.message) || kcsReason(message.payload?.type) || 'erreur inconnue';
     // KaraFun fermé : la file ferme alors le canal (karafun.js), la sonde s'arrête aussi.
     else if (message.type === 'remote.AppLeftEvent') { parti = true; finir(); }
   });
   canal.on('transport-error', message => console.error(`Erreur : ${message}`));
+  // Contenu de plus de 32 niveaux coupé par KcsTransport (MAX_DEPTH) : la file le note dans son
+  // journal, sans alerte (karafun.js, 'message-coupe'). La sonde le dit : le message affiché et
+  // gardé porte null à la place du contenu coupé. KaraFun n'en envoie jamais plus de 10.
+  canal.on('message-pruned', type => console.error(`Message ${String(type).slice(0, 64)} coupé au-delà de 32 niveaux (KcsTransport) : null à la place du contenu coupé.`));
   // Le canal se ferme seul après 10 s sans message une fois ouvert : connexion perdue pour la
   // file (karafun.js, 'stale'), même après le code accepté.
   canal.on('stale', () => {

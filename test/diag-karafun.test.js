@@ -611,6 +611,11 @@ test('F4 test/probe-kcs.js ouvre le canal de la file (KcsTransport) et le juge c
     // KaraFun absent : le serveur KCS rend encore son dernier état, puis AppLeftEvent (karafun.js).
     const etat = { type: 'remote.StatusEvent', payload: { status: { state: 1 } } }, parti = { type: 'remote.AppLeftEvent', payload: {} };
     const erreur = { type: 'Error', payload: { type: 1, message: 'Invalid request' } };
+    // Raison qui n'est pas un texte (ni toString ni valueOf utilisables) : lue comme dans la file,
+    // elle ne compte pas, et la sonde ne tombe pas en l'affichant.
+    const erreurPiegee = { type: 'Error', payload: { message: { toString: 'x', valueOf: 'y' } } };
+    // Plus de 32 niveaux : KcsTransport coupe le contenu (MAX_DEPTH), la sonde le signale.
+    const profond = { type: 'remote.StatusEvent', payload: Array.from({ length: 40 }).reduce(dedans => ({ niveau: dedans }), {}) };
     const journal = path.join(dossier, 'journal', 'kcs-probe.json');
     const perdue = 'la file y verrait une connexion perdue et se reconnecterait';
     // Les deux essais qui durent les 12 s de la sonde tournent ensemble, chacun dans son dossier.
@@ -653,6 +658,10 @@ test('F4 test/probe-kcs.js ouvre le canal de la file (KcsTransport) et le juge c
         /Essai en échec : KaraFun est fermé ou sa télécommande a été désactivée \(remote\.AppLeftEvent\)/],
       ['Error de KaraFun après le code accepté', [['open'], ['message', authentifie], ['message', erreur], ['close', 1000]],
         /Essai en échec : KaraFun a répondu par une erreur \(Invalid request\)/],
+      ['Error de KaraFun dont la raison n’est pas un texte', [['open'], ['message', authentifie], ['message', erreurPiegee], ['close', 1000]],
+        /Essai en échec : KaraFun a répondu par une erreur \(erreur inconnue\)/],
+      ['contenu coupé au-delà de 32 niveaux, signalé', [['open'], ['message', authentifie], ['message', profond], ['close', 1000]],
+        /^Message remote\.StatusEvent coupé au-delà de 32 niveaux \(KcsTransport\) : null à la place du contenu coupé\.$/m],
       ['refus 4210 après un message', [['open'], ['message', authentifie], ['close', 4210]], /Essai en échec : KaraFun a refusé l'adresse KCS \(fermeture 4210/],
       ['refus 4403', [['open'], ['close', 4403]], /Essai en échec : KaraFun a refusé l'adresse KCS \(fermeture 4403/],
       ['fermé par KaraFun après le code accepté', [['open'], ['message', ping], ['message', authentifie], ['close', 1000]],

@@ -82,7 +82,11 @@ Le dépôt reste sur la dernière LTS de ses outils (décision du mainteneur, 6 
   de la nouvelle image, au même code, pour l'architecture du PC (l'autre n'a que V36
   à V38) ; pour un autre Node, la télécommande KaraFun s'essaie en plus. Les notes de
   chaque release donnent les versions de Node et de Java de son image ; la publication
-  échoue si leur version majeure n'est pas celle des étiquettes du `Dockerfile`.
+  échoue si leur version majeure n'est pas celle des étiquettes du `Dockerfile`. Le kit
+  Windows, lui, embarque le Node et le Java du runner de la publication (dernière
+  version de leur ligne majeure) : rien ne les compare à ceux de la version précédente,
+  et les notes ne les donnent pas. Sa suite hors ligne ouvre bien le WebSocket de ce
+  Node, mais vers le faux KaraFun local, sans TLS.
 - **Comment monter.** D'un seul tenant, dans une PR : `Dockerfile`, CI, tests et
   documents ; le test W11 de `test/workflows.test.js` refuse une montée partielle.
   Java : bilan avant/après d'une vraie soirée (`AGENTS.md`). Node : essai réel de la
@@ -193,7 +197,9 @@ gh attestation verify oci://ghcr.io/jpfroud/karafun-plus:vX.Y.Z --repo jpfroud/k
   jour de Debian, moins reproductible tant que la ligne reste. C'est le cas de
   zlib1g depuis novembre 2026 (CVE-2026-76844 et CVE-2026-85091) : retirer la
   ligne quand l'empreinte de `node:26-trixie-slim` contient
-  `1:1.3.dfsg+really1.3.1-1+deb13u1`.
+  `1:1.3.dfsg+really1.3.1-1+deb13u1`. La construction de l'image échoue alors en
+  le disant : la PR d'empreinte de Dependabot qui l'apporte, qui fusionnerait
+  seule, attend ce retrait au lieu de garder la ligne sans qu'on le voie.
 - **Outils d'agents dans les sessions de développement** : les hooks de
   `.claude/` installent gstack depuis son dépôt dans le conteneur éphémère de
   la session. Rien de cet outillage n'entre dans le kit ni dans l'image, et

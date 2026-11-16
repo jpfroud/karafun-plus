@@ -306,11 +306,16 @@ test('options imbriquées sans fin : refusées à l’entrée, la démo et le po
   c.ws.close();
 });
 
+// Messages du faux que le pont a ignorés ou coupés (son journal, karafun.js : 'message-ignore', 'message-coupe') :
+// aucun n'est attendu d'un faux qui parle comme KaraFun.
+const nonLus = bridge => bridge.events.filter(e => ['message-ignore', 'message-coupe'].includes(e.name));
+
 // protects=le pont du même processus face à des options mal typées, envoyées par un programme local : le faux les
 // recopie champ par champ avec leur type, comme KaraFun les montre, et oublie le reste ; fails_when=une valeur
-// impossible à convertir (un objet à la place d'un nombre ou d'un texte) est gardée puis relayée, et le pont tombe
-// en la lisant, à l'arrivée de la file (isBattleMod de karafun.js) ou au chargement du titre (song-settings.js) ;
-// no_claim=ce que le vrai KaraFun fait de ces valeurs.
+// impossible à convertir (un objet à la place d'un nombre ou d'un texte) est gardée puis relayée par le faux
+// (options du titre vues par l'essai), ou le pont ignore un message du faux (alerte « Message de KaraFun
+// illisible ») ; depuis le pont KaraFun de novembre 2026, karafun.js lit ces valeurs avec leur type et ne tombe
+// plus en les lisant ; no_claim=ce que le vrai KaraFun fait de ces valeurs.
 test('options mal typées : recopiées champ par champ, le pont tient jusqu’à la lecture', async t => {
   const trapped = { toString: 1 };
   for (const [name, options, kept] of [
@@ -335,6 +340,8 @@ test('options mal typées : recopiées champ par champ, le pont tient jusqu’à
     c.send({ id: 3, type: 'remote.PlayRequest', payload: {} });
     await until(() => bridge.status?.kcsState === 4, `${name} : lecture`);
     assert.equal(bridge.ready, true, `${name} : pont toujours prêt`);
+    assert.deepEqual(nonLus(bridge), [], `${name} : aucun message du faux ignoré ni coupé par le pont`);
+    assert.equal(bridge.unreadable, null, `${name} : pas d’alerte « Message de KaraFun illisible »`);
     c.ws.close();
   }
 });
@@ -429,7 +436,8 @@ test('pont local sans WebSocket de Node : nouvel essai prévu, message clair', a
 // protects=le vrai pont (karafun.js → kcs-transport.js → WebSocket de Node) avec le faux, comme la démo
 // et les tests hors ligne : prêt en KCS, ajout avec réglages, Battle, retrait, lecture, réglage en
 // direct, KaraFun fermé puis rouvert ; fails_when=le pont ne devient pas prêt, une commande n'atteint pas
-// le faux ou la reconnexion échoue ; no_claim=que le vrai KaraFun accepte ces commandes (seul l'essai
+// le faux, le pont ignore ou coupe un message du faux (alerte « Message de KaraFun illisible ») ou la
+// reconnexion échoue ; no_claim=que le vrai KaraFun accepte ces commandes (seul l'essai
 // réel avant fusion le montre), ni la découverte par la page de KaraFun, sans objet en local.
 test('le vrai pont avec le faux KaraFun, par le WebSocket de Node', async t => {
   const kf = await fake(t);
@@ -456,6 +464,9 @@ test('le vrai pont avec le faux KaraFun, par le WebSocket de Node', async t => {
   await until(() => bridge.status.pitch === 1, 'tonalité en direct');
   // Aucune coupure pendant le parcours : une demande qui ferait fermer le faux (1011) se verrait ici.
   assert.equal(bridge.events.some(e => e.name === 'connexion-perdue'), false, 'aucune coupure avant la fermeture');
+  // Lecture typée du pont : aucun message du faux ignoré ni coupé, et pas d'alerte.
+  assert.deepEqual(nonLus(bridge), [], 'aucun message du faux ignoré ni coupé par le pont');
+  assert.equal(bridge.unreadable, null, 'pas d’alerte « Message de KaraFun illisible »');
   // KaraFun fermé (AppLeftEvent), puis rouvert sur le même port : le pont se reconnecte seul.
   kf.close();
   await until(() => !bridge.ready, 'KaraFun fermé');
@@ -463,4 +474,6 @@ test('le vrai pont avec le faux KaraFun, par le WebSocket de Node', async t => {
   await until(() => bridge.ready, 'reconnexion', 15000);
   assert.equal(bridge.protocol, 'kcs');
   assert.deepEqual(again.state().queue, [], 'nouveau KaraFun : file vide');
+  assert.deepEqual(nonLus(bridge), [], 'après la reconnexion non plus');
+  assert.equal(bridge.unreadable, null, 'après la reconnexion, pas d’alerte');
 });

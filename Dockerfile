@@ -1,5 +1,6 @@
 # Images de base épinglées par empreinte (index multi-architecture) : même
-# construction partout ; Dependabot propose chaque nouvelle empreinte en PR.
+# construction partout, sauf la mise à niveau de zlib1g de l'étape finale (version
+# du jour de Debian, SECURITY.md) ; Dependabot propose chaque nouvelle empreinte en PR.
 FROM --platform=$BUILDPLATFORM maven:3.10-eclipse-temurin-25@sha256:047a82fc82c613266cfb1b66fd920be9c8ba51fd67edc68245e4542768f45e36 AS solveur
 WORKDIR /build
 COPY solver/pom.xml solver/pom.xml
@@ -56,7 +57,12 @@ COPY --from=jre /solver-runtime/ solver-runtime/
 # l'image node:26-trixie-slim n'embarque pas encore (zlib1g +b1 au 16 novembre
 # 2026). Mise à niveau de ce seul paquet, à retirer dès que l'empreinte de
 # l'image de base contient zlib1g 1:1.3.dfsg+really1.3.1-1+deb13u1 (SECURITY.md).
-RUN apt-get update \
+# La construction échoue alors en le disant : une PR d'empreinte de Dependabot,
+# qui fusionne seule, ne garde pas cette étape sans qu'on le voie.
+RUN if dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge 1:1.3.dfsg+really1.3.1-1+deb13u1; then \
+      echo "zlib1g de l'image de base déjà corrigé : retirer cette étape du Dockerfile (SECURITY.md)." >&2; exit 1; \
+    fi \
+ && apt-get update \
  && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
  && rm -rf /var/lib/apt/lists/*
 # L'application n'utilise que node : npm, npx, corepack et yarn de l'image de

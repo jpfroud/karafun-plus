@@ -812,15 +812,24 @@ test('W11 une montée de version change tout le dépôt d’un seul tenant', () 
   assert.ok(image.includes(`$VERSION_NODE == v${node}.*`), 'test/verifier-image.sh : Node de cette machine');
   assert.ok(image.includes(`MOTIF_JAVA='^(openjdk|java) ${java}(`), 'test/verifier-image.sh : Java de l’image');
   assert.ok(read('test/verify-portable-kit.ps1').includes(`'^(openjdk|java) ${java}'`), 'test/verify-portable-kit.ps1 : Java du kit');
-  // Textes : documents, messages et commentaires.
-  for (const file of ['README.md', 'CONTRIBUTING.md', 'CONTEXTE-REPRISE.md', 'DEPLOIEMENT-SERVEUR.md', 'KIT-BAR-LISEZMOI.txt',
-    '.github/RELEASE.md', 'PREPARER-KIT-BAR.ps1', 'karafun.js', 'tools/diag-karafun.js', 'test/verifier-image.sh',
-    'test/verify-portable-kit.ps1', 'test/fixtures/compose.essai-caddy.yaml']) {
-    const text = read(file);
-    for (const [, version] of text.matchAll(/\bNode(?:\.js)? (\d+)\b/g)) assert.equal(version, node, `${file} : Node ${version}`);
-    for (const [, version] of text.matchAll(/\bJava (\d+)\b/g)) assert.equal(version, java, `${file} : Java ${version}`);
+  // Textes : documents, messages et commentaires. Debian y est citée par son numéro (« Debian 13 »).
+  const DEBIAN = { bookworm: '12', trixie: '13', forky: '14' };
+  assert.ok(DEBIAN[debian], `numéro de Debian ${debian} à ajouter à W11`);
+  const tag = (file, text) => {
     for (const [, version, name] of text.matchAll(/\bnode:(\d+)-(\w+)-slim\b/g)) {
       assert.equal(`${version}-${name}`, `${node}-${debian}`, `${file} : node:${version}-${name}-slim`);
     }
+  };
+  for (const file of ['README.md', 'CONTRIBUTING.md', 'CONTEXTE-REPRISE.md', 'DEPLOIEMENT-SERVEUR.md', 'KIT-BAR-LISEZMOI.txt',
+    'GUIDE-BAR.md', 'LISEZMOI.txt', 'AGENTS.md', '.github/RELEASE.md', 'PREPARER-KIT-BAR.ps1', 'karafun.js', 'tools/diag-karafun.js',
+    'test/verifier-image.sh', 'test/verify-portable-kit.ps1', 'test/fixtures/compose.essai-caddy.yaml']) {
+    const text = read(file);
+    for (const [, version] of text.matchAll(/\bNode(?:\.js)? (\d+)\b/g)) assert.equal(version, node, `${file} : Node ${version}`);
+    for (const [, version] of text.matchAll(/\bJava (\d+)\b/g)) assert.equal(version, java, `${file} : Java ${version}`);
+    for (const [, version] of text.matchAll(/\bDebian (\d+)\b/g)) assert.equal(version, DEBIAN[debian], `${file} : Debian ${version}`);
+    tag(file, text);
   }
+  // SECURITY.md garde des versions écartées (« Node 25 et Java 26 », #48 à #50) : seule l'étiquette
+  // de l'image y est suivie (correctif de zlib).
+  tag('SECURITY.md', read('SECURITY.md'));
 });

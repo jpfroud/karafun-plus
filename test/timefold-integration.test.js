@@ -1416,7 +1416,7 @@ test('B3 pont Timefold : JAVA_TOOL_OPTIONS complétée après l’option de jour
   assert.equal(bridge.env, process.env);
 });
 
-// Relecture de #26 : chemin de scheduler.js:80 (`new TimefoldBridge()` sans
+// Relecture de #26 : chemin du constructeur de Scheduler (`new TimefoldBridge()` sans
 // option env), les réglages de l'exploitant viennent de process.env.
 test('B3 bis pont Timefold : sans option env, KARAOKE_SOLVER_JVM_ARGS et JAVA_TOOL_OPTIONS lus dans process.env', async () => {
   const saved = { KARAOKE_SOLVER_JVM_ARGS: process.env.KARAOKE_SOLVER_JVM_ARGS, JAVA_TOOL_OPTIONS: process.env.JAVA_TOOL_OPTIONS };

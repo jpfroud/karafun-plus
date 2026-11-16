@@ -505,7 +505,7 @@ async function kcsClient(base, code) {
 // protects=les réglages de titre du faux KaraFun en KCS (options à l'ajout, options d'un titre de la file,
 // tonalité, tempo et voix du titre en cours) ; fails_when=une option perdue ou fusionnée au lieu d'être remplacée,
 // un titre joué sans être d'abord annoncé (état 1), un réglage non appliqué ; no_claim=que le vrai KaraFun
-// réponde ainsi aux réglages (jamais observé, karafun.js:228-233) : seul le faux est essayé, par le vrai WebSocket.
+// réponde ainsi aux réglages (jamais observé : commentaire de SETTING_REQUESTS, karafun.js) : seul le faux est essayé, par le vrai WebSocket.
 test('faux KaraFun : options d’ajout, options d’un titre de la file et réglages du titre en cours', { timeout: 30000 }, async t => {
   const port = await freePort();
   const fake = await startFakeKaraFun({ port, code: '123456', songSeconds: 60, autoplay: false });
