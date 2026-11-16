@@ -13,8 +13,9 @@ const outil = id => OUTILS.find(o => o.id === id);
 const AUJOURDHUI = '2026-11-06';
 const EN_SERVICE = { node: '26', debian: 'trixie', java: '25', maven: '3.10', ubuntu: '26.04', playwright: '1.64.1', actionlint: '1.7.12', trivy: '0.76.1', zizmor: '1.32.0' };
 // Une ligne LTS dont la phase LTS commence plus tard a, chez endoflife.date, isLts à
-// vrai et ltsFrom à cette date (ltsFrom n'est vide que si isLts est faux : leur
-// documentation de l'API v1).
+// vrai et ltsFrom à cette date. ltsFrom est vide quand isLts est faux, quand la phase
+// LTS commence dès la sortie (Temurin, Ubuntu) ou quand la date n'est pas connue
+// (documentation de l'API v1).
 const NODE = [
   { name: '27', releaseDate: '2027-04-22', isLts: true, ltsFrom: '2027-10-20', isEol: false, eolFrom: '2030-04-30', isMaintained: false },
   { name: '26', releaseDate: '2026-05-05', isLts: true, ltsFrom: '2026-10-28', isEol: false, eolFrom: '2029-04-30', isMaintained: true },
@@ -107,6 +108,13 @@ test('V5 une version en service inconnue ou une réponse illisible fait échouer
   const lire = cycle => cyclesLus({ result: { releases: [cycle] } }, 'nodejs');
   assert.equal(lire(bon).length, 1);
   assert.equal(lire({ ...bon, eolFrom: null }).length, 1, 'sans date de fin connue');
+  // ltsFrom (début de la phase LTS) : vide, ou une vraie date ; sinon la ligne serait
+  // jugée LTS ou non à tort (relecture gstack-review de la branche finale, passe 2).
+  assert.equal(lire({ ...bon, ltsFrom: null }).length, 1, 'sans date de LTS connue');
+  assert.equal(lire({ ...bon, ltsFrom: '2026-10-28' }).length, 1, 'LTS à une date donnée');
+  for (const ltsFrom of ['bientôt', '2026-13-99', 20261028, ['2026-10-28']]) {
+    assert.throws(() => lire({ ...bon, ltsFrom }), /cycle illisible/, JSON.stringify(ltsFrom));
+  }
   // Un nom de version ou une date qui n'en est pas un n'entre jamais dans l'issue.
   assert.throws(() => lire({ ...bon, name: '26<img src=x>' }), /cycle illisible/);
   assert.throws(() => lire({ ...bon, releaseDate: 'bientôt' }), /cycle illisible/);

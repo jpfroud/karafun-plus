@@ -3877,3 +3877,23 @@ test('valeurs imprévues : relance ⏮ demandée juste après une longue alerte 
   frames(queueEvent(A));
   assert.equal(restartNotConfirmed(f).length, 1, 'délai de 15 s compté depuis la demande');
 });
+
+// Regression: relecture gstack-review de la branche finale, passe 2 (essais,
+// maintenabilité, machines à états) — la pause des copies tardives d'une relance
+// abandonnée n'était appliquée qu'au passage suivant de la synchronisation : ⏮ touché
+// après une longue alerte, avant ce passage, trouvait le délai écoulé, l'oubliait, et la
+// copie tardive restait dans KaraFun. Chaque lecteur compte la pause.
+test('valeurs imprévues : relance abandonnée, longue alerte, ⏮ avant la synchronisation : refusé, copie tardive retirée', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
+  clock.now += 16000;
+  frames(queueEvent(A));
+  assert.equal(restartNotConfirmed(f).length, 1, 'relance abandonnée');
+  clock.now += 10000;
+  frames(queueEvent(A, ODD_ITEM));
+  clock.now += 70000;
+  frames();
+  const C = isoItem('C-id', 101, add.payload.options);
+  FakeWS.last.emit('message', { data: JSON.stringify(queueEvent(A, C)) });
+  await assert.rejects(f.call('POST /api/staff/kf', { action: 'restart' }), /La relance précédente vient d’échouer/);
+  assert.deepEqual(removals(frames()), ['C-id'], 'copie tardive retirée');
+});

@@ -448,3 +448,96 @@ test('duo noté pendant l’envoi, accusé pendant l’alerte d’un message ill
   assert.deepEqual(bridge.removed, [3], 'retrait envoyé à la première vue lisible');
   assert.ok(sent.pulled.at >= before, 'délai d’avertissement compté depuis l’envoi');
 });
+
+// Regression: relecture gstack-review de la branche finale, passe 2 (cinq relecteurs) —
+// le retrait d'un duo noté pendant l'alerte, pas encore envoyé, déclenchait au bout de
+// 45 s d'alerte « KaraFun n'a pas retiré … », puis étouffait l'avis du vrai retrait
+// ignoré après l'alerte. L'avis attend un retrait envoyé, et compte depuis l'envoi.
+test('duo noté pendant l’envoi, accusé pendant une longue alerte : pas d’avis avant le vrai retrait, puis l’avis du retrait ignoré', async () => {
+  const { f, s, bridge, queue } = evening();
+  const next = s.select();
+  const partner = s.people.get(next.ids[0]);
+  f.setPending({ sel: next, at: Date.now(), before: new Set(queue.map(item => item.queueId)) });
+  await f.call('POST /api/staff/duo-mark', { queueId: 1, partnerId: partner.id });
+  bridge.unreadable = 'remote.StatusEvent';
+  queue.push({ queueId: 3, songId: next.song.songId, singer: next.label });
+  f.sync();
+  const sent = f.tracked().find(tr => tr.queueId === 3);
+  const ignored = () => s.log.filter(line => /n’a pas retiré/.test(line.msg));
+  sent.pulled.at -= 46000; // 46 s d'alerte
+  f.sync();
+  assert.deepEqual(bridge.removed, [], 'rien envoyé pendant l’alerte');
+  assert.deepEqual(ignored(), [], 'pas d’avis pour un retrait jamais envoyé');
+  bridge.unreadable = null;
+  f.sync();
+  assert.deepEqual(bridge.removed, [3], 'retrait envoyé à la fin de l’alerte');
+  sent.pulled.at -= 46000; // KaraFun ignore ce retrait depuis 46 s
+  f.sync();
+  assert.equal(ignored().length, 1, 'avis du retrait ignoré, compté depuis l’envoi');
+});
+
+// Regression: relecture gstack-review de la branche finale, passe 2 (passe contradictoire,
+// équipe rouge) — un duo improvisé noté pendant l'alerte retirait aussitôt le titre chargé
+// du partenaire, jugé sur une scène peut-être figée, alors que l'accusé d'un envoi le
+// reporte. Les retraits de KaraFun pendant l'alerte attendent la première vue lisible.
+test('duo noté pendant l’alerte d’un message illisible : le titre du partenaire quitte KaraFun à la première vue lisible', async () => {
+  const { f, bridge, dam } = evening();
+  bridge.unreadable = 'remote.StatusEvent';
+  const marked = await f.call('POST /api/staff/duo-mark', { queueId: 1, partnerId: dam.id });
+  assert.match(marked.message, /Le titre suivant de Dam quittera KaraFun à la fin de l’alerte/);
+  assert.equal(f.tracked().find(tr => tr.queueId === 2).pulled?.reason, 'duo', 'retrait du titre de Dam noté');
+  assert.deepEqual(bridge.removed, [], 'pas pendant l’alerte : la scène vue peut être figée');
+  bridge.unreadable = null;
+  f.sync();
+  assert.deepEqual(bridge.removed, [2], 'envoyé à la première vue lisible');
+});
+
+// Même règle (passe 2, simplification) : annulé avant d'être envoyé, le retrait ne laisse
+// rien qui puisse encore aboutir ; le titre ne serait pas rendu à son chanteur à tort.
+test('duo noté puis annulé pendant l’alerte, avant l’envoi du retrait : rien retiré, rien gardé pour plus tard', async () => {
+  const { f, bridge, dam } = evening();
+  bridge.unreadable = 'remote.StatusEvent';
+  await f.call('POST /api/staff/duo-mark', { queueId: 1, partnerId: dam.id });
+  const loaded = f.tracked().find(tr => tr.queueId === 2);
+  await f.call('POST /api/staff/duo-unmark', { queueId: 1 });
+  assert.equal(loaded.pulled, null, 'retrait abandonné');
+  assert.equal(loaded.unpulled, undefined, 'jamais envoyé : rien qui puisse encore aboutir');
+  bridge.unreadable = null;
+  f.sync();
+  assert.deepEqual(bridge.removed, [], 'rien retiré');
+});
+
+// Même règle pour « Parti » (GUIDE-BAR.md : pendant l'alerte, pas de retrait du titre d'un
+// chanteur parti).
+test('« Parti » pendant l’alerte d’un message illisible : son titre chargé quitte KaraFun à la première vue lisible', async () => {
+  const { f, bridge, dam } = evening();
+  bridge.unreadable = 'remote.StatusEvent';
+  await f.call('POST /api/staff/person/leave', { personId: dam.id });
+  assert.deepEqual(bridge.removed, [], 'pas pendant l’alerte');
+  bridge.unreadable = null;
+  f.sync();
+  assert.deepEqual(bridge.removed, [2], 'envoyé à la première vue lisible');
+});
+
+// Regression: relecture gstack-review de la branche finale, passe 2 (équipe rouge) —
+// pendant une alerte de la file seule (file figée, état lisible), un titre chanté puis fini
+// reste dans la file figée : « Parti » ou « Vider toutes les chansons » le marquait annulé,
+// et à la fin de l'alerte son passage ne se fermait jamais. Un titre déjà commencé n'est
+// plus annulé, comme pour « Supprimer toutes les tables ».
+for (const [geste, faire] of [
+  ['« Parti »', (f, marine) => f.call('POST /api/staff/person/leave', { personId: marine.id })],
+  ['« Vider toutes les chansons »', f => f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' })],
+]) {
+  test(`${geste} pendant une alerte de la file seule : le titre déjà chanté se clôt à la fin de l’alerte`, async () => {
+    const { f, s, bridge, queue, marine, stage } = evening();
+    Object.assign(bridge, { unreadable: 'remote.QueueEvent', queueUnreadable: true, status: { state: 'playing', songPlaying: { queueId: 2 } } });
+    f.sync();
+    await faire(f, marine);
+    assert.equal(f.tracked().find(tr => tr.queueId === 1)?.cancelled ?? false, false, 'titre chanté pas annulé');
+    queue.shift();
+    Object.assign(bridge, { unreadable: null, queueUnreadable: false });
+    f.sync();
+    const entry = s.stageHistory.find(item => item.entryId === stage.song.entryId);
+    assert.ok(entry?.endedAt, 'passage de Marine clos');
+  });
+}

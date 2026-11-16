@@ -428,10 +428,33 @@ test('Battle lancée pendant l’alerte d’un état illisible : rien de conclu 
   await serverTime.advance(5000);
   f.sync();
   assert.equal(f.battleVote.automation.status, 'queued', 'rien de conclu pendant l’alerte');
+  // Passe 2 de la relecture (machines à états) : sa sortie de la file reste datée, le lien
+  // « Rejoindre la Battle » des téléphones reste donc (battleStarting).
+  assert.ok(f.battleVote.automation.missingSince, 'sortie de la file datée pendant l’alerte');
   assert.ok(!f.sched.log.some(line => /Battle terminée/.test(line.msg)), 'pas de « Battle terminée »');
   // Fin de l'alerte : l'état lisible montre la Battle sur scène.
   bridge.unreadable = null;
   bridge.status = { state: 'playing', songPlaying: { queueId: 50 } };
   f.sync();
   assert.equal(f.battleVote.automation.status, 'playing', 'Battle vue sur scène à la fin de l’alerte');
+});
+
+// Regression: relecture gstack-review de la branche finale, passe 2 (passe
+// contradictoire, équipe rouge) — pendant l'alerte, « ▶ Lancer le prochain titre » après
+// une Battle coupait Spotify, répondait OK et ne lançait rien avant la fin de l'alerte
+// (syncBattle attend une vue lisible), puis lançait seul. Refusé avant tout changement :
+// le bar lance le titre dans KaraFun.
+test('après une Battle, pendant l’alerte d’un message illisible : « Lancer le prochain titre » refusé sans couper Spotify', async () => {
+  const { f, order, player } = setup();
+  player.playing = true;
+  f.battleVote.observeExternalBattle({ queueId: 50, songId: 900, title: 'Tube collectif' });
+  f.battleVote.updateAutomation('playing');
+  f.battleVote.updateAutomation('after');
+  const bridge = fakeBridge(order, [plainItem(41)]);
+  f.setBridge(bridge);
+  bridge.unreadable = 'remote.StatusEvent';
+  await assert.rejects(f.handlers['POST /api/staff/kf'](null, null, { action: 'play' }),
+    /Un message de KaraFun est illisible : lance le titre suivant depuis KaraFun/);
+  assert.deepEqual(order, [], 'Spotify pas coupé, rien envoyé');
+  assert.equal(f.battleVote.automation.status, 'after');
 });

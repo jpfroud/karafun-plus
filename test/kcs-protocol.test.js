@@ -2191,8 +2191,8 @@ test('valeurs imprévues : file de KaraFun lue avec ses types ; un titre illisib
   const alerted = bridge.connectionState();
   assert.equal(alerted.level, 'error', 'bandeau rouge sur la page du bar');
   assert.equal(alerted.alert, 'Message de KaraFun illisible (remote.QueueEvent) : la file ne voit plus ces changements de KaraFun ' +
-    'et ne lui envoie plus rien d’elle-même ; Spotify n’est plus coupé ni relancé d’office. Pilote dans KaraFun et avec ' +
-    '« ⏸ Spotify » en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.');
+    'et ne lui envoie plus rien d’elle-même ; Spotify, s’il est relié, n’est plus coupé ni relancé d’office. Pilote dans ' +
+    'KaraFun en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.');
   // Relecture gstack-review de la branche finale (design) : la pastille de l'état KaraFun ne
   // garde que le titre de l'alerte ; la phrase entière y faisait grandir la barre du haut.
   assert.equal(alerted.label, 'Message de KaraFun illisible (remote.QueueEvent)');
@@ -2304,6 +2304,9 @@ test('valeurs imprévues : file illisible dès la connexion, file et état illis
   named(ws);
   ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [kcsItem({ id: piege() })] } } });
   assert.deepEqual([bridge.connectionState().phase, bridge.connectionState().level], ['waiting-data', 'error']);
+  // Relecture gstack-review de la branche finale, passe 2 (design) : dès la connexion,
+  // « Reconnecter » ne sert à rien tant que KaraFun renvoie ce titre ; l'alerte donne le remède.
+  assert.match(bridge.connectionState().alert, /Un titre de KaraFun est sans doute en cause : retire-le dans KaraFun, ou attends qu’il soit passé\./);
   ws.receive({ type: 'remote.QueueEvent', payload: { queue: { items: [] } } });
   ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 1, current: null } } });
   assert.equal(bridge.ready, true);

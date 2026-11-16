@@ -2876,8 +2876,8 @@ test('barre du haut : état KaraFun du pont, alerte impossible à manquer, recon
   // tour 2) : le pont rouvre alors la connexion, KaraFun renvoie sa file et
   // son état. Sans ce bouton, l'alerte restait tant que KaraFun était à l'arrêt.
   const unreadable = 'Message de KaraFun illisible (remote.QueueEvent) : la file ne voit plus ces changements de KaraFun ' +
-    'et ne lui envoie plus rien d’elle-même ; Spotify n’est plus coupé ni relancé d’office. Pilote dans KaraFun et avec ' +
-    '« ⏸ Spotify » en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.';
+    'et ne lui envoie plus rien d’elle-même ; Spotify, s’il est relié, n’est plus coupé ni relancé d’office. Pilote dans ' +
+    'KaraFun en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.';
   const unreadableLabel = 'Message de KaraFun illisible (remote.QueueEvent)';
   await page.update({ kf: { ...world.kf, connection: { phase: 'ready', level: 'error', label: unreadableLabel, since: Date.now(), attempt: 1,
     canRename: false, nameConflict: null, alert: unreadable, canReconnect: true } } });

@@ -1419,10 +1419,15 @@ class KaraFunBridge extends EventEmitter {
     // connexion marche, mais seul KaraFun lève l'alerte, et « Reconnecter »
     // la rouvre pour qu'il renvoie sa file et son état (connect). KaraFun
     // perdu, c'est l'alerte de relance qui compte.
+    // Avant la première vue lisible (waiting-data), KaraFun renvoie ce même
+    // message à chaque reconnexion : le remède est dans KaraFun.
     const unread = this._unreadableAlert();
-    const unreadable = unread ? `Message de KaraFun illisible (${unread}) : la file ne voit plus ces changements de KaraFun ` +
-      'et ne lui envoie plus rien d’elle-même ; Spotify n’est plus coupé ni relancé d’office. Pilote dans KaraFun et avec ' +
-      '« ⏸ Spotify » en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.' : null;
+    const unreadable = !unread ? null : phase === 'waiting-data' ?
+      `Message de KaraFun illisible (${unread}) : la file attend une file et un état lisibles de KaraFun, et ne lui envoie ` +
+      'rien. Un titre de KaraFun est sans doute en cause : retire-le dans KaraFun, ou attends qu’il soit passé.' :
+      `Message de KaraFun illisible (${unread}) : la file ne voit plus ces changements de KaraFun ` +
+      'et ne lui envoie plus rien d’elle-même ; Spotify, s’il est relié, n’est plus coupé ni relancé d’office. Pilote dans ' +
+      'KaraFun en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.';
     // Pastille de l'état KaraFun : le titre de l'alerte seulement ; la phrase entière,
     // dans le bandeau, y faisait grandir la barre du haut sur un téléphone.
     const [level, label] = unreadable ? ['error', `Message de KaraFun illisible (${unread})`] : labels[phase];
