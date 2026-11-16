@@ -349,3 +349,14 @@ test('J11 le guide cite la limite des retours en soirée de night-state.js', () 
   assert.ok(flat(read(GUIDE)).includes(`versions antérieures à la ${FULL_RESTORE_SINCE}`),
     `${GUIDE} §17 : citer FULL_RESTORE_SINCE (${FULL_RESTORE_SINCE}), la version sous laquelle un retour est refusé pendant une soirée`);
 });
+
+test('J15 une ligne de code citée dans un document montre toujours ce qu’il en dit', () => {
+  // `fichier.js:ligne` dans un document : le code attendu à cette ligne, déclaré ici.
+  const CITATIONS = { 'kcs-transport.js': /new WebSocket\(/ };
+  for (const file of DOCS) {
+    for (const [, cite, numero] of read(file).matchAll(/`([\w./-]+\.js):(\d+)`/g)) {
+      assert.ok(CITATIONS[cite], `${file} : ${cite}:${numero} cité sans code attendu (le déclarer dans J15)`);
+      assert.match(read(cite).split('\n')[Number(numero) - 1] || '', CITATIONS[cite], `${file} : ${cite}:${numero} ne montre plus ${CITATIONS[cite]}`);
+    }
+  }
+});
