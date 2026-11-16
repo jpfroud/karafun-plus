@@ -5491,3 +5491,34 @@ test('relance ⏮ ratée pendant « Vider toutes les chansons » : son échec es
   assert.deepEqual(barErrors(f).filter(line => line.startsWith('La relance n’a pas démarré.')),
     ['La relance n’a pas démarré. La copie du titre part avec le vidage de la file.'], 'alerte du bar');
 });
+
+// Regression: relecture 2, cycle 1 — « Parti », « Table partie » ou « Supprimer toutes
+// les tables » pendant une relance ⏮ en cours laissent la copie : c'est le titre en cours
+// qui continue. Si la relance échouait ensuite, la copie, restée prête en tête de KaraFun,
+// appartenait à des chanteurs partis (ou à la soirée close) : elle attendait la lecture
+// et retenait le titre suivant. Elle part comme leurs autres titres, dès l'échec.
+test('relance ⏮ en cours puis ratée après « Parti », « Table partie » ou la remise à zéro : la copie des chanteurs partis est retirée', async t => {
+  for (const gesture of ['« Parti »', '« Table partie »', '« Supprimer toutes les tables »']) {
+    const { clock, f, frames, A, add } = await restartRequested(t);
+    const C = isoItem('C-id', 101, add.payload.options);
+    assert.deepEqual(frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C)).map(m => m.type),
+      ['remote.NextRequest'], `${gesture} : copie juste après le titre, « Suivant »`);
+    // « Suivant » fait : A retiré, C annoncé, KaraFun à l'arrêt.
+    assert.deepEqual(frames(queueEvent(C), isoStatus(1, C)), [], gesture);
+    const tr = f.tracked()[0];
+    if (gesture === '« Parti »') await f.call('POST /api/staff/person/leave', { personId: tr.sel.ids[0] });
+    else if (gesture === '« Table partie »') await f.call('POST /api/staff/table-left', { id: '1' });
+    else await f.call('POST /api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
+    assert.deepEqual(removals(frames()), [], `${gesture} : relance en cours, la copie reste`);
+    assert.equal(tr.cancelled ?? false, false, `${gesture} : copie pas annulée pendant la relance`);
+    clock.now += 3000;
+    frames(); // KaraFun reste à l'arrêt : « Lecture »
+    clock.now += 18000;
+    const atFailure = removals(frames());
+    assert.ok(notes(f).includes('La relance n’a pas démarré. La copie du titre est retirée de KaraFun : ses chanteurs sont partis.'),
+      `${gesture} : échec annoncé avec le sort de la copie`);
+    assert.equal(tr.cancelled, true, `${gesture} : copie annulée à l’échec`);
+    assert.equal(tr.awaitingPlay ?? false, false, `${gesture} : pas laissée prête à jouer`);
+    assert.deepEqual(atFailure, ['C-id'], `${gesture} : retrait de la copie envoyé`);
+  }
+});

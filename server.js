@@ -1361,11 +1361,15 @@ function abandonRestart(op, { current, upcoming, q }, message, now) {
   const originalLive = q.some(item => String(item.queueId) === String(op.originalQueueId));
   if (copyId && !originalLive && !current && String(upcoming[0]?.queueId) === copyId) {
     const tr = tracked.find(item => String(item.queueId) === copyId);
-    // Vidage demandé pendant la relance : la copie, désormais à venir, part
-    // avec la file (son retrait part à la synchronisation suivante).
-    if (settings.queueClearPending) {
+    // Vidage demandé pendant la relance, ou chanteurs partis entre-temps
+    // (« Parti », « Table partie », remise à zéro, qui laissent la copie d'une
+    // relance en cours) : la copie, désormais à venir, part comme un titre à
+    // venir (son retrait part à la synchronisation suivante).
+    const left = !!tr && tr.sel.ids.every(id => !sched.people.get(id) || sched.people.get(id).withdrawnAt);
+    if (settings.queueClearPending || left) {
       if (tr) { tr.cancelled = true; tr.removeRequestedAt = 0; }
-      sched.note(`${message} La copie du titre part avec le vidage de la file.`, 'error');
+      sched.note(`${message} ${settings.queueClearPending ? 'La copie du titre part avec le vidage de la file.' :
+        'La copie du titre est retirée de KaraFun : ses chanteurs sont partis.'}`, 'error');
       return;
     }
     // Suivant a bien retiré le titre : la copie prête à jouer garde le suivi,
