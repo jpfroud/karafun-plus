@@ -128,6 +128,14 @@ gh attestation verify oci://ghcr.io/jpfroud/karafun-plus:vX.Y.Z --repo jpfroud/k
 - **Paquets Debian sans correctif publié** : Trivy les montre dans l'onglet
   Security sans bloquer ; ils arrivent avec les nouvelles empreintes de l'image
   de base proposées par Dependabot.
+- **Paquets Debian corrigés après l'image de base** : quand Debian publie un
+  correctif que l'empreinte de l'image de base n'embarque pas encore, et que
+  Trivy le refuse, l'étape finale du `Dockerfile` met à niveau ce seul paquet
+  (`apt-get install --only-upgrade`). La construction prend alors la version du
+  jour de Debian, moins reproductible tant que la ligne reste. C'est le cas de
+  zlib1g depuis novembre 2026 (CVE-2026-76844 et CVE-2026-85091) : retirer la
+  ligne quand l'empreinte de `node:26-trixie-slim` contient
+  `1:1.3.dfsg+really1.3.1-1+deb13u1`.
 - **Outils d'agents dans les sessions de développement** : les hooks de
   `.claude/` installent gstack depuis son dépôt dans le conteneur éphémère de
   la session. Rien de cet outillage n'entre dans le kit ni dans l'image, et

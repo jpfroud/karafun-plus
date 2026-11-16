@@ -52,6 +52,13 @@ COPY --from=deps /livrable/ ./
 COPY --from=solveur /build/solver/target/karafun-solver.jar solver/karafun-solver.jar
 COPY --from=solveur /build/LICENCES-JAVA/ LICENCES-JAVA/
 COPY --from=jre /solver-runtime/ solver-runtime/
+# Correctif de zlib publié par Debian (CVE-2026-76844, CVE-2026-85091) que
+# l'image node:26-trixie-slim n'embarque pas encore (zlib1g +b1 au 16 novembre
+# 2026). Mise à niveau de ce seul paquet, à retirer dès que l'empreinte de
+# l'image de base contient zlib1g 1:1.3.dfsg+really1.3.1-1+deb13u1 (SECURITY.md).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
+ && rm -rf /var/lib/apt/lists/*
 # L'application n'utilise que node : npm, npx, corepack et yarn de l'image de
 # base (et leurs propres dépendances, souvent signalées vulnérables) sont retirés.
 RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
