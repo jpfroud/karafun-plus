@@ -484,3 +484,42 @@ test('Battle sur scène, finie pendant l’alerte d’une file illisible : rien 
   assert.equal(f.battleVote.automation.status, 'after', 'fin de l’alerte : Battle finie');
   assert.ok(f.sched.log.some(line => /Battle terminée/.test(line.msg)));
 });
+
+// Regression: relecture du cycle 3 — « ▶ Lancer le prochain titre » après une Battle,
+// Spotify en lecture : la demande coupe Spotify, puis attend le court silence. Une alerte
+// « Message de KaraFun illisible » arrivée pendant ce temps passait inaperçue : la reprise
+// était notée (« resuming »), la réponse disait OK sans que rien parte, puis syncBattle
+// lançait seul le titre suivant à la fin de l'alerte, alors que le bar le lançait peut-être
+// déjà depuis KaraFun. Refusé comme si l'alerte était là dès l'appui, et rien ne demande
+// ensuite à KaraFun de jouer. Horloge du serveur réglée : l'alerte tombe dans le silence.
+test('après une Battle, alerte d’un message illisible pendant la coupure de Spotify : « Lancer le prochain titre » refusé, rien lancé à la fin de l’alerte', async () => {
+  const serverTime = serverClock();
+  const { f, clock, order, player } = setup({ spotify: { pauseLeadSec: 1 }, serverTime });
+  f.setBridge(fakeBridge(order, [battleItem(77), plainItem(78)])); f.sync();
+  f.setBridge(fakeBridge(order, [battleItem(77), plainItem(78)], 77)); f.sync();
+  const bridge = fakeBridge(order, [plainItem(78)]);
+  f.setBridge(bridge); f.sync();
+  assert.equal(f.battleVote.automation.status, 'after');
+  await ticks(f, clock, 2);
+  assert.deepEqual(order, ['spotify-play'], 'Spotify reprend après la Battle');
+  assert.equal(player.playing, true);
+  // Réponse gardée dès l'appui (acceptée ou motif du refus) : elle arrive pendant
+  // l'avance de l'horloge.
+  const answer = f.handlers['POST /api/staff/kf'](null, null, { action: 'play' })
+    .then(() => 'acceptée', error => error.message);
+  await settle();
+  assert.deepEqual(order, ['spotify-play', 'spotify-pause'], 'Spotify coupé, le court silence commence');
+  // L'alerte arrive pendant le silence.
+  bridge.unreadable = 'remote.StatusEvent';
+  await serverTime.advance(1000);
+  assert.equal(await answer, 'Un message de KaraFun est illisible : lance le titre suivant depuis KaraFun.', 'demande refusée');
+  assert.equal(f.battleVote.automation.status, 'after', 'pas de reprise notée (« resuming »)');
+  // Fin de l'alerte : le titre suivant attend toujours le bar.
+  bridge.unreadable = null;
+  f.sync();
+  await ticks(f, clock, 3);
+  await serverTime.advance(5000);
+  f.sync();
+  assert.ok(!order.includes('karafun-play'), `rien demandé à KaraFun : ${order.join(', ')}`);
+  assert.equal(f.battleVote.automation.status, 'after', 'le titre suivant attend toujours le bar');
+});

@@ -3915,3 +3915,840 @@ test('valeurs imprévues : relance ⏮ en cours, longue alerte, ⏮ avant la syn
   frames(queueEvent(A));
   assert.equal(restartNotConfirmed(f).length, 1, '15 s de file lisible écoulées : la relance conclut');
 });
+
+// ---------------------------------------------------------------- relecture, cycle 3 : relance ⏮ et mise à jour du serveur
+// Relance ⏮ de A inachevée : la copie C, ajoutée juste après A, a pris son
+// suivi, et « Suivant » a retiré A ; mais KaraFun reste à l'arrêt, C en tête,
+// malgré « Lecture ». 20 s plus tard, la relance est abandonnée et C attend sa
+// lecture (restartAwaitingPlay) : son suivi garde le début de A (startedAt).
+async function p3g1CopyAwaitingPlay(t) {
+  const run = await restartRequested(t);
+  const { clock, f, frames, A, add } = run;
+  const C = isoItem('C-id', 101, add.payload.options);
+  assert.deepEqual(frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C)).map(m => m.type),
+    ['remote.NextRequest'], 'copie juste après le titre : « Suivant »');
+  // « Suivant » fait : A retiré, C annoncé, KaraFun à l'arrêt.
+  assert.deepEqual(frames(queueEvent(C), isoStatus(1, C)), []);
+  clock.now += 3000;
+  assert.deepEqual(frames().map(m => m.type), ['remote.PlayRequest'], 'KaraFun reste à l’arrêt : « Lecture »');
+  clock.now += 18000;
+  frames();
+  assert.ok(notes(f).includes('La relance n’a pas démarré. La copie du titre est prête : lance la lecture dans KaraFun.'));
+  const tr = f.tracked()[0];
+  assert.deepEqual([f.tracked().length, tr.queueId, typeof tr.startedAt], [1, 'C-id', 'number'],
+    'le suivi de A est passé à sa copie, avec le début de A');
+  return { ...run, C, tr };
+}
+
+// Route « Vérifier et mettre à jour » d'un serveur Linux dont l'agent de mise
+// à jour est prêt (comme dans server-mode.test.js) : le refus vient du serveur
+// (updateBlockedReason) ; une demande acceptée est seulement comptée, rien ne
+// part vers l'hôte.
+function p3g1UpdateRoute(f) {
+  const route = { requests: 0 };
+  f.serverUpdate.view = blockedReason => ({ enabled: true, busy: false, phase: 'idle', blockedReason });
+  f.serverUpdate.request = blockedReason => {
+    if (blockedReason) throw Object.assign(new Error(blockedReason), { status: 409 });
+    route.requests++;
+  };
+  route.post = () => post(f, staffUrl(f, '/api/staff/update'), { confirmActive: true });
+  return route;
+}
+
+// Regression: relecture, cycle 3 — après une relance ⏮ inachevée, la copie
+// prête à jouer garde le suivi du titre relancé, déjà commencé (startedAt).
+// « Vider toutes les chansons » ne retirait que les titres jamais commencés :
+// la copie restait dans KaraFun, le vidage l'attendait sans fin, et avec lui
+// tout envoi de la file. Elle est retirée comme un titre à venir ; sortie de
+// KaraFun, le vidage finit, et le passage du titre relancé, chanté, se clôt
+// (fin dans l'historique de scène), au lieu de « Retrait KaraFun confirmé »
+// sans fin de passage, comme pour un titre jamais lancé.
+test('relance ⏮ inachevée, copie prête à jouer : « Vider toutes les chansons » la retire, le vidage finit et le passage se clôt', async t => {
+  const { f, frames, tr } = await p3g1CopyAwaitingPlay(t);
+  await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(tr.cancelled, true, 'copie annulée comme un titre à venir');
+  assert.deepEqual(removals(frames()), ['C-id'], 'son retrait part');
+  assert.equal(f.settings.queueClearPending, true, 'le vidage attend que KaraFun la retire');
+  // KaraFun retire la copie : sa file est vide.
+  assert.deepEqual(frames(queueEvent(), isoStatus(1, null)), [], 'rien d’autre n’est envoyé');
+  assert.equal(f.settings.queueClearPending, false, 'vidage fini');
+  assert.ok(notes(f).includes('File vidée dans KaraFun : les nouveaux choix peuvent être envoyés.'));
+  assert.equal(f.tracked().length, 0, 'copie plus suivie');
+  const history = f.staffState().stageHistory;
+  assert.deepEqual(plain(history.map(item => item.title)), ['Titre 101']);
+  assert.equal(typeof history[0].endedAt, 'number', 'passage du titre relancé clos');
+  assert.equal(notes(f).some(line => line.startsWith('Retrait KaraFun confirmé')), false, 'chanté, pas « retiré »');
+});
+
+// Regression: relecture, cycle 3 — même défaut pendant une relance encore en
+// cours : la copie, placée juste après le titre et pas encore lancée, porte
+// déjà le suivi commencé du titre. « Vider toutes les chansons » l'annule, et
+// son retrait part à la synchronisation suivante (celle du vidage).
+test('relance ⏮ en cours, copie pas encore lancée : « Vider toutes les chansons » l’annule, son retrait part à la synchronisation suivante', async t => {
+  const { f, frames, A, add } = await restartRequested(t);
+  const C = isoItem('C-id', 101, add.payload.options);
+  assert.deepEqual(frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C)).map(m => m.type),
+    ['remote.NextRequest'], 'copie juste après le titre : « Suivant »');
+  assert.equal(f.staffState().restarting, true, 'relance en cours, A toujours sur scène');
+  const tr = f.tracked()[0];
+  assert.deepEqual([tr.queueId, typeof tr.startedAt], ['C-id', 'number'], 'la copie porte le suivi commencé de A');
+  await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(tr.cancelled, true, 'copie annulée');
+  assert.deepEqual(removals(frames()), ['C-id'], 'retrait de la copie envoyé');
+});
+
+// Regression: relecture, cycle 3 — « Parti » (et « Table partie ») ne
+// retiraient de KaraFun que les titres jamais commencés de la personne : la
+// copie prête à jouer d'une relance ⏮ inachevée restait dans KaraFun, prête à
+// rejouer le titre de quelqu'un parti. Elle est retirée comme un titre à venir.
+test('relance ⏮ inachevée, copie prête à jouer : « Parti » ou « Table partie » de son chanteur la retire de KaraFun', async t => {
+  for (const gesture of ['« Parti »', '« Table partie »']) {
+    const { f, frames, tr } = await p3g1CopyAwaitingPlay(t);
+    const answer = gesture === '« Parti »' ? await f.call('POST /api/staff/person/leave', { personId: tr.sel.ids[0] }) :
+      await f.call('POST /api/staff/table-left', { id: '1' });
+    assert.equal(answer.removedFromKaraFun, 1, `${gesture} : la copie compte parmi les titres retirés`);
+    assert.equal(tr.cancelled, true, gesture);
+    assert.deepEqual(removals(frames()), ['C-id'], `${gesture} : retrait de la copie envoyé`);
+  }
+});
+
+// Regression: relecture, cycle 3 — la pause de l'alerte « message de KaraFun
+// illisible » sur la fenêtre des copies tardives (60 s après une relance ⏮
+// abandonnée) ne finissait qu'à la vue lisible suivante (syncRestart). KaraFun
+// perdu pendant l'alerte, cette vue ne venait pas : la fenêtre restait gelée,
+// et la mise à jour du serveur bloquée sans fin. La pause finit quand KaraFun
+// est perdu : la fenêtre reprend, sans compter l'alerte, et finit.
+test('valeurs imprévues : relance ⏮ abandonnée, alerte puis KaraFun perdu : la fenêtre des copies tardives finit, la mise à jour n’est plus bloquée', async t => {
+  const busy = 'Une action KaraFun ou Spotify est en cours. Réessaie dans un instant.';
+  const { clock, f, frames, A } = await restartRequested(t);
+  clock.now += 16000;
+  frames(queueEvent(A));
+  assert.equal(restartNotConfirmed(f).length, 1, 'relance abandonnée : copies tardives retirées pendant 60 s');
+  const abandonedAt = clock.now;
+  assert.equal(f.staffState().update.blockedReason, busy, 'fenêtre des copies tardives : mise à jour retenue');
+  // 10 s plus tard, l'alerte commence (file illisible) ; 5 s après, la connexion tombe.
+  clock.now += 10000;
+  frames(queueEvent(A, ODD_ITEM));
+  clock.now += 5000;
+  FakeWS.last.emit('close', { code: 1006 });
+  f.sync();
+  assert.equal(f.karaokeOutlook(), 'unknown', 'KaraFun déconnecté');
+  // Les 50 s qui restaient : la fenêtre n'est pas écourtée, l'alerte n'y compte pas.
+  clock.now = abandonedAt + 60000 + 5000 - 1;
+  f.sync();
+  assert.equal(f.staffState().update.blockedReason, busy, 'fenêtre pas encore finie');
+  assert.equal(f.staffState().restartRetryAt, abandonedAt + 65000,
+    'KaraFun déconnecté : l’heure du nouvel essai de ⏮ reste affichée, sans compter les 5 s d’alerte');
+  clock.now += 2;
+  f.sync();
+  const state = f.staffState();
+  assert.equal(state.update.blockedReason, null, 'KaraFun toujours déconnecté : mise à jour permise');
+  assert.equal(state.restartRetryAt, null);
+});
+
+// Regression: relecture, cycle 3 — pendant l'alerte « message de KaraFun
+// illisible », la page du bar recevait la fin de la fenêtre des copies
+// tardives, repoussée sans cesse par la pause (restartRetryAt) : le bouton ⏮
+// restait grisé sur « Relance possible dans une minute » toute l'alerte, alors
+// que ⏮ est refusé avec son remède (« relance le titre depuis KaraFun »).
+// Pendant l'alerte, pas d'heure ; après elle, l'heure revient, prolongée de
+// l'alerte.
+test('valeurs imprévues : relance ⏮ abandonnée puis alerte : pas de compte à rebours figé sur ⏮ pendant l’alerte, il revient après elle', async t => {
+  const { clock, f, frames, A } = await restartRequested(t);
+  clock.now += 16000;
+  frames(queueEvent(A));
+  const abandonedAt = clock.now;
+  assert.equal(f.staffState().restartRetryAt, abandonedAt + 60000, 'avant l’alerte : nouvel essai dans 60 s');
+  clock.now += 10000;
+  frames(queueEvent(A, ODD_ITEM));
+  assert.equal(f.staffState().restartRetryAt, null, 'pendant l’alerte : pas de compte à rebours');
+  await assert.rejects(f.call('POST /api/staff/kf', { action: 'restart' }),
+    /^Error: Un message de KaraFun est illisible : relance le titre depuis KaraFun\.$/, '⏮ refusé avec son remède');
+  clock.now += 30000;
+  frames();
+  assert.equal(f.staffState().restartRetryAt, null, 'toujours pendant l’alerte, 30 s plus tard');
+  // Vue lisible : la fenêtre reprend, prolongée des 30 s d'alerte.
+  frames(queueEvent(A));
+  assert.equal(f.staffState().restartRetryAt, abandonedAt + 90000, 'après l’alerte : l’heure du nouvel essai revient');
+  clock.now = abandonedAt + 80000; // au-delà des 60 s d'origine, dans la fenêtre prolongée
+  frames();
+  assert.equal(f.staffState().restartRetryAt, abandonedAt + 90000);
+  await assert.rejects(f.call('POST /api/staff/kf', { action: 'restart' }), /Nouvel essai possible dans 10 s/);
+});
+
+// Relecture, cycle 3 (case sans essai) : relance ⏮ en cours (restartOp) et
+// « Vérifier et mettre à jour » demandé avant la synchronisation qui la
+// conclut, même quand KaraFun joue déjà la copie : refusé, comme toute action
+// KaraFun en cours, par la vraie route. La synchronisation conclut la
+// relance : permis.
+test('mise à jour du serveur : refusée pendant une relance ⏮ en cours, même avant la synchronisation qui la conclut', async t => {
+  const busy = 'Une action KaraFun ou Spotify est en cours. Réessaie dans un instant.';
+  const { f, frames, A, add } = await restartRequested(t);
+  const update = p3g1UpdateRoute(f);
+  assert.equal(f.staffState().restarting, true, 'relance en cours');
+  let answer = await update.post();
+  assert.deepEqual([answer.status, answer.body.error], [409, busy], 'copie demandée, pas encore vue');
+  // KaraFun place la copie juste après le titre, puis la lance (« Suivant ») ;
+  // la demande arrive avant la synchronisation suivante.
+  const C = isoItem('C-id', 101, add.payload.options);
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C));
+  FakeWS.last.emit('message', { data: JSON.stringify(queueEvent(C)) });
+  FakeWS.last.emit('message', { data: JSON.stringify(isoStatus(4, C)) });
+  answer = await update.post();
+  assert.deepEqual([answer.status, answer.body.error], [409, busy], 'copie sur scène, relance pas encore conclue');
+  assert.equal(f.staffState().update.blockedReason, busy);
+  assert.equal(update.requests, 0, 'aucune demande à l’hôte');
+  frames();
+  assert.ok(notes(f).includes('« Titre 101 » repart du début.'));
+  assert.equal(f.staffState().update.blockedReason, null, 'relance conclue');
+  answer = await update.post();
+  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  assert.equal(update.requests, 1);
+});
+
+// Relecture, cycle 3 (case sans essai) : fenêtre des copies tardives mise en
+// pause par une longue alerte, sa fin d'origine dépassée, et « Vérifier et
+// mettre à jour » demandé avant que la synchronisation replie la pause (vue
+// lisible reçue, pas encore traitée) : encore refusé, la pause compte déjà
+// (restartSweepUntil). Après la vue lisible, la mise à jour est permise à la
+// fin de la fenêtre prolongée, pas avant.
+test('mise à jour du serveur : fenêtre des copies tardives en pause pendant une longue alerte, encore refusée avant la synchronisation qui replie la pause', async t => {
+  const busy = 'Une action KaraFun ou Spotify est en cours. Réessaie dans un instant.';
+  const { clock, f, frames, A } = await restartRequested(t);
+  const update = p3g1UpdateRoute(f);
+  clock.now += 16000;
+  frames(queueEvent(A));
+  assert.equal(restartNotConfirmed(f).length, 1, 'relance abandonnée : copies tardives retirées pendant 60 s');
+  const abandonedAt = clock.now;
+  // 10 s plus tard, la file arrive illisible, et le reste 70 s : la fin
+  // d'origine de la fenêtre est dépassée de 20 s.
+  clock.now += 10000;
+  frames(queueEvent(A, ODD_ITEM));
+  clock.now += 70000;
+  frames();
+  // La file lisible arrive ; la demande précède la synchronisation suivante.
+  FakeWS.last.emit('message', { data: JSON.stringify(queueEvent(A)) });
+  let answer = await update.post();
+  assert.deepEqual([answer.status, answer.body.error], [409, busy], 'pause pas encore repliée : la fenêtre continue');
+  assert.equal(update.requests, 0);
+  frames();
+  clock.now = abandonedAt + 60000 + 70000 - 1;
+  frames();
+  assert.equal(f.staffState().update.blockedReason, busy, 'fenêtre prolongée des 70 s d’alerte, pas encore finie');
+  clock.now += 2;
+  frames();
+  assert.equal(f.staffState().update.blockedReason, null, 'fenêtre prolongée finie');
+  answer = await update.post();
+  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  assert.equal(update.requests, 1);
+});
+
+// ---------------------------------------------------------------- relecture du cycle 3 : réglage fait pendant l'alerte
+// Réglage de B fait au bar pendant l'alerte : tonalité, tempo et voix guide, pour que
+// chaque sorte de commande en direct (PitchRequest, TempoRequest, TrackVolumeRequest)
+// puisse partir. Rend la réponse de la route.
+function p3g3SettingsDuringAlert(f, trB) {
+  return f.call('POST /api/staff/song/settings', { personId: trB.sel.ids[0], entryId: trB.sel.song.entryId,
+    settings: { pitch: 2, tempo: 10, guide: 50 } });
+}
+// Valeurs que le bar a réglées dans KaraFun pendant l'alerte, comme elle le demande.
+function p3g3BarLive() {
+  return { pitch: -1, tempo: 0, guide: 25 };
+}
+
+// Regression: relecture du cycle 3 — alerte d'un état de KaraFun illisible (file
+// lisible) : le réglage de B fait au bar pendant l'alerte répond « pas encore envoyé ».
+// KaraFun finit A et lance B sans qu'on le voie : B sort de sa file, l'état reste figé.
+// Le premier état lisible montre B en pleine chanson, réglé dans KaraFun par le bar : le
+// rattrapage du début du titre y envoyait tonalité, tempo et voix guide du réglage, en
+// pleine chanson, par-dessus ce que le bar venait de régler. Rien n'est rattrapé.
+test('valeurs imprévues : état illisible, réglage fait pendant l’alerte, titre lancé sans être vu puis vu en pleine chanson : rien rattrapé', async t => {
+  const { f, frames, A, B, trB } = aThenB(t);
+  frames(unreadableStatus(A));
+  assert.equal((await p3g3SettingsDuringAlert(f, trB)).applied, 'unreadable', 'pas encore envoyé');
+  // KaraFun finit A et lance B : B sort de sa file, l'état reçu reste illisible.
+  assert.deepEqual([queueEvent(), unreadableStatus(B)].flatMap(m => bare(frames(m))), [], 'rien pendant l’alerte');
+  assert.ok(f.tracked().includes(trB) && !trB.startedAt, 'B suivi, pas encore vu sur scène');
+  // Premier état lisible : B en pleine chanson, avec les valeurs du bar.
+  assert.deepEqual(bare(frames(isoStatus(4, B, p3g3BarLive()))), [], 'aucune tonalité, aucun tempo ni volume envoyé en pleine chanson');
+  assert.ok(trB.startedAt, 'B compté sur scène');
+  assert.deepEqual(bare(frames(isoStatus(4, B, p3g3BarLive()))), [], 'ni ensuite');
+  assert.deepEqual(f.events('song.settingsCaughtUp'), [], 'rien rattrapé');
+});
+
+// Relecture du cycle 3 (case sans essai) : même scénario avec une alerte de la file seule
+// (état lisible) : B est vu se charger puis commencer pendant l'alerte. Ni pendant elle, ni
+// à la file lisible suivante, en pleine chanson, le réglage n'est rattrapé.
+test('valeurs imprévues : file illisible, réglage fait pendant l’alerte, titre vu commencer pendant elle puis file lisible en pleine chanson : rien rattrapé', async t => {
+  const { f, frames, A, B, trB } = aThenB(t);
+  frames(queueEvent(A, B, ODD_ITEM));
+  assert.equal((await p3g3SettingsDuringAlert(f, trB)).applied, 'unreadable', 'pas encore envoyé');
+  const during = [isoStatus(1, B), isoStatus(2, B), isoStatus(3, B), isoStatus(4, B, p3g3BarLive())].flatMap(m => bare(frames(m)));
+  assert.deepEqual(during, [], 'rien pendant l’alerte, ni au chargement ni au début');
+  assert.ok(trB.startedAt, 'B vu commencer pendant l’alerte');
+  assert.deepEqual(bare(frames(queueEvent(B), isoStatus(4, B, p3g3BarLive()))), [], 'file lisible, en pleine chanson : rien envoyé');
+  assert.deepEqual(f.events('song.settingsCaughtUp'), [], 'rien rattrapé');
+});
+
+// Relecture du cycle 3 (chemin normal gardé) : l'alerte d'un état illisible finit alors que
+// B est seulement chargé (état 3, pas en lecture). La fin de l'alerte ne le compte pas en
+// pleine chanson : le réglage fait pendant l'alerte part avant la musique, par les options
+// du titre de KaraFun, puis par le rattrapage sur l'état suivant, KaraFun du bar ignorant
+// les options d'un titre déjà chargé.
+test('valeurs imprévues : alerte d’un état illisible finie sur un titre seulement chargé : le réglage fait pendant l’alerte est appliqué avant la musique', async t => {
+  const { f, frames, A, B, trB } = aThenB(t);
+  frames(unreadableStatus(A));
+  assert.equal((await p3g3SettingsDuringAlert(f, trB)).applied, 'unreadable', 'pas encore envoyé');
+  // A finit, KaraFun charge B (encore dans sa file) ; l'état reçu reste illisible.
+  assert.deepEqual(bare(frames(queueEvent(B), unreadableStatus(B))), [], 'rien pendant l’alerte');
+  // Fin de l'alerte : B chargé, pas en lecture.
+  const atEnd = bare(frames(isoStatus(3, B)));
+  assert.deepEqual(atEnd.map(m => [m.type, m.payload.queueItemId]), [['remote.SetQueueItemOptionsRequest', 'B-id']],
+    'options du titre envoyées à la fin de l’alerte');
+  assert.equal(trB.startedAt, null, 'pas encore sur scène');
+  // KaraFun ignore ces options : rattrapé sur l'état suivant, toujours avant la musique.
+  assert.deepEqual(bare(frames(isoStatus(3, B))), [pitchTo(2), tempoTo(10), volumeTo(5, 50)], 'rattrapé avant la musique');
+  assert.deepEqual(bare(frames(isoStatus(4, B, { pitch: 2, tempo: 10, guide: 50 }))), [], 'rien de plus au début de la musique');
+  assert.deepEqual(f.events('song.settingsCaughtUp').map(e => [e.queueId, e.fields]), [['B-id', ['pitch', 'tempo', 'guide']]]);
+});
+
+// Regression: relecture du cycle 3 — même ligne avec un titre chargé que la file voit
+// pendant l'alerte (alerte de la file seule, ou alerte de l'état commencée sur un titre
+// déjà chargé). Pendant l'alerte, ce titre était marqué vérifié (catchUpSongSettings).
+// À la fin de l'alerte, toujours seulement chargé, ses options partaient, mais le
+// rattrapage qui les suit d'ordinaire quand KaraFun les ignore (KaraFun du bar, titre
+// déjà chargé) ne partait jamais : le réglage fait pendant l'alerte, « pas encore
+// envoyé », n'était pas appliqué, et rien ne le disait au bar. Seul un titre vu sur
+// scène pendant l'alerte est marqué vérifié.
+test('valeurs imprévues : titre chargé vu pendant l’alerte, alerte finie avant la musique : le réglage fait pendant l’alerte est rattrapé', async t => {
+  for (const alert of ['file', 'état']) {
+    const { f, frames, A, B, trB } = aThenB(t);
+    if (alert === 'file') {
+      frames(queueEvent(A, B, ODD_ITEM));
+      assert.equal((await p3g3SettingsDuringAlert(f, trB)).applied, 'unreadable', alert);
+      // A finit, KaraFun annonce puis charge B : l'état se lit encore.
+      assert.deepEqual([isoStatus(1, B), isoStatus(2, B), isoStatus(3, B)].flatMap(m => bare(frames(m))), [], `${alert} : rien pendant l’alerte`);
+      // Fin de l'alerte : file lisible, B toujours seulement chargé.
+      assert.deepEqual(bare(frames(queueEvent(B))).map(m => m.type), ['remote.SetQueueItemOptionsRequest'], `${alert} : options du titre envoyées`);
+    } else {
+      // A finit, B annoncé puis chargé avant l'alerte ; l'alerte de l'état commence sur lui.
+      frames(isoStatus(1, B), queueEvent(B));
+      frames(isoStatus(2, B));
+      frames(isoStatus(3, B));
+      frames(unreadableStatus(B));
+      assert.equal((await p3g3SettingsDuringAlert(f, trB)).applied, 'unreadable', alert);
+      assert.deepEqual(bare(frames()), [], `${alert} : rien pendant l’alerte (balayage)`);
+      // Fin de l'alerte : B toujours seulement chargé.
+      assert.deepEqual(bare(frames(isoStatus(3, B))).map(m => m.type), ['remote.SetQueueItemOptionsRequest'], `${alert} : options du titre envoyées`);
+    }
+    assert.equal(trB.startedAt, null, `${alert} : pas encore sur scène`);
+    // KaraFun ignore ces options : rattrapé sur l'état suivant, avant la musique.
+    assert.deepEqual(bare(frames(isoStatus(3, B))), [pitchTo(2), tempoTo(10), volumeTo(5, 50)], `${alert} : rattrapé avant la musique`);
+  }
+});
+
+// ---------------------------------------------------------------- relecture du cycle 3, cases anciennes : verdicts du suivi et accusés
+// Léa et Tom attendent ; le titre A (le premier choisi) est envoyé et attend
+// dans KaraFun, pendant que C, ajouté dans KaraFun, est en pleine chanson.
+// L'heure de fermeture est passée : la synchronisation retire A de KaraFun
+// (pullFromKaraFun, retrait de fermeture envoyé). Horloge du serveur avancée
+// par l'essai. Rend de quoi jouer la suite.
+function p3g4ClosingPull(t) {
+  const clock = clockAt('2026-11-16T23:30:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  f.sched.opts.requirePresence = false;
+  const tb = openTable(f, '1');
+  const people = [singer(f, tb, 'Léa', 101), singer(f, tb, 'Tom', 201)];
+  const a = sendNext(f, 'A-id');
+  const owner = people.find(s => s.person.id === a.sel.ids[0]).person;
+  const A = isoItem('A-id', a.sel.song.songId, { singer: a.sel.label });
+  const C = isoItem('C-id', 555, { singer: 'Autre' });
+  frames(queueEvent(A), isoStatus(4, C));
+  f.settings.closingAt = clock.now - 60000;
+  assert.deepEqual(removals(frames()), ['A-id'], 'fermeture passée : A sort de KaraFun');
+  assert.equal(a.pulled?.reason, 'closing');
+  assert.ok(a.removeRequestedAt > 0, 'retrait envoyé à KaraFun');
+  return { clock, f, frames, a, A, C, owner };
+}
+
+// Relecture du cycle 3 (cases anciennes, retrait de fermeture × sortie de la
+// file pendant l'alerte) : titre retiré pour l'heure de fermeture, retrait
+// envoyé, qui sort de la file de KaraFun pendant une alerte de l'état. KaraFun
+// a pu appliquer le retrait, ou lancer le titre : la scène vue est figée.
+// Conclure là rendrait à son chanteur un titre peut-être en train d'être
+// chanté. Le titre reste suivi, sans verdict ; à la première vue lisible, hors
+// de la scène, son verdict est « pulled-closing » : il revient en tête de la
+// liste de son chanteur avec la note de fermeture (restorePulled), et non
+// « passée dans KaraFun avant la lecture », qui le lui ferait perdre.
+test('valeurs imprévues : retrait de fermeture envoyé, titre sorti de la file pendant une alerte de l’état : verdict à la vue lisible, rendu à son chanteur', async t => {
+  const { f, frames, a, C, owner } = p3g4ClosingPull(t);
+  frames(unreadableStatus(C));
+  assert.equal(f.karaokeOutlook(), 'blind');
+  assert.deepEqual(frames(queueEvent()), [], 'KaraFun fait le retrait pendant l’alerte : rien ne part');
+  assert.deepEqual(plain(f.tracked().map(tr => tr.queueId)), ['A-id'], 'A toujours suivi pendant l’alerte');
+  assert.deepEqual(f.events('turn.unsent'), [], 'aucun verdict pendant l’alerte');
+  assert.equal(a.pulled?.reason, 'closing', 'retrait de fermeture gardé');
+  assert.equal(a.sel.turnCredit.rolledBack, false, 'passage pas encore rendu');
+  assert.equal(f.sched.songsOf(owner).some(song => song.entryId === a.sel.song.entryId), false, 'titre pas encore rendu');
+  // Fin de l'alerte : C chante toujours, A n'est nulle part.
+  frames(isoStatus(4, C));
+  assert.deepEqual(f.events('turn.unsent').map(e => [e.queueId, e.reason]), [['A-id', 'pulled-closing']], 'verdict à la vue lisible');
+  assert.equal(f.tracked().length, 0, 'A n’est plus suivi');
+  assert.equal(a.startedAt, null, 'jamais compté sur scène');
+  assert.equal(a.sel.turnCredit.rolledBack, true, 'passage rendu : il n’a pas chanté');
+  assert.equal(owner.sung, 0, 'son passage ne compte pas');
+  assert.equal(owner.song?.entryId, a.sel.song.entryId, 'le titre revient en tête de la liste de son chanteur');
+  assert.ok(notes(f).includes(`« ${a.sel.song.title} » (${a.sel.label}) retiré de KaraFun : il passerait après la fermeture. Il repartira s’il passe de nouveau avant l’heure, par exemple si le bar la décale.`));
+  assert.equal(notes(f).some(line => /passée dans KaraFun avant la lecture/.test(line)), false);
+});
+
+// Relecture du cycle 3 (cases anciennes, retrait de fermeture × lancé sur
+// scène) : titre retiré pour l'heure de fermeture, retrait envoyé, mais lancé
+// par KaraFun avant de le recevoir, vu sur scène tout de suite ou à la fin
+// d'une alerte de l'état (pendant laquelle il a quitté la file). La fermeture
+// n'interrompt jamais un titre commencé : le retrait est oublié, le titre
+// continue, son passage compte et le reste à sa fin, sans second retrait ni
+// retour du titre à son chanteur (qui chanterait deux fois).
+test('retrait de fermeture envoyé, titre lancé avant : il continue et compte, vu tout de suite ou à la fin d’une alerte de l’état', async t => {
+  for (const alert of [false, true]) {
+    const label = alert ? 'fin d’une alerte de l’état' : 'sans alerte';
+    const { f, frames, a, A, owner } = p3g4ClosingPull(t);
+    const sent = [];
+    if (alert) {
+      // KaraFun lance A : l'état qui l'annonce est illisible, et sa file n'a plus A.
+      sent.push(...frames(unreadableStatus(A), queueEvent()));
+      assert.equal(a.startedAt, null, `${label} : rien de conclu pendant l’alerte`);
+      assert.deepEqual(f.events('turn.unsent'), [], label);
+    }
+    sent.push(...frames(isoStatus(4, A)));
+    assert.equal(a.pulled, null, `${label} : retrait oublié`);
+    assert.ok(a.startedAt, `${label} : A sur scène`);
+    assert.ok(notes(f).includes(`« ${a.sel.song.title} » a commencé avant son retrait de KaraFun ; il continue.`), label);
+    assert.ok(notes(f).includes(`Sur scène : ${a.sel.label} — « ${a.sel.song.title} »`), label);
+    assert.equal(owner.sung, 1, `${label} : passage compté`);
+    assert.equal(a.sel.turnCredit.rolledBack, false, label);
+    assert.deepEqual(removals(sent), [], `${label} : aucun second retrait`);
+    assert.deepEqual(f.events('turn.unsent'), [], label);
+    // Fin du titre : passage toujours compté, titre pas rendu à son chanteur.
+    frames(queueEvent(), isoStatus(1, null));
+    assert.deepEqual(f.events('turn.unsent'), [], `${label} : fin du titre`);
+    assert.equal(f.tracked().length, 0, label);
+    assert.equal(a.sel.turnCredit.rolledBack, false, `${label} : passage toujours compté`);
+    assert.equal(f.sched.songsOf(owner).some(song => song.entryId === a.sel.song.entryId), false, `${label} : titre chanté, pas rendu`);
+  }
+});
+
+// Relecture du cycle 3 (cases anciennes, retrait pour une priorité × sortie de
+// la file pendant l'alerte) : titre chargé retiré pour une priorité du bar
+// (« Priorité » confirmée, retrait envoyé), qui sort de la file de KaraFun
+// pendant une alerte de l'état. Il reste suivi, sans verdict, et rien ne part
+// vers KaraFun ; à la première vue lisible, son verdict « pulled-priority » le
+// fait repasser juste après la priorité (Scheduler#returnFromKaraFun) : la
+// priorité part d'abord, puis il est le prochain annoncé, sans perdre son tour.
+test('valeurs imprévues : titre retiré pour une priorité, sorti de la file pendant une alerte de l’état : verdict à la vue lisible, il repasse juste après la priorité', async t => {
+  const clock = clockAt('2026-11-16T22:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  f.sched.opts.requirePresence = false;
+  const [alice, bruno, chloe, driss] = ['Alice', 'Bruno', 'Chloé', 'Driss']
+    .map((name, i) => singer(f, openTable(f, String(i + 1), 2), name, 801 + i).person);
+  const a = sendNext(f, 'A-id'), b = sendNext(f, 'B-id');
+  assert.deepEqual([a.sel.ids[0], b.sel.ids[0]], [alice.id, bruno.id], 'Alice chante, le titre de Bruno est chargé ensuite');
+  const A = isoItem('A-id', 801, { singer: a.sel.label });
+  frames(queueEvent(A, isoItem('B-id', 802, { singer: b.sel.label })), isoStatus(4, A));
+  // Envoi automatique actif, comme au bar : sans lui, le retrait est refusé.
+  f.settings.auto = true;
+  const answer = await f.call('POST /api/staff/move', { personId: driss.id, toIndex: 0, priority: true, pullLoaded: true, queueId: 'B-id' });
+  assert.equal(answer.message, '« Titre 802 » sort de KaraFun : Driss passe d’abord, « Titre 802 » juste après.');
+  assert.deepEqual(removals(frames()), ['B-id'], 'retrait envoyé');
+  assert.deepEqual([b.pulled?.reason, b.pulled?.forId], ['priority', driss.id]);
+  frames(unreadableStatus(A));
+  assert.deepEqual(frames(queueEvent(A)), [], 'KaraFun fait le retrait pendant l’alerte : rien ne part');
+  assert.deepEqual(plain(f.tracked().map(tr => tr.queueId)), ['A-id', 'B-id'], 'B toujours suivi pendant l’alerte');
+  assert.deepEqual(f.events('turn.unsent'), [], 'aucun verdict pendant l’alerte');
+  assert.equal(b.pulled?.reason, 'priority');
+  assert.equal(f.pending(), null);
+  // Fin de l'alerte : Alice chante toujours, B n'est nulle part.
+  const after = frames(isoStatus(4, A));
+  assert.deepEqual(f.events('turn.unsent').map(e => [e.queueId, e.reason]), [['B-id', 'pulled-priority']], 'verdict à la vue lisible');
+  assert.ok(notes(f).includes(`« Titre 802 » (${b.sel.label}) retiré de KaraFun : il repasse juste après Driss (priorité du bar), sans perdre son tour`));
+  assert.equal(b.sel.turnCredit.rolledBack, true);
+  assert.equal(bruno.sung, 0, 'son passage retiré n’a pas compté');
+  const back = f.staffState().queue.find(line => line.source === 'helper' && line.id === bruno.id);
+  assert.equal(back?.afterPriority, true, 'repère « Après la priorité »');
+  // La priorité part vers KaraFun ; à son accusé, Bruno est le prochain annoncé.
+  const add = after.find(m => m.type === 'remote.AddToQueueRequest');
+  assert.equal(add?.payload.song.id, 804, 'la priorité de Driss part d’abord');
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, isoItem('D-id', 804, add.payload.options)));
+  assert.equal(driss.sung, 1, 'la priorité compte');
+  assert.equal(f.sched.reservedNext?.personId, bruno.id, 'Bruno repasse juste après la priorité');
+  assert.equal(f.staffState().queue.find(line => line.source === 'helper' && !line.future)?.id, bruno.id, 'devant Chloé');
+  assert.equal(chloe.sung, 0, 'Chloé attend son tour');
+});
+
+// Relecture du cycle 3 (cases anciennes, retrait de fermeture annulé × lancé
+// sur scène) : retrait de fermeture envoyé puis annulé (le bar décale l'heure :
+// le titre tient de nouveau avant elle), titre resté dans KaraFun et lancé.
+// Départ simple : sur scène, passage compté, entrée de scène ; à sa fin, il ne
+// revient pas à son chanteur (le délai d'un retrait annulé qui aboutit quand
+// même, PULL_LATE_MS, ne vaut que pour un titre jamais commencé).
+test('retrait de fermeture annulé, titre resté dans KaraFun puis lancé : départ simple, passage compté', async t => {
+  const { clock, f, frames, a, A, owner } = p3g4ClosingPull(t);
+  f.settings.closingAt = clock.now + 3 * 3600000;
+  assert.deepEqual(removals(frames()), []);
+  assert.equal(a.pulled, null, 'retrait annulé');
+  assert.deepEqual(plain(a.unpulled), { reason: 'closing', at: clock.now });
+  assert.equal(a.removeRequestedAt, 0);
+  // C se termine, KaraFun lance A.
+  const sent = frames(isoStatus(4, A));
+  assert.ok(a.startedAt, 'A sur scène');
+  assert.equal(owner.sung, 1, 'passage compté');
+  assert.equal(a.sel.turnCredit.rolledBack, false);
+  assert.ok(notes(f).includes(`Sur scène : ${a.sel.label} — « ${a.sel.song.title} »`));
+  const entry = f.sched.stageHistory.at(-1);
+  assert.deepEqual(plain({ ids: entry.ids, entryId: entry.entryId, endedAt: entry.endedAt }),
+    { ids: [owner.id], entryId: a.sel.song.entryId, endedAt: null }, 'entrée de scène');
+  assert.equal(notes(f).some(line => line.includes('avant son retrait de KaraFun')), false, 'plus de retrait en cours');
+  assert.deepEqual(removals(sent), []);
+  // Fin du titre, moins de 20 s après l'annulation : chanté, il ne revient pas à son chanteur.
+  frames(queueEvent(), isoStatus(1, null));
+  assert.deepEqual(f.events('turn.unsent'), []);
+  assert.equal(f.tracked().length, 0);
+  assert.ok(entry.endedAt, 'passage fini');
+  assert.equal(a.sel.turnCredit.rolledBack, false, 'passage toujours compté');
+  assert.equal(f.sched.songsOf(owner).some(song => song.entryId === a.sel.song.entryId), false, 'titre chanté, pas rendu');
+  assert.equal(notes(f).some(line => line.includes('juste avant le changement de l’heure de fermeture')), false);
+});
+
+// Relecture du cycle 3 (cases anciennes, retrait de duo annulé × lancé sur
+// scène) : le bar note un duo improvisé pendant le titre en cours ; le titre
+// suivant du partenaire sort de KaraFun (retrait envoyé), puis le bar annule
+// ce duo. Le titre, resté dans KaraFun, garde son retrait annulé (`unpulled`,
+// « duo »). Lancé ensuite, c'est un départ simple : sur scène, passage compté,
+// jamais rendu à son chanteur à sa fin.
+test('retrait de duo annulé après son envoi, titre lancé ensuite : départ simple, passage compté', async t => {
+  const clock = clockAt('2026-11-16T22:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  f.sched.opts.requirePresence = false;
+  const people = [singer(f, openTable(f, '1'), 'Marine', 101), singer(f, openTable(f, '2'), 'Dam', 201)];
+  const a = sendNext(f, 'A-id'), b = sendNext(f, 'B-id');
+  const partner = people.find(s => s.person.id === b.sel.ids[0]).person;
+  const A = isoItem('A-id', a.sel.song.songId, { singer: a.sel.label });
+  const B = isoItem('B-id', b.sel.song.songId, { singer: b.sel.label });
+  frames(queueEvent(A, B), isoStatus(4, A));
+  assert.equal((await f.call('POST /api/staff/duo-mark', { queueId: 'A-id', partnerId: partner.id })).moved, 1);
+  assert.deepEqual(removals(frames()), ['B-id'], 'retrait du titre du partenaire envoyé');
+  assert.equal(b.pulled?.reason, 'duo');
+  await f.call('POST /api/staff/duo-unmark', { queueId: 'A-id' });
+  assert.equal(b.pulled, null, 'retrait annulé');
+  assert.equal(b.unpulled?.reason, 'duo', 'retrait déjà envoyé : il pouvait encore aboutir');
+  assert.equal(b.removeRequestedAt, 0);
+  // A se termine, KaraFun lance B.
+  const sent = frames(queueEvent(B), isoStatus(4, B));
+  assert.ok(b.startedAt, 'B sur scène');
+  assert.equal(partner.sung, 1, 'passage compté');
+  assert.equal(b.sel.turnCredit.rolledBack, false);
+  assert.ok(notes(f).includes(`Sur scène : ${b.sel.label} — « ${b.sel.song.title} »`));
+  const entry = f.sched.stageHistory.at(-1);
+  assert.deepEqual(plain({ ids: entry.ids, entryId: entry.entryId, endedAt: entry.endedAt }),
+    { ids: [partner.id], entryId: b.sel.song.entryId, endedAt: null }, 'entrée de scène');
+  assert.equal(notes(f).some(line => line.includes('avant son retrait de KaraFun')), false);
+  assert.deepEqual(removals(sent), []);
+  assert.deepEqual(f.events('turn.unsent'), []);
+  // Fin du titre : chanté, il ne revient pas à son chanteur.
+  frames(queueEvent(), isoStatus(1, null));
+  assert.deepEqual(f.events('turn.unsent'), []);
+  assert.equal(f.tracked().length, 0);
+  assert.equal(b.sel.turnCredit.rolledBack, false, 'passage toujours compté');
+  assert.equal(f.sched.songsOf(partner).some(song => song.entryId === b.sel.song.entryId), false, 'titre chanté, pas rendu');
+  assert.equal(notes(f).some(line => line.includes('malgré l’annulation du duo')), false);
+});
+
+// Relecture du cycle 3 (cases anciennes, envoi annulé × délai de l'accusé) :
+// envoi en cours annulé (« Parti » pendant l'envoi), sans accusé de KaraFun
+// après 15 s. Une réponse manquante ne prouve pas que KaraFun a refusé
+// l'ajout, et renvoyer ferait un doublon : l'envoi est déclaré non confirmé,
+// l'envoi automatique est suspendu, et rien ne repart, ni ce titre ni un
+// autre. Un accusé tardif retrouve l'envoi : le titre est suivi annulé, son
+// retrait part aussitôt, le passage de la personne partie ne compte pas, et
+// l'envoi automatique reprend avec l'autre titre une fois le retrait confirmé.
+test('envoi annulé (« Parti ») sans accusé après 15 s : non confirmé, aucun second ajout ; accusé tardif suivi annulé et retiré', async t => {
+  const clock = clockAt('2026-11-16T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  const tb = openTable(f, '1');
+  singer(f, tb, 'Léa', 101);
+  singer(f, tb, 'Tom', 201);
+  f.settings.auto = true;
+  const all = [];
+  const step = (...messages) => { const out = frames(...messages); all.push(...out); return out; };
+  const adds = () => all.filter(m => m.type === 'remote.AddToQueueRequest').map(m => m.payload.song.id);
+  const [add] = step();
+  assert.equal(add?.type, 'remote.AddToQueueRequest');
+  const sel = f.pending().sel;
+  assert.equal((await f.call('POST /api/staff/person/leave', { personId: sel.ids[0] })).pendingCancelled, true);
+  clock.now += 16000;
+  step();
+  assert.equal(unconfirmed(f).length, 1, 'non confirmé après 15 s');
+  assert.ok(unconfirmed(f)[0].startsWith(`KaraFun n'a pas confirmé « ${sel.song.title} »`));
+  assert.equal(f.events('send.unconfirmed').length, 1);
+  assert.equal(f.staffState().recoveredPending, true, 'envoi automatique suspendu');
+  assert.equal(f.pending()?.cancelled, true, 'envoi gardé, toujours annulé');
+  clock.now += 60000;
+  step();
+  assert.deepEqual(adds(), [add.payload.song.id], 'aucun second ajout, ni ce titre ni un autre');
+  assert.equal(unconfirmed(f).length, 1, 'un seul avis');
+  // Accusé tardif : KaraFun a bien ajouté le titre.
+  const late = step({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} },
+    queueEvent(isoItem('A-id', add.payload.song.id, add.payload.options)));
+  assert.equal(f.pending(), null, 'envoi retrouvé');
+  assert.equal(f.staffState().recoveredPending, false);
+  assert.deepEqual(plain(f.tracked().map(tr => [tr.queueId, !!tr.cancelled, tr.startedAt])), [['A-id', true, null]], 'suivi annulé');
+  assert.deepEqual(removals(late), ['A-id'], 'retrait envoyé aussitôt');
+  assert.ok(notes(f).includes(`« ${sel.song.title} » retirée de KaraFun après le départ du chanteur`));
+  assert.deepEqual(f.events('turn.sent'), [], 'le passage de la personne partie ne compte pas');
+  assert.deepEqual(adds(), [add.payload.song.id]);
+  // KaraFun confirme le retrait ; l'envoi automatique reprend avec l'autre titre.
+  step(queueEvent());
+  assert.deepEqual(f.events('turn.unsent').map(e => [e.queueId, e.reason]), [['A-id', 'cancelled']]);
+  assert.ok(notes(f).includes(`Retrait KaraFun confirmé : « ${sel.song.title} »`));
+  clock.now += 1000;
+  step();
+  const other = add.payload.song.id === 101 ? 201 : 101;
+  assert.deepEqual(adds(), [add.payload.song.id, other], 'jamais renvoyé ; l’envoi reprend avec l’autre titre');
+});
+
+// ---------------------------------------------------------------- relecture du cycle 3, cases anciennes : duo noté pendant un envoi, autre KaraFun
+// Léa chante A (envoyé, accusé, sur scène) ; le titre de Zoé, d'une autre
+// table, part vers KaraFun sans accusé encore, et le bar note Zoé en duo
+// improvisé avec Léa : son titre doit quitter KaraFun dès qu'il y arrive
+// (pending.pullOnAck), sinon elle rechanterait juste après son duo. Horloge du
+// serveur avancée par l'essai. Rend aussi `Z`, ce titre tel que KaraFun le
+// mettra dans sa file, et `addZ`, sa demande d'ajout.
+async function p3g5DuoNotedDuringSend(t) {
+  const clock = clockAt('2026-11-16T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  f.sched.opts.requirePresence = false;
+  const lea = singer(f, openTable(f, '1'), 'Léa', 12458);
+  const zoe = singer(f, openTable(f, '2'), 'Zoé');
+  f.settings.auto = true;
+  const [addA] = frames();
+  f.settings.auto = false;
+  assert.equal(addA?.type, 'remote.AddToQueueRequest');
+  const A = isoItem('A-id', 12458, addA.payload.options);
+  frames({ id: addA.id, type: 'remote.AddToQueueResponse', payload: {} }, isoStatus(1, A), queueEvent(A),
+    isoStatus(2, A), isoStatus(3, A), isoStatus(4, A));
+  assert.ok(f.tracked().find(tr => tr.queueId === 'A-id')?.startedAt, 'Léa chante A');
+  f.sched.chooseSong(zoe.person, { songId: 12459, title: 'Titre 12459', artist: 'Artiste' });
+  f.settings.auto = true;
+  const addZ = frames().find(m => m.type === 'remote.AddToQueueRequest');
+  f.settings.auto = false;
+  assert.equal(f.pending()?.sel.ids[0], zoe.person.id, 'titre de Zoé en cours d’envoi');
+  const marked = await f.call('POST /api/staff/duo-mark', { queueId: 'A-id', partnerId: zoe.person.id });
+  assert.equal(marked.moved, 1);
+  assert.equal(f.pending().pullOnAck, 'duo', 'retrait prévu à l’accusé');
+  const Z = isoItem('Z-id', 12459, addZ.payload.options);
+  return { f, clock, frames, lea, zoe, A, Z, addZ };
+}
+
+// Relecture du cycle 3 (cases anciennes, pull-on-ack × accusé) : l'accusé
+// lisible arrive, le titre de Zoé n'est pas sur scène. Il est compté comme
+// envoyé (turn.sent) et suivi, puis son retrait part aussitôt pour le duo ;
+// KaraFun le retire, et il revient à Zoé, qui chantera plus tard.
+test('duo noté pendant l’envoi du titre du partenaire, accusé lisible hors scène : compté, suivi, puis retiré de KaraFun', async t => {
+  const { f, frames, zoe, A, Z, addZ } = await p3g5DuoNotedDuringSend(t);
+  const out = frames({ id: addZ.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, Z));
+  assert.equal(f.pending(), null, 'envoi accusé');
+  assert.deepEqual(f.events('turn.sent').filter(e => e.queueId === 'Z-id').map(e => e.ids), [[zoe.person.id]],
+    'passage compté à l’accusé');
+  const sent = f.tracked().find(tr => tr.queueId === 'Z-id');
+  assert.ok(sent, 'titre de Zoé suivi');
+  assert.equal(sent.pulled?.reason, 'duo', 'retrait noté pour le duo');
+  assert.deepEqual(removals(out), ['Z-id'], 'retrait envoyé dès l’accusé');
+  // KaraFun le retire : le passage n'a pas eu lieu, le titre revient à Zoé.
+  frames(queueEvent(A));
+  assert.deepEqual(f.events('turn.unsent').map(e => [e.queueId, e.reason]), [['Z-id', 'pulled-duo']]);
+  assert.ok(notes(f).some(line => /^« Titre 12459 » \(.+\) retiré de KaraFun après le duo improvisé : il repassera plus tard$/.test(line)));
+  assert.ok(f.sched.songsOf(zoe.person).some(song => song.songId === 12459), 'titre rendu à Zoé');
+});
+
+// Relecture du cycle 3 (cases anciennes, pull-on-ack × délai) : sans accusé
+// au bout de 15 s, l'envoi est à vérifier (recoveredPending, « KaraFun n'a pas
+// confirmé ») comme un envoi simple, et rien n'est renvoyé : la commande peut
+// encore arriver, un second ajout ferait chanter Zoé deux fois. Le retrait du
+// duo reste prévu : l'accusé tardif le fait partir.
+test('duo noté pendant l’envoi du titre du partenaire, sans accusé après 15 s : à vérifier, aucun second ajout ; accusé tardif retiré', async t => {
+  const { f, clock, frames, A, Z, addZ } = await p3g5DuoNotedDuringSend(t);
+  f.settings.auto = true; // l'envoi automatique ne renvoie pas le titre pour autant
+  clock.now += 16000;
+  const waited = frames();
+  assert.equal(unconfirmed(f).length, 1);
+  assert.match(unconfirmed(f)[0], /^KaraFun n'a pas confirmé « Titre 12459 »/);
+  assert.equal(f.staffState().recoveredPending, true, 'envoi interrompu à vérifier par le bar');
+  clock.now += 30000;
+  waited.push(...frames());
+  assert.deepEqual(waited.filter(m => m.type === 'remote.AddToQueueRequest'), [], 'aucun second ajout');
+  assert.deepEqual(removals(waited), [], 'rien à retirer tant que le titre n’est pas vu');
+  assert.equal(f.pending()?.pullOnAck, 'duo', 'retrait toujours prévu à l’accusé');
+  // Accusé tardif : titre retrouvé, suivi, et retiré pour le duo.
+  const late = frames({ id: addZ.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, Z));
+  assert.equal(f.pending(), null);
+  assert.equal(f.staffState().recoveredPending, false, 'plus rien à vérifier');
+  assert.equal(f.tracked().find(tr => tr.queueId === 'Z-id')?.pulled?.reason, 'duo');
+  assert.deepEqual(removals(late), ['Z-id'], 'accusé tardif : retrait envoyé');
+  assert.deepEqual(late.filter(m => m.type === 'remote.AddToQueueRequest'), [], 'toujours aucun second ajout');
+});
+
+// Relecture du cycle 3 (cases anciennes, pull-on-ack × délai pendant une
+// alerte de la file seule) : la file de KaraFun est illisible, l'état se lit
+// encore (Léa chante). Le titre de Zoé y est peut-être : plus de 15 s passent
+// sans verdict (ni « n'a pas confirmé », ni retrait). À la file lisible
+// suivante, l'envoi est jugé comme un envoi simple : trouvé, il est accusé puis
+// retiré pour le duo ; absent, il est à vérifier.
+test('valeurs imprévues : duo noté pendant l’envoi, alerte de la file seule au-delà de 15 s : aucun verdict ; à la file lisible, accusé puis retiré, ou non confirmé', async t => {
+  for (const seen of ['trouvé', 'absent']) {
+    const { f, clock, frames, A, Z, addZ } = await p3g5DuoNotedDuringSend(t);
+    const during = frames(...(seen === 'trouvé' ?
+      [{ id: addZ.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, Z, ODD_ITEM)] : [queueEvent(A, ODD_ITEM)]));
+    clock.now += 20000;
+    during.push(...frames());
+    clock.now += 40000;
+    during.push(...frames());
+    assert.deepEqual(unconfirmed(f), [], `${seen} : pas de verdict pendant l’alerte de la file`);
+    assert.equal(f.staffState().recoveredPending, false, seen);
+    assert.deepEqual(removals(during), [], `${seen} : rien retiré pendant l’alerte`);
+    assert.equal(f.pending()?.pullOnAck, 'duo', `${seen} : envoi et retrait toujours en attente`);
+    if (seen === 'trouvé') {
+      const out = frames(queueEvent(A, Z));
+      assert.equal(f.pending(), null, 'trouvé : accusé');
+      assert.equal(f.tracked().find(tr => tr.queueId === 'Z-id')?.pulled?.reason, 'duo', seen);
+      assert.deepEqual(removals(out), ['Z-id'], 'trouvé : retrait envoyé');
+      assert.deepEqual(unconfirmed(f), [], seen);
+    } else {
+      const out = frames(queueEvent(A));
+      assert.equal(unconfirmed(f).length, 1, 'absent : KaraFun n’a pas confirmé');
+      assert.equal(f.staffState().recoveredPending, true, seen);
+      assert.deepEqual(removals(out), [], 'absent : rien à retirer');
+      assert.equal(f.pending()?.pullOnAck, 'duo', 'absent : retrait gardé pour un accusé tardif');
+    }
+  }
+});
+
+// Relecture du cycle 3 (cases anciennes, pull-on-ack × « J'ai vérifié la file
+// KaraFun : reprendre ») : avant 15 s, l'envoi n'est pas interrompu. La reprise
+// est refusée sans rien défaire (elle oublierait l'envoi et le renverrait) :
+// l'envoi et son retrait suivent leur cours, le titre n'est jamais ajouté deux fois.
+test('duo noté pendant l’envoi, « reprendre » demandé avant 15 s : refusé, l’envoi et son retrait suivent leur cours', async t => {
+  const { f, frames, A, Z, addZ } = await p3g5DuoNotedDuringSend(t);
+  await rejects(f.call('POST /api/staff/reconcile-pending'), null, /^Aucun envoi interrompu à vérifier\.$/);
+  assert.equal(f.pending()?.pullOnAck, 'duo', 'envoi et retrait prévus gardés');
+  assert.equal(f.staffState().recoveredPending, false);
+  assert.equal(f.settings.auto, false, 'envoi automatique pas réactivé');
+  const out = frames({ id: addZ.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, Z));
+  assert.deepEqual(removals(out), ['Z-id'], 'à l’accusé, le titre de Zoé quitte KaraFun');
+  assert.deepEqual(out.filter(m => m.type === 'remote.AddToQueueRequest'), [], 'jamais ajouté deux fois');
+});
+
+// Relecture du cycle 3 (cases anciennes, reconnexion depuis l'alerte × autre
+// code) : « Reconnecter » de l'alerte garde « blind » jusqu'à la vue de
+// KaraFun (alertReconnect), pour que « ⏸ Spotify » du bar tienne. Le bar
+// saisit ensuite le code d'un autre KaraFun : ce n'est plus la reconnexion de
+// l'alerte, mais un autre KaraFun, déconnecté (« unknown ») tant qu'il n'est
+// pas vu. À sa vue, l'automatisme de Spotify repart de ce qu'il voit.
+test('valeurs imprévues : « Reconnecter » de l’alerte, puis « Connecter » avec un autre code : déconnecté (« unknown ») jusqu’à la vue de cet autre KaraFun', async t => {
+  const f = harness();
+  const { bridge, frames } = replayBridge(t, f);
+  const calls = fakeSpotify(f);
+  frames(queueEvent(), isoStatus(1, null));
+  await f.spotifyTick();
+  assert.deepEqual(calls, ['lecture'], 'silence : Spotify relancé');
+  // Code connu du serveur et URL KCS gardée, comme après une vraie connexion.
+  bridge.code = '123456';
+  bridge._kcs = { code: '123456', url: 'wss://kcs.exemple.invalid/remote' };
+  assert.equal(f.connectKaraFun('123456'), 'kept');
+  frames(queueEvent(ODD_ITEM), unreadableStatus(ODD_ITEM));
+  assert.equal(f.karaokeOutlook(), 'blind');
+  await f.call('POST /api/staff/spotify', { action: 'pause' });
+  assert.deepEqual(plain(await f.call('POST /api/staff/kf', { action: 'reconnect' })), { ok: true, kept: false });
+  assert.equal(f.karaokeOutlook(), 'blind', '« Reconnecter » de l’alerte : l’alerte continue pour Spotify');
+  // Code d'un autre KaraFun : sa page est relue (découverte, sans réseau ici).
+  bridge._open = function () { this._setPhase('discovering'); };
+  assert.deepEqual(plain(await f.call('POST /api/staff/connect', { code: '654321' })), { ok: true, kept: false });
+  assert.equal(bridge.code, '654321');
+  assert.equal(bridge.connectionState().phase, 'discovering', 'connexion en cours, pas perdue');
+  assert.equal(f.karaokeOutlook(), 'unknown', 'autre KaraFun : déconnecté, plus l’alerte de l’ancien');
+  await f.spotifyTick();
+  f.sync();
+  assert.equal(f.karaokeOutlook(), 'unknown', 'tant qu’il n’est pas vu');
+  // L'autre KaraFun répond : sa file et son état, scène libre.
+  bridge._openKcs('wss://kcs.exemple.invalid/autre', () => true);
+  reopened(bridge, queueEvent(), isoStatus(1, null));
+  f.sync();
+  assert.equal(bridge.ready, true);
+  assert.equal(f.karaokeOutlook(), 'silent', 'vu : sa propre scène');
+  await f.spotifyTick();
+  assert.deepEqual(calls, ['lecture', 'pause', 'lecture'], 'autre KaraFun : l’automatisme repart de ce qu’il voit');
+});
+
+// Regression: relecture du cycle 3 — « Supprimer toutes les tables » ne retirait que
+// les titres envoyés jamais commencés : la copie prête à jouer d'une relance ⏮
+// inachevée, qui garde le début du titre relancé, restait en tête de KaraFun. Elle passait pour le prochain titre de la nouvelle soirée : rien
+// ne partait de la file tant que le bar ne l'avait pas retirée dans KaraFun, et
+// « Lecture » rejouait le titre de la soirée close. Elle part comme un titre à
+// venir : son retrait est envoyé, elle ne compte pas dans la nouvelle soirée, et le
+// premier titre de celle-ci part une fois KaraFun vidé.
+test('relance ⏮ inachevée, copie prête à jouer : « Supprimer toutes les tables » la retire, la nouvelle soirée envoie son premier titre', async t => {
+  const { clock, f, frames, tr } = await p3g1CopyAwaitingPlay(t);
+  const reset = await f.call('POST /api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
+  assert.deepEqual([reset.removalRequests, reset.removalPending], [1, 1], 'la copie compte parmi les titres à retirer');
+  assert.equal(tr.cancelled, true, 'copie annulée comme un titre à venir');
+  assert.deepEqual(removals(frames()), ['C-id'], 'son retrait est parti');
+  // KaraFun retire la copie : sa file est vide.
+  frames(queueEvent(), isoStatus(1, null));
+  assert.equal(f.tracked().length, 0, 'copie plus suivie');
+  assert.equal(f.sched.appearanceSerial, 0, 'aucun passage compté dans la nouvelle soirée');
+  assert.deepEqual(f.events('turn.sent'), [], 'aucun envoi noté au journal de la nouvelle soirée');
+  // Premier titre de la nouvelle soirée : il part une fois la file de KaraFun vide depuis 1 s.
+  singer(f, openTable(f, '2'), 'Nina', 202);
+  f.settings.auto = true;
+  clock.now += 1000;
+  assert.deepEqual(frames().filter(m => m.type === 'remote.AddToQueueRequest').map(m => m.payload.song.id), [202],
+    'KaraFun vidé de la copie : le titre de Nina part');
+});
+
+// Regression: relecture du cycle 3 (case sans essai) — la synchronisation qui suit
+// l'alerte d'un message illisible voit d'un coup ce que KaraFun a fait pendant elle,
+// même quand KaraFun a été perdu entre-temps (lastSyncBlind). Réglage de B fait
+// pendant l'alerte (« pas encore envoyé »), connexion perdue puis rouverte : B joue
+// déjà, réglé par le bar dans KaraFun, et rien n'y est rattrapé en pleine chanson.
+// Sans alerte, le réglage fait pendant la coupure (« au retour de KaraFun ») est
+// rattrapé au retour, comme pour tout titre vu pour la première fois en lecture.
+test('valeurs imprévues : réglage fait pendant l’alerte, KaraFun perdu puis revenu en pleine chanson : rien rattrapé ; sans alerte, rattrapé au retour', async t => {
+  for (const alert of [true, false]) {
+    const label = alert ? 'alerte puis coupure' : 'coupure seule';
+    const { f, bridge, frames, A, B, trB } = aThenB(t);
+    if (alert) frames(unreadableStatus(A));
+    else { bridge.disconnect(); f.sync(); }
+    const answer = await f.call('POST /api/staff/song/settings', { personId: trB.sel.ids[0], entryId: trB.sel.song.entryId,
+      settings: { pitch: 2, tempo: 10, guide: 50 } });
+    assert.equal(answer.applied, alert ? 'unreadable' : 'start', `${label} : réponse au réglage`);
+    if (alert) { bridge.disconnect(); f.sync(); }
+    assert.equal(f.karaokeOutlook(), 'unknown', `${label} : KaraFun déconnecté`);
+    // KaraFun revient : A est fini, B joue déjà, avec les valeurs réglées dans KaraFun.
+    const live = { pitch: -1, tempo: 0, guide: 25 };
+    bridge._openKcs('wss://kcs.exemple.invalid/remote', () => true);
+    const ws = reopened(bridge);
+    ws.out.length = 0;
+    for (const message of [queueEvent(B), isoStatus(4, B, live)]) ws.emit('message', { data: JSON.stringify(message) });
+    f.sync();
+    ws.emit('message', { data: JSON.stringify(isoStatus(4, B, live)) });
+    f.sync();
+    assert.ok(trB.startedAt, `${label} : B compté sur scène`);
+    assert.deepEqual(bare(ws.out.filter(m => !m.type.startsWith('core.'))), alert ? [] : [pitchTo(2), tempoTo(10), volumeTo(5, 50)],
+      `${label} : rattrapage en pleine chanson`);
+    assert.equal(f.events('song.settingsCaughtUp').length, alert ? 0 : 1, label);
+  }
+});

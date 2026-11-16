@@ -2497,3 +2497,36 @@ test('filet du pont : le nom d’un message ignoré est nettoyé dans le journal
   assert.match(bridge.events.filter(e => e.name === 'message-coupe').at(-1).data.type, /^remote\.QueueEvent\?FAUSSE\?LIGNE\?x+$/);
   assert.equal(bridge.events.filter(e => e.name === 'message-coupe').at(-1).data.type.length, 64);
 });
+
+// Relecture, cycle 3 — case « état illisible × connexion perdue », le pendant
+// pour l'état de KaraFun de l'essai sur la file illisible plus haut. Un
+// StatusEvent illisible (titre en cours qui n'est pas un objet) met la page du
+// bar en alerte rouge, avec son propre « Reconnecter » : la connexion marche,
+// seul KaraFun lève l'alerte. Si la connexion se ferme ensuite, la relance est
+// déjà prévue : la page doit montrer l'alerte générale de KaraFun perdu (phase
+// « retry », niveau « error », avec le « Reconnecter » de la page), pas
+// l'alerte d'état, cachée (la nouvelle connexion l'oublie). Sinon le bar
+// lirait que la file « ne voit plus ces changements » et qu'il faut cliquer
+// sur « Reconnecter », alors qu'elle n'est plus reliée du tout et qu'un
+// nouvel essai est déjà prévu.
+test('valeurs imprévues : état illisible puis connexion fermée, l’alerte d’état cède la place à l’alerte générale de reconnexion', async t => {
+  mockTime(t);
+  const { bridge, ws } = await adminBridge(t);
+  t.after(() => bridge.disconnect());
+  ws.receive({ type: 'remote.StatusEvent', payload: { status: { state: 4, current: 'texte' } } });
+  assert.deepEqual([bridge.ready, bridge.queueUnreadable, bridge.unreadable], [true, false, 'remote.StatusEvent'],
+    'toujours prêt, état de KaraFun illisible, la file lisible');
+  const alerted = bridge.connectionState();
+  assert.deepEqual([alerted.phase, alerted.level, alerted.label, alerted.canReconnect],
+    ['ready', 'error', 'Message de KaraFun illisible (remote.StatusEvent)', true], 'alerte d’état, avec son « Reconnecter »');
+  assert.match(alerted.alert, /^Message de KaraFun illisible \(remote\.StatusEvent\) : la file ne voit plus ces changements/);
+  ws.serverClose(1006);
+  const lost = bridge.connectionState();
+  assert.equal(lost.phase, 'retry');
+  assert.equal(lost.alert, null, 'alerte d’état cachée : KaraFun perdu');
+  assert.equal(lost.canReconnect, false, 'plus le « Reconnecter » de l’alerte d’état');
+  assert.equal(lost.level, 'error', 'alerte générale de KaraFun perdu, avec le « Reconnecter » de la page');
+  assert.match(lost.label, /^KaraFun a fermé la connexion \(code 1006\) : nouvel essai dans 3 s$/);
+  assert.equal(lost.retryAt, Date.now() + 3000, 'nouvel essai déjà prévu');
+  assert.match(bridge.lastError, /^Télécommande KaraFun déconnectée \(code 1006\)/, 'l’avis du message ignoré est remplacé');
+});

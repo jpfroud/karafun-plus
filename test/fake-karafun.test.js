@@ -477,3 +477,54 @@ test('le vrai pont avec le faux KaraFun, par le WebSocket de Node', async t => {
   assert.deepEqual(nonLus(bridge), [], 'après la reconnexion non plus');
   assert.equal(bridge.unreadable, null, 'après la reconnexion, pas d’alerte');
 });
+
+// Relecture, cycle 3 — case « Suivant × titre en lecture ».
+// protects=« Suivant » (remote.NextRequest) d'une télécommande pendant un titre : le titre en lecture sort de la
+// file, son minuteur de fin est effacé, un état 1 (titre suivant annoncé, pas chargé) est diffusé à toutes les
+// télécommandes nommées, et le titre suivant ne se lance pas seul, même avec la lecture automatique ; la relance ⏮
+// de la démo (copie après le titre, « Suivant », puis « Lecture » de la file) compte dessus ; fails_when=le minuteur
+// du titre sauté reste armé (à sa fin prévue, il retirerait le titre suivant comme s'il avait été chanté), le faux
+// lance le titre suivant de lui-même, ou une télécommande ne voit ni la file ni l'état changer ; no_claim=ce que le
+// vrai KaraFun fait après « Suivant » (lancer ou non le titre suivant), que seul l'essai réel montre.
+test('« Suivant » pendant un titre : il sort, son minuteur est effacé, état 1 diffusé, le suivant ne se lance pas seul', async t => {
+  // Deux secondes : assez pour qu'une machine lente traite les trois demandes avant la fin du titre.
+  const songSeconds = 2;
+  const kf = await fake(t, { autoplay: true, songSeconds });
+  const c = open(kf.url()), o = open(kf.url());
+  await Promise.all([c.opened, o.opened]);
+  c.send({ id: 1, type: 'remote.UpdateUsernameRequest', payload: { username: 'FileKaraoke-0001' } });
+  o.send({ id: 1, type: 'remote.UpdateUsernameRequest', payload: { username: 'FileKaraoke-0002' } });
+  await until(() => [c, o].every(x => x.received.some(m => m.type === 'remote.UpdateUsernameResponse')), 'noms acceptés');
+  // Les trois demandes partent ensemble : « Suivant » arrive pendant le titre de Léa, lancé par la lecture
+  // automatique dès son ajout, qui ne finirait que deux secondes plus tard.
+  c.send({ id: 2, type: 'remote.AddToQueueRequest', payload: { song: { type: 1, id: 70002 }, options: { singer: 'Léa' }, position: 99999 } });
+  c.send({ id: 3, type: 'remote.AddToQueueRequest', payload: { song: { type: 1, id: 70003 }, options: { singer: 'Zoé' }, position: 99999 } });
+  c.send({ id: 4, type: 'remote.NextRequest', payload: {} });
+  const announced = x => x.received.findIndex(m => m.type === 'remote.StatusEvent' && m.payload.status.current?.song.id.id === 70003);
+  await until(() => [c, o].every(x => announced(x) >= 0), 'état du titre suivant diffusé');
+  const waiting = ({ state, queue }) => [state, queue.map(it => [it.title, it.singer, it.status])];
+  const next = ['infoscreen', [['Wannabe', 'Zoé', 'ready']]];
+  assert.deepEqual(waiting(kf.state()), next, 'le titre sauté est sorti, le titre suivant ne se lance pas seul');
+  // Attente au-delà de la fin prévue du titre sauté : un minuteur resté armé, plus ancien et plus court, partirait
+  // avant la fin de cette attente.
+  await new Promise(resolve => setTimeout(resolve, songSeconds * 1000 + 100));
+  assert.deepEqual(waiting(kf.state()), next, 'minuteur effacé : rien à la fin prévue du titre sauté');
+  const { queue } = kf.state();
+  for (const [who, x] of [['télécommande qui demande', c], ['autre télécommande', o]]) {
+    const at = announced(x);
+    const before = x.received.slice(0, at);
+    assert.ok(before.some(m => m.type === 'remote.StatusEvent' && m.payload.status.state === 4 &&
+      m.payload.status.current?.song.id.id === 70002), `${who} : le titre de Léa jouait`);
+    assert.equal(x.received[at - 1].type, 'remote.QueueEvent', `${who} : la file, puis l’état`);
+    assert.deepEqual(x.received[at - 1].payload.queue.items.map(item => [item.id, item.song.title, item.song.options.singer]),
+      [[String(queue[0].queueId), 'Wannabe', 'Zoé']], `${who} : file diffusée sans le titre sauté`);
+    const { status } = x.received[at].payload;
+    assert.deepEqual([status.state, status.pitch, status.tempo, status.tracks], [1, 0, 0, []],
+      `${who} : état 1, titre suivant annoncé sans être chargé`);
+    assert.deepEqual(x.received.slice(at + 1).filter(m => m.type !== 'core.PingRequest'), [], `${who} : plus rien ensuite`);
+  }
+  assert.equal(c.received.at(announced(c) - 2)?.type, 'remote.NextResponse', 'réponse à « Suivant » avant la diffusion');
+  assert.equal(c.received.at(announced(c) - 2)?.id, 4);
+  c.ws.close();
+  o.ws.close();
+});

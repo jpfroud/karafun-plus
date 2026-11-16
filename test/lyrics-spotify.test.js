@@ -723,3 +723,67 @@ test('Spotify : state à usage unique, 10 min au plus, un state faux ne consomme
   assert.equal(tokenRequests().length, 3, 'une seule requête pour deux retours simultanés');
   assert.equal(link.connected, true);
 });
+
+// Relecture, cycle 3 — case « entre deux chansons × geste du bar ». Un
+// « ⏸ Spotify » ou « ▶ Spotify » fait pendant l'attente d'un titre suivant
+// (« between » : rien ne joue, mais un titre arrive) vaut pour cette attente,
+// comme le serveur le note (handled(undefined, scène vue) : la sorte de
+// période que l'automate a vue). L'attente qui continue ne fait rien, comme
+// toujours entre deux chansons. Mais si la file se vide ensuite (titre
+// suivant retiré : « silent », scène toujours libre), c'est un nouveau
+// silence : Spotify reprend après le délai, compté depuis le début de ce
+// silence. Sinon un geste fait en attendant un titre qui ne vient plus
+// laisserait la salle sans musique jusqu'au titre suivant.
+test('Spotify : geste du bar entre deux chansons, il vaut pour l’attente ; la file vidée ensuite ouvre un nouveau silence, relancé après le délai', () => {
+  let now = 0;
+  const auto = new SpotifyAutomation({ now: () => now });
+  const opts = { autoResume: true, autoPause: true, resumeDelaySec: 3 };
+  assert.equal(auto.step('singing', opts, 'A'), 'pause');
+  auto.settle(true);
+  now += 1000;
+  assert.equal(auto.step('between', opts, null), null, 'A fini, B arrive : jamais entre deux chansons');
+  auto.handled(undefined, null); // « ⏸ Spotify » du bar pendant l'attente
+  assert.deepEqual([auto.phase, auto.done], ['between', true], 'le geste vaut pour l’attente vue');
+  now += 60000;
+  assert.equal(auto.step('between', opts, null), null, 'l’attente continue : rien');
+  // B retiré (« Pas prêt », parti…) : la file est vide, la scène reste libre.
+  now += 1000;
+  const silenceAt = now;
+  assert.equal(auto.step('silent', opts, null), null, 'nouveau silence : relance dans 3 s, pas tout de suite');
+  assert.deepEqual([auto.phase, auto.since, auto.done], ['silent', silenceAt, false], 'nouvelle période, sans le geste de l’attente');
+  now += 2999;
+  assert.equal(auto.step('silent', opts, null), null);
+  now += 1;
+  assert.equal(auto.step('silent', opts, null), 'resume', 'silence de 3 s : Spotify reprend');
+  auto.settle(true);
+  now += 60000;
+  assert.equal(auto.step('silent', opts, null), null, 'une seule fois par silence');
+});
+
+// Relecture, cycle 3 — case « KaraFun déconnecté × geste du bar ». Pendant
+// une déconnexion (« unknown », scène inconnue), l'automate ne touche pas à
+// Spotify, et un geste du bar (« ▶ Spotify » pour combler la coupure) vaut
+// pour elle seulement. Au retour de KaraFun, ce qu'il montre ouvre une
+// nouvelle période (karaokeOutlook dans server.js), même le titre d'avant la
+// coupure, toujours sur scène : Spotify est coupé, sinon il jouerait sur le
+// chanteur jusqu'à la fin du titre. Ce n'est pas l'alerte d'un message
+// illisible (« blind »), dont la période continue avec le choix du bar :
+// déconnectée, la file ne sait rien de ce que KaraFun a fait entre-temps.
+test('Spotify : geste du bar pendant une déconnexion de KaraFun, le titre vu au retour ouvre une nouvelle période et Spotify est coupé', () => {
+  let now = 0;
+  const auto = new SpotifyAutomation({ now: () => now });
+  const opts = { autoResume: true, autoPause: true, resumeDelaySec: 3 };
+  assert.equal(auto.step('singing', opts, 'A'), 'pause');
+  auto.settle(true);
+  now += 30000;
+  assert.equal(auto.step('unknown', opts, undefined), null, 'KaraFun déconnecté : rien');
+  auto.handled(undefined, undefined); // « ▶ Spotify » du bar, comme le serveur le note : scène inconnue
+  assert.deepEqual([auto.phase, auto.done], ['unknown', true], 'le geste vaut pour la coupure');
+  now += 60000;
+  assert.equal(auto.step('unknown', opts, undefined), null, 'toujours déconnecté : rien');
+  assert.equal(auto.step('singing', opts, 'A'), 'pause', 'retour de KaraFun, A toujours sur scène : nouvelle période, Spotify coupé');
+  assert.deepEqual([auto.phase, auto.since], ['singing', now], 'période ouverte au retour');
+  auto.settle(true);
+  now += 1000;
+  assert.equal(auto.step('singing', opts, 'A'), null, 'une seule fois pour ce titre');
+});

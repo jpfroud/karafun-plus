@@ -123,3 +123,39 @@ test('duo : la confirmation de l’invité suffit pour l’envoi', () => {
   assert.deepEqual(plain(f.staffState().presencePending), [], 'plus rien à confirmer');
   assert.deepEqual(plain(f.bridge.queue.map(item => item.songId)), [201]);
 });
+
+// Relecture du cycle 3 (cases anciennes, tête de file mise à l'écart × alerte) :
+// « Je suis là » obligatoire, seul un passage repoussé (« Pas prêt ») attend.
+// Scène libre, plus personne d'autre ne peut chanter : son report prend fin et
+// il devient le prochain annoncé (skipAbsentIfDue). Pendant l'alerte d'un
+// message de KaraFun illisible, la scène vue peut être figée : KaraFun chante
+// peut-être. Le report tient, même bien au-delà du délai de présence, sans
+// manque compté ; il prend fin à la première vue lisible où la scène est libre.
+test('« Pas prêt » seul en tête, message de KaraFun illisible : le report tient pendant l’alerte, levé à la première vue lisible', () => {
+  const f = harness();
+  const [bob, cid] = ['Bob', 'Cid'].map((name, i) => f.sched.join({ tableId: String(i + 1), name, headcount: 1 }));
+  f.sched.chooseSong(bob, { songId: 102, title: 'Titre B' });
+  f.sched.chooseSong(cid, { songId: 103, title: 'Titre C' });
+  f.sched.deferPassage(bob.id, f.sched.presenceView().find(v => !v.future && v.ids[0] === bob.id), 1);
+  f.sched.removeSong(cid, cid.song.entryId);
+  assert.equal(f.sched.isDeferred(bob), true, 'Bob a dit « Pas prêt », Cid n’a plus de titre');
+  const released = () => f.sched.log.filter(line => /^Personne d’autre ne peut chanter/.test(line.msg));
+  f.bridge.unreadable = 'remote.StatusEvent';
+  // Cinq minutes d'alerte, scène vue libre : bien plus que le délai de présence (10 s).
+  for (let i = 0; i < 10; i++) f.tick(30000);
+  assert.equal(f.sched.isDeferred(bob), true, 'pendant l’alerte, son « Pas prêt » tient');
+  assert.deepEqual(released(), [], 'pas de « Personne d’autre ne peut chanter » d’après la vue figée');
+  assert.notEqual(f.sched.reservedNext?.personId, bob.id, 'pas annoncé');
+  assert.equal(f.sched.presenceSkipsOf(bob), 0, 'pas compté absent');
+  assert.equal(f.bridge.queue.length, 0, 'rien n’est envoyé pendant l’alerte');
+  // Fin de l'alerte, scène libre : le report prend fin, Bob est le prochain annoncé.
+  f.bridge.unreadable = null;
+  f.tick(1000);
+  assert.equal(f.sched.isDeferred(bob), false, 'première vue lisible, scène libre : report levé');
+  assert.equal(f.sched.reservedNext?.personId, bob.id, 'il est le prochain annoncé');
+  assert.deepEqual(released().map(line => line.msg), ['Personne d’autre ne peut chanter : le passage repoussé de Bob part maintenant']);
+  assert.equal(f.sched.presenceSkipsOf(bob), 0);
+  f.confirmPresence(bob);
+  f.tick(1000);
+  assert.deepEqual(plain(f.bridge.queue.map(item => item.songId)), [102], 'confirmé, son titre part dans KaraFun');
+});

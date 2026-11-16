@@ -1595,6 +1595,45 @@ test('message de KaraFun illisible : la reprise après Battle ne lance rien avan
   assert.equal(f.plays.length, 1, 'message lisible : la reprise lance le titre');
 });
 
+// Regression: relecture du cycle 3 — duo en cours d'envoi dont l'autrice part
+// (« Parti »), accusé pendant l'alerte d'un message illisible, puis lancé par KaraFun
+// avant la fin de l'alerte. Il restait annulé : à sa fin, « Retrait KaraFun confirmé »,
+// sans passage compté ni clos. Il continue et compte, comme l'accusé arrivé directement
+// sur scène, et son passage se clôt à sa fin.
+test('duo en cours d’envoi, autrice partie, accusé pendant l’alerte puis lancé : il continue, compte et se clôt', async () => {
+  const f = harness();
+  f.settings.pushDelaySec = 0;
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 2 });
+  const bob = f.sched.join({ tableId: '1', name: 'Bob', headcount: 2 });
+  const s = song(613);
+  // Même table : duo direct, sans réponse demandée.
+  assert.equal(f.sched.inviteDuet(alice, bob.id, s).duet.state, 'accepted');
+  f.sync();
+  assert.equal(f.adds.length, 1, 'duo envoyé à KaraFun');
+  await f.handle('POST /api/staff/person/leave', { personId: alice.id });
+  assert.equal(f.pending()?.cancelled, true, 'envoi annulé par « Parti »');
+  const ack = item('duo-alerte', s, f.adds[0].singer);
+  f.bridge.unreadable = 'remote.StatusEvent';
+  f.bridge.queue = [ack];
+  f.sync();
+  assert.equal(f.tracked()[0]?.cancelled, true, 'accusé suivi, annulé');
+  assert.equal(f.tracked()[0].removeRequestedAt, 0, 'retrait retenu jusqu’à la fin de l’alerte');
+  assert.deepEqual(f.removes, [], 'rien retiré pendant l’alerte');
+  f.bridge.unreadable = null;
+  f.bridge.status = { state: 'playing', current: ack }; // KaraFun l'a lancé pendant l'alerte
+  f.sync();
+  assert.deepEqual(f.removes, [], 'rien retiré : il est sur scène');
+  assert.equal(f.tracked()[0].cancelled, false, 'il continue');
+  assert.equal(f.tracked()[0].sel.turnCredit?.rolledBack, false, 'le passage compte');
+  assert.ok(f.sched.stageHistory.at(-1)?.ids.includes(bob.id), 'l’invité resté est sur scène dans l’historique');
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.tracked().length, 0);
+  assert.ok(f.sched.stageHistory.at(-1)?.endedAt, 'le passage se termine dans l’historique');
+  assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de faux retrait confirmé');
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {
