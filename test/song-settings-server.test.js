@@ -58,7 +58,7 @@ function harness({ setTimeout: later = () => ({ unref() {} }), Date: clock = nul
       safeSync: typeof safeSync === 'function' ? safeSync : null, wireBridge, connectionAnswer,
       syncAfterChange: typeof syncAfterChange === 'function' ? syncAfterChange : null,
       connectKaraFun, spotify, karaokeOutlook, spotifyTick, spotifyAutomation, setCode: code => { CODE = code; }, rememberBattleSongs,
-      tracked: () => tracked, pending: () => pending, setBridge: b => { bridge = b; },
+      serverUpdate, tracked: () => tracked, pending: () => pending, setBridge: b => { bridge = b; },
       handle: server.listeners('request')[0], STAFF_KEY, PORT };
   `, context, { filename: 'server.js' });
   const f = context.fixture;
@@ -3511,4 +3511,279 @@ test('filet de la synchronisation : panne qui empêche de lire KaraFun, gestes d
   f.safeSync();
   await f.call('POST /api/staff/duo-unmark', { queueId: 'A-id' });
   assert.deepEqual(plain(a.sel.ids), [a.sel.ids[0]]);
+});
+
+// ---------------------------------------------------------------- relecture contradictoire du tour 5 (tour 2)
+// Ligne de GUIDE-BAR.md qui commence par `start` (un paragraphe, ou un point
+// de liste).
+function guideLine(start) {
+  const line = fs.readFileSync(path.join(root, 'GUIDE-BAR.md'), 'utf8').split(/\r?\n/).find(text => text.startsWith(start));
+  assert.ok(line, `GUIDE-BAR.md : ligne « ${start}… » introuvable`);
+  return line;
+}
+const OUTAGE_PARAGRAPH = 'Si la mise à jour de la file avec KaraFun échoue quand même';
+const OUTAGE_ERROR = 'Cannot convert object to primitive value';
+
+// Lecture HTTP (GET) passée au gestionnaire du serveur.
+function get(f, url) {
+  return new Promise(resolve => {
+    const req = new EventEmitter();
+    Object.assign(req, { method: 'GET', url, headers: {}, socket: { remoteAddress: '127.0.0.1', localPort: f.PORT }, destroy() {} });
+    const out = { status: null, headers: {} };
+    const res = { setHeader(name, value) { out.headers[name.toLowerCase()] = value; }, getHeader() {}, removeHeader() {},
+      writeHead(status, headers = {}) { out.status = status; Object.assign(out.headers, headers); },
+      end(data = '') { try { out.body = JSON.parse(String(data)); } catch { out.body = String(data); } resolve(out); } };
+    f.handle(req, res);
+  });
+}
+
+// Soirée de la panne de référence : quatre chanteurs d'une table (deux titres
+// pour Léa, rien dans KaraFun) et un déplacement du bar, à annuler. Avec
+// `loaded`, A est sur scène et B chargé dans KaraFun ; avec `sentDuo`, le duo
+// de Léa et Tom est chargé dans KaraFun ; `presence` : « Je suis là »
+// obligatoire. `first()` : le prochain passage.
+async function outageScene({ presence = false, loaded = false, sentDuo = false } = {}) {
+  const f = harness({ persistent: true });
+  const { bridge } = kcsBridge(f);
+  f.sched.opts.requirePresence = presence;
+  const tb = openTable(f, '1', 8);
+  const s = {};
+  if (sentDuo) {
+    // Même table : le duo est accepté d'office, et c'est le seul passage.
+    s.lea = singer(f, tb, 'Léa');
+    s.tom = singer(f, tb, 'Tom');
+    await f.call('POST /api/table/duet', { ...s.lea.body, partnerId: s.tom.person.id, song: { songId: 557, title: 'Duo', artist: 'Artiste' } });
+    s.duo = sendNext(f, 'D-id');
+    assert.equal(s.duo.sel.ids.length, 2, 'duo chargé dans KaraFun');
+    bridge.queue = [kfItem('D-id', s.duo.sel.song.songId, s.duo.sel.label)];
+  }
+  s.lea ??= singer(f, tb, 'Léa', 101);
+  s.tom ??= singer(f, tb, 'Tom', 201);
+  s.zoe = singer(f, tb, 'Zoé', 301);
+  s.max = singer(f, tb, 'Max', 401);
+  f.sched.chooseSong(s.lea.person, { songId: 102, title: 'Titre 102', artist: 'Artiste' }, 'append');
+  if (loaded) {
+    s.a = sendNext(f, 'A-id');
+    s.b = sendNext(f, 'B-id');
+    const itemA = kfItem('A-id', s.a.sel.song.songId, s.a.sel.label);
+    bridge.queue = [itemA, kfItem('B-id', s.b.sel.song.songId, s.b.sel.label)];
+    bridge.status = playing(itemA);
+  }
+  f.sync();
+  await f.call('POST /api/staff/move', { personId: s.max.person.id, toIndex: 0 });
+  const people = [s.lea, s.tom, s.zoe, s.max];
+  s.first = () => people.find(who => who.person.id === f.sched.presenceView().find(v => !v.future).ids[0]);
+  s.free = () => people.find(who => !s.a?.sel.ids.includes(who.person.id) && !s.b?.sel.ids.includes(who.person.id));
+  return { f, bridge, s, tb };
+}
+const staffUrl = (f, route) => `${route}?key=${f.STAFF_KEY}`;
+const BATTLE_SONGS = [{ songId: 900, title: 'Tube', artist: 'Groupe' }, { songId: 901, title: 'Autre tube', artist: 'Groupe' }];
+
+// Gestes qui lisent KaraFun pour décider, avant tout changement :
+// [page, nom dans GUIDE-BAR.md, soirée, requête].
+const OUTAGE_REFUSED = [
+  ['téléphones', '« Je suis là »', { presence: true }, (f, s) => ['/api/table/confirm', { ...s.first().body }]],
+  ['téléphones', '« Pas prêt »', {}, (f, s) => ['/api/table/defer', { ...s.first().body, songs: 1 }]],
+  ['téléphones', "les réglages d'un titre", {}, (f, s) => ['/api/table/song/settings',
+    { ...s.lea.body, entryId: f.sched.songsOf(s.lea.person)[0].entryId, settings: { pitch: 1 } }]],
+  ['téléphones', '« Proposer une Battle »', {}, (f, s) => ['/api/table/battle/propose', { ...s.tom.body, songs: BATTLE_SONGS, proposerChoice: 900 }]],
+  ['téléphones', '« Je ne chante plus ce duo »', { sentDuo: true }, (f, s) => ['/api/table/duet/leave',
+    { ...s.tom.body, ownerId: s.lea.person.id, entryId: s.duo.sel.song.entryId }]],
+  ['téléphones', '« Chanter seul »', { sentDuo: true }, (f, s) => ['/api/table/duet/solo', { ...s.lea.body, entryId: s.duo.sel.song.entryId }]],
+  ['bar', '« ▶ Lecture »', {}, f => [staffUrl(f, '/api/staff/kf'), { action: 'play' }]],
+  ['bar', '« ⏮ Relancer depuis le début »', {}, f => [staffUrl(f, '/api/staff/kf'), { action: 'restart' }]],
+  ['bar', '« Réglages en direct »', { loaded: true }, f => [staffUrl(f, '/api/staff/kf'), { action: 'pitch', value: 1 }]],
+  ['bar', "les réglages d'un titre à venir", {}, (f, s) => [staffUrl(f, '/api/staff/song/settings'),
+    { entryId: f.sched.songsOf(s.lea.person)[0].entryId, settings: { pitch: 1 } }]],
+  ['bar', '« Parti »', {}, (f, s) => [staffUrl(f, '/api/staff/person/leave'), { personId: s.tom.person.id }]],
+  ['bar', '« Table partie »', {}, f => [staffUrl(f, '/api/staff/table-left'), { id: '1' }]],
+  ['bar', '« Annuler ce changement »', {}, f => [staffUrl(f, '/api/staff/manual-change-undo'), { id: f.sched.manualChanges.at(-1).id }]],
+  ['bar', '« Annuler tous les changements manuels »', {}, f => [staffUrl(f, '/api/staff/queue-recalculate'), {}]],
+  ['bar', "« Recalculer la file » s'il reste un changement manuel", {}, f => [staffUrl(f, '/api/staff/queue-optimize'), {}]],
+  ['bar', '« Vider toutes les chansons »', {}, f => [staffUrl(f, '/api/staff/queue-clear'), { confirmation: 'VIDER TOUTES LES CHANSONS' }]],
+  ['bar', '« Supprimer toutes les tables »', {}, f => [staffUrl(f, '/api/staff/tables-clear'), { confirmation: 'SUPPRIMER TOUTES LES TABLES' }]],
+  ['bar', '« Vider » les derniers passages', {}, f => [staffUrl(f, '/api/staff/stage-history/clear'), {}]],
+  ['bar', 'le duo improvisé noté', { loaded: true }, (f, s) => [staffUrl(f, '/api/staff/duo-mark'), { queueId: 'A-id', partnerId: s.free().person.id }]],
+  ['bar', '« Priorité » qui retire un titre chargé', { loaded: true }, (f, s) => [staffUrl(f, '/api/staff/move'),
+    { personId: s.free().person.id, toIndex: 0, priority: true, pullLoaded: true, queueId: 'B-id' }]],
+  ['bar', '« Vérifier et mettre à jour »', {}, f => {
+    // Serveur Linux dont l'agent de mise à jour est prêt ; rien ne part ici.
+    const view = f.serverUpdate.view;
+    f.serverUpdate.view = blocked => ({ ...view(blocked), enabled: true, busy: false });
+    f.serverUpdate.request = () => { throw new Error('mise à jour demandée'); };
+    return [staffUrl(f, '/api/staff/update'), { confirmActive: true }];
+  }],
+];
+// Gestes qui se passent de KaraFun : répondus et enregistrés.
+const OUTAGE_ACCEPTED = [
+  ['téléphones', 'retirer un titre', {}, (f, s) => ['/api/table/song/remove', { ...s.lea.body, entryId: f.sched.songsOf(s.lea.person)[1].entryId }]],
+  ['téléphones', 'réordonner', {}, (f, s) => ['/api/table/song/reorder', { ...s.lea.body, entryId: f.sched.songsOf(s.lea.person)[1].entryId, toIndex: 0 }]],
+  ['téléphones', 'inviter en duo', {}, (f, s) => ['/api/table/duet', { ...s.zoe.body, partnerId: s.tom.person.id, song: { songId: 557, title: 'Duo', artist: 'Artiste' } }]],
+  ['bar', '« ⏭ Passer »', {}, f => [staffUrl(f, '/api/staff/kf'), { action: 'next' }]],
+  ['bar', '« Toujours là »', {}, (f, s) => [staffUrl(f, '/api/staff/person/present'), { personId: s.tom.person.id }]],
+  ['bar', '« Réactiver »', {}, async (f, s) => {
+    await f.call('POST /api/staff/person/leave', { personId: s.tom.person.id });
+    return [staffUrl(f, '/api/staff/person/reactivate'), { personId: s.tom.person.id }];
+  }],
+];
+
+// Regression: relecture contradictoire du tour 5 (tour 2) — le paragraphe de
+// GUIDE-BAR.md sur cette panne disait qu'un geste « compte quand même : il
+// est enregistré, sans message d'erreur », et ne nommait comme refusés, quand
+// l'état de KaraFun ne se lit plus, que « Pas prêt » d'un titre déjà chargé,
+// le duo improvisé et « Priorité » avec retrait. Or tout « Pas prêt » lit
+// KaraFun avant de chercher un titre chargé (deferTurn), « Je suis là » lit
+// le prochain passage dans KaraFun (presenceCandidate), et d'autres gestes
+// lisent KaraFun pour décider avant tout changement : refusés avec le
+// message de l'erreur, rien ne change. La page du bar et les téléphones ne
+// relisent plus la soirée non plus. Chaque geste passe par la vraie
+// enveloppe ; le guide nomme exactement ceux qui sont refusés.
+test('filet de la synchronisation : panne qui empêche de lire KaraFun, le guide du bar nomme chaque geste refusé', async () => {
+  const paragraph = guideLine(OUTAGE_PARAGRAPH);
+  const start = paragraph.search(/(Un geste qui doit|Les gestes qui doivent) d'abord lire KaraFun pour décider/);
+  const refused = start < 0 ? '' : paragraph.slice(start, start + paragraph.slice(start).search(/[Rr]éessaie/));
+  const parts = { téléphones: refused.slice(0, refused.indexOf(' ; au bar,')), bar: refused.slice(refused.indexOf(' ; au bar,')) };
+  const missing = [], named = [];
+  for (const [page, name, options, request] of OUTAGE_REFUSED) {
+    const { f, bridge, s } = await outageScene(options);
+    const [url, body] = await request(f, s);
+    breakStatus(bridge);
+    await new Promise(setImmediate); // sauvegardes d'avant le geste
+    const before = { version: f.sched.version, notes: f.sched.log.length, saves: f.saves.length };
+    const reply = await post(f, url, body);
+    assert.deepEqual([reply.status, reply.body.error], [400, OUTAGE_ERROR], `${name} : refusé par la panne`);
+    assert.equal(f.saves.length, before.saves, `${name} : rien d'enregistré`);
+    assert.equal(f.sched.version - before.version, f.sched.log.length - before.notes, `${name} : rien ne change, sauf l'avis au bar`);
+    if (!parts[page].includes(name)) missing.push(`${page} : ${name}`);
+  }
+  for (const [page, name, options, request] of OUTAGE_ACCEPTED) {
+    const { f, bridge, s } = await outageScene(options);
+    const [url, body] = await request(f, s);
+    breakStatus(bridge);
+    await new Promise(setImmediate);
+    const saves = f.saves.length;
+    const reply = await post(f, url, body);
+    assert.equal(reply.status, 200, `${page}, ${name} : ${JSON.stringify(reply.body)}`);
+    assert.ok(f.saves.length > saves, `${name} : soirée enregistrée`);
+    if (refused.includes(name)) named.push(name);
+  }
+  // La page du bar et les téléphones ne relisent plus la soirée : la page du
+  // bar affiche « Programme arrêté ? », le téléphone « Hors ligne ».
+  const { f, bridge, s, tb } = await outageScene();
+  breakStatus(bridge);
+  const bar = await get(f, `/api/staff/state?key=${f.STAFF_KEY}`);
+  const phone = await get(f, `/api/state?table=${tb.table}&access=${tb.access}&token=${s.lea.person.token}`);
+  assert.deepEqual([bar.status, bar.body.error, phone.status, phone.body.error], [400, OUTAGE_ERROR, 400, OUTAGE_ERROR]);
+  assert.match(fs.readFileSync(path.join(root, 'public', 'staff.html'), 'utf8'), /key \? 'Programme arrêté \?' :/);
+  assert.match(fs.readFileSync(path.join(root, 'public', 'client.html'), 'utf8'), /setConnection\(\(\) => t\('Hors ligne'\), 'bad'\);/);
+  // Le guide.
+  assert.deepEqual(missing, [], 'GUIDE-BAR.md : gestes refusés pendant la panne, absents de sa liste');
+  assert.deepEqual(named, [], 'GUIDE-BAR.md : gestes acceptés pendant la panne, nommés parmi les refusés');
+  assert.doesNotMatch(paragraph, /« Pas prêt » d['’]un titre déjà chargé/, '« Pas prêt » est refusé même pour un titre de la liste');
+  for (const shown of ['« Programme arrêté ? »', '« Hors ligne »', "l'avis de la panne n'apparaît qu'à la reprise"]) {
+    assert.ok(paragraph.includes(shown), `GUIDE-BAR.md : ${shown}`);
+  }
+});
+
+// Même relecture — « réessaie quand la mise à jour reprend » ne vaut pas pour
+// « Je suis là » : quand la scène était libre, le délai de réponse court
+// pendant la panne, et la personne est traitée dès la reprise comme sans
+// réponse (le passage suivant d'abord, elle juste après). « Priorité » lui
+// redonne la demande. Un titre sur scène au début de la panne, fini pendant
+// celle-ci : le délai part de la reprise. Le guide le dit.
+test('filet de la synchronisation : panne qui empêche de lire KaraFun, « Je suis là » refusé, puis passage sauté à la reprise si la scène était libre', async () => {
+  for (const before of ['scène libre', 'titre sur scène']) {
+    const clock = clockAt('2026-11-16T21:00:00.000Z');
+    const f = harness({ persistent: true, Date: clock.Date });
+    const { bridge } = kcsBridge(f);
+    f.sched.opts.requirePresence = true;
+    f.settings.auto = true;
+    const tb = openTable(f, '1', 6);
+    const lea = singer(f, tb, 'Léa', 101);
+    singer(f, tb, 'Tom', 201);
+    singer(f, tb, 'Zoé', 301);
+    if (before === 'titre sur scène') bridge.status = playing(kfItem('X-id', 999, 'Autre'));
+    f.safeSync();
+    assert.deepEqual(plain(f.staffState().presencePending), ['Léa'], `${before} : Léa doit confirmer`);
+    breakStatus(bridge);
+    clock.now += 10000;
+    f.safeSync();
+    const refused = await post(f, '/api/table/confirm', { ...lea.body });
+    assert.deepEqual([refused.status, refused.body.error], [400, OUTAGE_ERROR], `${before} : « Je suis là » refusé`);
+    clock.now += f.settings.presenceGraceSec * 1000;
+    f.safeSync();
+    // Reprise, scène libre (le titre X a fini pendant la panne).
+    Object.defineProperty(bridge, 'status', { configurable: true, writable: true, value: { state: 'idle', current: null } });
+    f.safeSync();
+    assert.equal(notes(f).at(-1), 'Mise à jour avec KaraFun rétablie : la file pilote de nouveau KaraFun.');
+    if (before === 'titre sur scène') {
+      assert.deepEqual(plain(f.staffState().presencePending), ['Léa'], 'délai parti de la reprise : Léa peut encore confirmer');
+      assert.equal(f.sched.presenceSkipsOf(lea.person), 0);
+      continue;
+    }
+    assert.deepEqual(plain(f.staffState().presencePending), ['Tom'], 'le passage suivant d’abord');
+    assert.equal(f.sched.presenceSkipsOf(lea.person), 1);
+    assert.ok(notes(f).includes('Léa n\'a pas confirmé sa présence : « Titre 101 » laisse passer le titre suivant et revient juste après (1/3)'));
+    // « Priorité » sur son titre : la demande revient à Léa, qui confirme.
+    const priority = await post(f, staffUrl(f, '/api/staff/move'), { personId: lea.person.id, toIndex: 0, priority: true });
+    assert.equal(priority.status, 200, JSON.stringify(priority.body));
+    f.safeSync();
+    assert.deepEqual(plain(f.staffState().presencePending), ['Léa']);
+    const confirmed = await post(f, '/api/table/confirm', { ...lea.body });
+    assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
+  }
+  const paragraph = guideLine(OUTAGE_PARAGRAPH);
+  for (const said of ['« Je suis là » ne peut pas attendre si la scène était déjà libre : son délai de réponse court pendant la panne',
+    'la personne est traitée dès la reprise comme sans réponse', '« Priorité » sur son titre lui redonne la demande']) {
+    assert.ok(paragraph.includes(said), `GUIDE-BAR.md : ${said}`);
+  }
+});
+
+// Regression: relecture contradictoire du tour 5 (tour 2) — GUIDE-BAR.md
+// disait qu'un titre sorti de la file de KaraFun sans avoir été vu commencer
+// est jugé à la fin de l'alerte « comme sans alerte ». Pas un retrait annulé
+// quand la file de KaraFun est illisible : la file garde la dernière qu'elle
+// a lue et n'y voit la sortie du titre qu'à la fin de l'alerte (sa sortie
+// n'est datée, goneAt, que dans une file lisible). Le délai d'un retrait qui
+// aboutit quand même (PULL_LATE_MS) se compte alors depuis la fin de
+// l'alerte : au-delà, le titre passe pour passé dans KaraFun et n'est pas
+// rendu à son chanteur. Limite, écrite dans le guide.
+test('valeurs imprévues : file de KaraFun illisible, retrait annulé que KaraFun fait quand même, jugé à la fin de l’alerte (limite écrite dans le guide)', async t => {
+  const late = Number(/const PULL_LATE_MS = (\d+);/.exec(source)[1]);
+  for (const reason of ['closing', 'duo']) {
+    for (const end of [late - 5000, late + 45000]) {
+      const clock = clockAt('2026-11-16T22:00:00.000Z');
+      const f = harness({ Date: clock.Date });
+      const { frames } = replayBridge(t, f);
+      f.sched.opts.requirePresence = false;
+      const tb = openTable(f, '1');
+      const people = [singer(f, tb, 'Léa', 101), singer(f, tb, 'Tom', 201)];
+      const a = sendNext(f, 'A-id'), b = sendNext(f, 'B-id');
+      const owner = people.find(who => who.person.id === a.sel.ids[0]).person;
+      const item = tr => isoItem(tr.queueId, tr.sel.song.songId, { singer: tr.sel.label });
+      const C = isoItem('C-id', 555, { singer: 'Autre' });
+      frames(queueEvent(item(a), item(b)), isoStatus(4, C));
+      // Retrait déjà envoyé, puis annulé ; un titre illisible rend la file de KaraFun illisible.
+      const cancelledAt = clock.now;
+      a.unpulled = { reason, at: cancelledAt };
+      frames(queueEvent(item(a), item(b), ODD_ITEM));
+      clock.now += 5000;
+      frames(queueEvent(item(b), ODD_ITEM)); // KaraFun fait le retrait, file toujours illisible
+      assert.deepEqual(f.events('turn.unsent'), [], `${reason} : rien de vu sortir pendant l’alerte`);
+      clock.now = cancelledAt + end;
+      frames(queueEvent(item(b))); // fin de l'alerte
+      const returned = end < late;
+      const label = `${reason}, fin de l’alerte ${end / 1000} s après l’annulation`;
+      assert.deepEqual(f.events('turn.unsent').map(e => [e.queueId, e.reason]), [['A-id', returned ? `pulled-${reason}` : 'skipped-in-karafun']], label);
+      assert.equal(f.sched.songsOf(owner).some(song => song.songId === a.sel.song.songId), returned, `${label} : titre rendu à son chanteur`);
+      if (!returned) {
+        assert.ok(notes(f).includes(`« ${a.sel.song.title} » (${a.sel.label}) a été passée dans KaraFun avant la lecture : elle ne sera pas renvoyée automatiquement`), label);
+      }
+    }
+  }
+  const line = guideLine('- un titre illisible, dans la file ou sur scène');
+  for (const said of ["Limite : quand la file de KaraFun est illisible, la file garde la dernière qu'elle a pu lire, et n'y voit un titre sortir qu'à la fin de l'alerte.",
+    `compte alors comme un titre passé dans KaraFun si l'alerte finit plus de ${late / 1000} secondes après l'annulation : le titre n'est pas rendu à son chanteur`]) {
+    assert.ok(line.includes(said), `GUIDE-BAR.md : ${said}`);
+  }
 });
