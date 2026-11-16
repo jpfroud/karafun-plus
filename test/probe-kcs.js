@@ -4,18 +4,20 @@
 // tools/diag-karafun.js) : premier domaine de la file, mêmes en-têtes, même délai,
 // classifyDiscovery. Le canal de la télécommande actuelle s'ouvre ensuite comme dans la
 // file, par KcsTransport (kcs-transport.js : WebSocket de Node, sous-protocole, réponses aux
-// battements de KaraFun), pendant 12 s, et ses messages se jugent comme dans la file
-// (karafun.js, _openKcs) : core.AuthenticatedEvent, le code accepté ; remote.AppLeftEvent,
-// KaraFun fermé ou sa télécommande désactivée (le serveur KCS répond encore, avec son
-// dernier état) ; Error, une erreur de KaraFun.
+// battements de KaraFun), pendant 12 s, et ses messages et ses coupures se jugent comme dans
+// la file (karafun.js, _openKcs) : core.AuthenticatedEvent, le code accepté ;
+// remote.AppLeftEvent, KaraFun fermé ou sa télécommande désactivée (le serveur KCS répond
+// encore, avec son dernier état) ; Error, une erreur de KaraFun ; fermeture par KaraFun, ou
+// 10 s sans message (KcsTransport ferme alors le canal), une connexion perdue (lost).
 // Les messages s'affichent. Lancée depuis la racine du dépôt, la sonde les garde aussi dans
 // journal/kcs-probe.json ; dans le conteneur de l'essai de .github/RELEASE.md (docker run
 // --rm, rien de monté sur /app/journal), ce fichier part avec le conteneur : les messages ne
 // restent qu'à l'écran.
-// Codes de sortie : 0 WebSocket ouvert et code accepté par KaraFun, sans AppLeftEvent ni
-// Error ; 1 WebSocket en échec (impossible à créer, jamais ouvert, aucun message, code jamais
-// accepté, AppLeftEvent, Error, ou fermé par un refus de KaraFun, 4210 ou 44xx comme pour la
-// file) ; 2 rien d'essayé : usage, page que la file refuse ou qui ne répond pas (aucun
+// Codes de sortie : 0 WebSocket ouvert, code accepté par KaraFun et canal tenu les 12 s, sans
+// AppLeftEvent ni Error ; 1 WebSocket en échec (impossible à créer, jamais ouvert, aucun
+// message, code jamais accepté, AppLeftEvent, Error, ou fermé par KaraFun ou muet avant la fin
+// des 12 s : refus, 4210 ou 44xx comme pour la file, ou connexion perdue, même après le code
+// accepté) ; 2 rien d'essayé : usage, page que la file refuse ou qui ne répond pas (aucun
 // WebSocket ouvert), ou page sans adresse KCS, que la file lit par le protocole historique
 // (Socket.IO), sans le WebSocket de Node : rien à sonder ici.
 // Cette lecture compte dans la limite horaire de KaraFun : ne pas lancer la sonde en boucle.
@@ -64,8 +66,9 @@ const RAISONS = {
     process.exit(1);
   }
   const messages = [];
-  // Ce qu'en dirait la file (karafun.js, _openKcs) : code accepté, KaraFun parti, erreur de KaraFun.
-  let ouvert = false, accepte = false, parti = false, erreur = null, refus = null, fini = false;
+  // Ce qu'en dirait la file (karafun.js, _openKcs) : code accepté, KaraFun parti, erreur de
+  // KaraFun, adresse refusée, ou connexion perdue avant la fin de l'essai (coupure).
+  let ouvert = false, accepte = false, parti = false, erreur = null, refus = null, coupure = null, fini = false;
   const minuteur = setTimeout(() => finir(), DUREE_MS);
   const finir = () => {
     if (fini) return;
@@ -80,14 +83,18 @@ const RAISONS = {
       fs.writeFileSync('journal/kcs-probe.json', JSON.stringify(messages, null, 2));
     } catch (error) { console.error(`journal/kcs-probe.json non écrit (${error.code || error.message}).`); }
     const nombre = `${messages.length} message${messages.length > 1 ? 's' : ''}`;
-    if (refus !== null) console.error(`Essai en échec : KaraFun a refusé l'adresse KCS (fermeture ${refus} : session finie, KaraFun fermé ou code changé).`);
-    else if (!ouvert) console.error('Essai en échec : WebSocket jamais ouvert.');
-    else if (parti) console.error('Essai en échec : KaraFun est fermé ou sa télécommande a été désactivée (remote.AppLeftEvent), comme la file l\'afficherait.');
-    else if (erreur !== null) console.error(`Essai en échec : KaraFun a répondu par une erreur (${erreur}).`);
-    else if (!messages.length) console.error('Essai en échec : aucun message de KaraFun.');
-    else if (!accepte) console.error(`Essai en échec : code jamais accepté par KaraFun (aucun core.AuthenticatedEvent en ${nombre}).`);
-    else console.log(`Essai réussi : WebSocket ouvert, code accepté par KaraFun (core.AuthenticatedEvent), ${nombre} de KaraFun.`);
-    process.exitCode = refus === null && ouvert && accepte && !parti && erreur === null ? 0 : 1;
+    // Un seul verdict, dont suit le code de sortie : 0 pour « Essai réussi » seulement.
+    let echec = null;
+    if (refus !== null) echec = `KaraFun a refusé l'adresse KCS (fermeture ${refus} : session finie, KaraFun fermé ou code changé).`;
+    else if (!ouvert) echec = 'WebSocket jamais ouvert.';
+    else if (parti) echec = 'KaraFun est fermé ou sa télécommande a été désactivée (remote.AppLeftEvent), comme la file l\'afficherait.';
+    else if (erreur !== null) echec = `KaraFun a répondu par une erreur (${erreur}).`;
+    else if (!messages.length) echec = 'aucun message de KaraFun.';
+    else if (!accepte) echec = `code jamais accepté par KaraFun (aucun core.AuthenticatedEvent en ${nombre}).`;
+    else if (coupure !== null) echec = `${coupure} avant la fin des ${DUREE_MS / 1000} s ; la file y verrait une connexion perdue et se reconnecterait.`;
+    if (echec === null) console.log(`Essai réussi : WebSocket ouvert, code accepté par KaraFun (core.AuthenticatedEvent), canal tenu ${DUREE_MS / 1000} s, ${nombre} de KaraFun.`);
+    else console.error(`Essai en échec : ${echec}`);
+    process.exitCode = echec === null ? 0 : 1;
   };
   canal.on('open', () => { ouvert = true; console.log('WebSocket ouvert'); });
   canal.on('message', message => {
@@ -100,11 +107,20 @@ const RAISONS = {
     else if (message.type === 'remote.AppLeftEvent') { parti = true; finir(); }
   });
   canal.on('transport-error', message => console.error(`Erreur : ${message}`));
-  // Le canal se ferme seul après 10 s sans message une fois ouvert.
-  canal.on('stale', () => { console.error('KaraFun ne répond plus : canal fermé.'); finir(); });
+  // Le canal se ferme seul après 10 s sans message une fois ouvert : connexion perdue pour la
+  // file (karafun.js, 'stale'), même après le code accepté.
+  canal.on('stale', () => {
+    console.error('KaraFun ne répond plus : canal fermé.');
+    coupure = 'KaraFun ne répond plus, canal fermé';
+    finir();
+  });
+  // Fermé par KaraFun avant la fin de l'essai (la sonde ferme elle-même le canal au bout des
+  // 12 s) : adresse refusée, ou connexion perdue pour la file (karafun.js, 'close'), qui se
+  // reconnecte, même après le code accepté.
   canal.on('close', ({ code: fermeture }) => {
     console.error(`WebSocket fermé par KaraFun (code ${fermeture}).`);
     if (urlRejected(fermeture)) refus = fermeture;
+    else coupure = `KaraFun a fermé le canal (code ${fermeture})`;
     finir();
   });
 })();
