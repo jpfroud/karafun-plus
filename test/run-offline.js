@@ -22,7 +22,7 @@ function run(file, env = {}) {
     'night-state.test.js','client-ui-flow.test.js','comptoir-client-ui.test.js','client-i18n.test.js','client-v04-ui.test.js','karafun-state.test.js',
     'sync-regressions.test.js','list-regressions.test.js','table-modes.test.js','health-routes.test.js','fuseau.test.js',
     'interaction-regressions.test.js','real-night-regressions.test.js','bar-reality.test.js','large-night-simulation.test.js','absence-duo-regressions.test.js','staff-duo-tracked-api.test.js','table-access.test.js','catalog.test.js','battle-vote.test.js','staff-ui-regressions.test.js','staff-layout.regression-1.test.js','staff-layout.regression-2.test.js','staff-layout-priority.test.js','staff-layout-bonus.test.js','playwright-skip.test.js',
-    'bar-rotation-feedback.test.js','karafun-identity.test.js','continuous-optimization.test.js','song-repeats.test.js','duo-cap-spacing.test.js','presence-skip.test.js','presence-timeout.test.js','defer-turn.test.js','lyrics-spotify.test.js','review-v04-fixes.test.js','covers.test.js','duo-improvise-credit.test.js','staff-duo-undo.test.js','spotify-fermeture.test.js','battle-cooldown-reset-api.test.js','battle-spotify.test.js','battle-join-api.test.js','kcs-protocol.test.js','kcs-connection.test.js','song-settings.test.js','song-settings-server.test.js','stage-progress.test.js','stage-progress-server.test.js','max-song-server.test.js','song-settings-layout.test.js','kcs-ratelimit.test.js','diag-karafun.test.js','server-karafun-connection.test.js','server-staff-routes.test.js','priority-pull-api.test.js','server-table-routes.test.js','evening-journal.test.js','evening-stats.test.js','evening-stats-routes.test.js','stats-page.test.js','staff-ui-coverage.test.js','client-ui-coverage.test.js','client-name-gate-layout.test.js','client-open-duo-layout.test.js','cli-persistence.test.js','duo-withdraw.test.js','duo-routes.test.js','duo-invite-expiry.test.js','duo-open.test.js','solo-access-routes.test.js','solo-names.test.js','print-page.test.js',
+    'bar-rotation-feedback.test.js','karafun-identity.test.js','continuous-optimization.test.js','song-repeats.test.js','duo-cap-spacing.test.js','presence-skip.test.js','presence-timeout.test.js','defer-turn.test.js','lyrics-spotify.test.js','review-v04-fixes.test.js','covers.test.js','duo-improvise-credit.test.js','staff-duo-undo.test.js','spotify-fermeture.test.js','battle-cooldown-reset-api.test.js','battle-spotify.test.js','battle-join-api.test.js','kcs-protocol.test.js','kcs-connection.test.js','fake-karafun.test.js','song-settings.test.js','song-settings-server.test.js','stage-progress.test.js','stage-progress-server.test.js','max-song-server.test.js','song-settings-layout.test.js','kcs-ratelimit.test.js','diag-karafun.test.js','server-karafun-connection.test.js','server-staff-routes.test.js','priority-pull-api.test.js','server-table-routes.test.js','evening-journal.test.js','evening-stats.test.js','evening-stats-routes.test.js','stats-page.test.js','staff-ui-coverage.test.js','client-ui-coverage.test.js','client-name-gate-layout.test.js','client-open-duo-layout.test.js','cli-persistence.test.js','duo-withdraw.test.js','duo-routes.test.js','duo-invite-expiry.test.js','duo-open.test.js','solo-access-routes.test.js','solo-names.test.js','print-page.test.js',
     'sim-night.js','start-evening.test.js','startup-port.test.js','server-mode.test.js','server-mode-startup.test.js',
     'server-update.test.js','server-update-routes.test.js','update-ui.test.js','update-agent.test.js']) await run(`test/${f}`);
   async function demoTest(port, songSeconds, script) {
@@ -32,12 +32,14 @@ function run(file, env = {}) {
   const demo = spawn(process.execPath, ['server.js','--demo','--song-seconds',String(songSeconds),'--port',String(port),'--no-open'], {cwd:root, windowsHide:true, stdio:['ignore','ignore','inherit']});
   let stopped = null;
   try {
-    let ready = false;
+    let ready = false, protocol = null;
     for (let i=0;i<50;i++) {
-      try { const s=await (await fetch(base+await staffRoute(base, '/api/staff/state'))).json(); if(s.kf?.ready) {ready=true;break;} } catch {}
+      try { const s=await (await fetch(base+await staffRoute(base, '/api/staff/state'))).json(); if(s.kf?.ready) {ready=true;protocol=s.kf.protocol;break;} } catch {}
       await new Promise(r=>setTimeout(r,100));
     }
     if (!ready) throw new Error('Démo non prête');
+    // Le faux KaraFun parle KCS (issue #59) : la démo passe par le WebSocket de Node, comme au bar.
+    if (protocol !== 'kcs') throw new Error(`Démo prête en ${protocol}, attendu kcs`);
     for (const one of [].concat(script)) await run(one, {BASE:base});
   } finally {
     if (demo.exitCode === null) {

@@ -815,11 +815,13 @@ class KaraFunBridge extends EventEmitter {
     this._tries++;
     this._startedAt ??= Date.now();
     const opening = { base, code: maskCode(this.code), essai: this._tries };
-    // Le faux KaraFun local n'a pas de page de découverte.
+    // Faux KaraFun local (démo, tests) : il parle KCS comme le vrai, mais sans
+    // page de découverte ni budget de pages ; son adresse porte le code.
     if (this._isLocal()) {
       this._record('info', 'connexion', opening);
       this._setPhase('opening');
-      this._openLegacy(base, active);
+      try { this._openKcs(`ws://${new URL(base).host}/kcs/${encodeURIComponent(this.code)}`, active); }
+      catch { this._discoveryFailed({ host: new URL(base).hostname, kind: this._socketFailure() }, 'socket'); }
       return;
     }
     // URL KCS de la dernière découverte réussie : pas de page à relire, sauf

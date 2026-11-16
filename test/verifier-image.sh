@@ -252,7 +252,7 @@ const solveur = fs.readdirSync(path.join(app, "solver")).sort();
 if (!meme(solveur, ["bridge.js", "karafun-solver.jar"])) faute("/app/solver : " + solveur.join(", ") + ", attendu bridge.js et karafun-solver.jar");
 for (const e of ["start-evening.js", "stop.js", ...m.windows]) if (fs.existsSync(path.join(app, e))) faute("fichier du kit Windows livré : " + e);
 for (const e of ["solver-runtime/bin/java", "LICENCES-JAVA/THIRD-PARTY.txt", "LICENCES-JAVA/licenses.xml", "LICENCES-JAVA/textes",
-  "node_modules/qrcode", "node_modules/socket.io", "node_modules/socket.io-client"]) {
+  "node_modules/qrcode", "node_modules/socket.io-client"]) {
   if (!fs.existsSync(path.join(app, e))) faute("absent de l\u2019image : " + e);
 }
 if (!fs.readdirSync(path.join(app, "LICENCES-JAVA/textes")).length) faute("LICENCES-JAVA/textes vide");
@@ -369,8 +369,10 @@ ok
 
 # ---------------------------------------------------------------- V19
 controle V19 'démo prête'
-demo_prete() { ETAT=$(etat_bar) && [ "$(champ_json 'd.karafun.demo === true && d.karafun.ready === true' <<< "$ETAT")" = true ]; }
-attendre 30 demo_prete || echec "karafun.demo et karafun.ready pas vrais en 30 s"
+# Le faux KaraFun de la démo parle KCS (issue #59) : prête, la démo a ouvert le
+# même WebSocket de Node que le vrai KaraFun du bar, dans l'image.
+demo_prete() { ETAT=$(etat_bar) && [ "$(champ_json 'd.karafun.demo === true && d.karafun.ready === true && d.kf.protocol === "kcs"' <<< "$ETAT")" = true ]; }
+attendre 30 demo_prete || echec "karafun.demo, karafun.ready et kf.protocol = kcs pas obtenus en 30 s"
 ok
 
 # ---------------------------------------------------------------- V20

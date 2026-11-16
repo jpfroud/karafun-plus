@@ -244,7 +244,7 @@ function songTracksOf(item) {
 
 // État en direct du titre en cours (remote.StatusEvent) : tonalité, tempo,
 // volumes (`voices` : chaque voix guide, par type de piste) et pistes
-// vocales. Le faux KaraFun nomme le titre songPlaying.
+// vocales. L'ancien protocole nomme le titre songPlaying.
 function liveFromStatus(status) {
   if (!status || typeof status !== 'object') return null;
   const volumes = Array.isArray(status.tracks) ? status.tracks : [];
