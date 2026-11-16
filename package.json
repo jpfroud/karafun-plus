@@ -10,7 +10,7 @@
     "test": "node test/scheduler.test.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=26"
   },
   "dependencies": {
     "qrcode": "1.5.4",

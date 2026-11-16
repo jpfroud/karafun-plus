@@ -66,10 +66,10 @@ test('D1 Dockerfile et contrat', () => {
   const froms = dockerfile.filter(i => i.op === 'FROM').map(i => i.args);
   for (const from of froms) assert.match(from, /^(?:--platform=\$BUILDPLATFORM )?\S+:\S+@sha256:[0-9a-f]{64}(?: AS \w+)?$/, `base non épinglée : ${from}`);
   assert.deepEqual(froms.map(from => from.replace(/@sha256:[0-9a-f]{64}/, '')), [
-    '--platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-21 AS solveur',
-    'eclipse-temurin:21-jdk AS jre',
-    '--platform=$BUILDPLATFORM node:22-bookworm-slim AS deps',
-    'node:22-bookworm-slim',
+    '--platform=$BUILDPLATFORM maven:3.10-eclipse-temurin-25 AS solveur',
+    'eclipse-temurin:25-jdk AS jre',
+    '--platform=$BUILDPLATFORM node:26-trixie-slim AS deps',
+    'node:26-trixie-slim',
   ], 'bases et étapes');
   assert.equal(froms[2].split(' ')[1].split('@')[1], froms[3].split('@')[1], 'même Node pour les dépendances et l’exécution');
   // Dépendances installées sans leurs scripts ; ni npm ni yarn dans l'image d'exécution.

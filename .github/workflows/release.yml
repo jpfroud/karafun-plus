@@ -23,9 +23,9 @@ env:
 
 jobs:
   tests:
-    # Version fixe, comme le job linux de ci.yml : Playwright 1.56.1 n'a pas de
-    # Chromium pour une Ubuntu plus récente que 24.04.
-    runs-on: ubuntu-24.04
+    # Version fixe, comme le job linux de ci.yml : Playwright ne fournit Chromium
+    # que pour les Ubuntu qu'il connaît : les monter ensemble.
+    runs-on: ubuntu-26.04
     # Publication sans cache : dépendances téléchargées à neuf, SBOM en plus.
     timeout-minutes: 60
     steps:
@@ -58,12 +58,12 @@ jobs:
         run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '26'
           package-manager-cache: false
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
       - run: npm ci --ignore-scripts
       - name: Construire Timefold et les notices des dependances
         run: mvn -B -ntp -f solver/pom.xml verify org.codehaus.mojo:license-maven-plugin:add-third-party org.codehaus.mojo:license-maven-plugin:download-licenses
@@ -87,7 +87,7 @@ jobs:
           overwrite: true
       - name: Installer Playwright et Chromium
         run: |
-          npm install --global playwright@1.56.1
+          npm install --global playwright@1.64.1
           playwright install --with-deps chromium
       - name: Verifier que les mesures en navigateur tourneront
         run: |
@@ -111,12 +111,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '26'
           package-manager-cache: false
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
       - run: npm ci --ignore-scripts
       - name: Construire Timefold et les notices des dependances
         run: mvn -B -ntp -f solver/pom.xml verify org.codehaus.mojo:license-maven-plugin:add-third-party org.codehaus.mojo:license-maven-plugin:download-licenses
@@ -167,10 +167,10 @@ jobs:
       matrix:
         include:
           - plateforme: linux/amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04
             suffixe: amd64
           - plateforme: linux/arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
             suffixe: arm64
     runs-on: ${{ matrix.runner }}
     # Image construite sans cache, puis vérifiée (rejeu Timefold compris).
@@ -184,12 +184,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '26'
           package-manager-cache: false
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:

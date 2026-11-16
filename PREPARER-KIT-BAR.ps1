@@ -19,7 +19,7 @@ foreach ($source in @($jarConstruit, $tiers, $licencesXml, $textesLicences)) {
 Copy-Item -LiteralPath $jarConstruit -Destination $jarPortable -Force
 if (-not (Test-Path -LiteralPath $javaPortable -PathType Leaf)) {
   $jlink = Get-Command jlink.exe -ErrorAction SilentlyContinue
-  if (-not $jlink) { throw 'Java 21 (jlink) manque pour construire le runtime embarqué.' }
+  if (-not $jlink) { throw 'Java 25 (jlink) manque pour construire le runtime embarqué.' }
   & $jlink.Source --add-modules 'java.se,jdk.unsupported' --strip-debug `
     --no-header-files --no-man-pages --output (Join-Path $racine 'solver-runtime')
   if ($LASTEXITCODE -ne 0) { throw 'Construction du runtime Java embarqué impossible.' }
