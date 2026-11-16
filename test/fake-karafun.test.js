@@ -507,6 +507,7 @@ test('« Suivant » pendant un titre : il sort, son minuteur est effacé, état 
   assert.deepEqual(waiting(kf.state()), next, 'le titre sauté est sorti, le titre suivant ne se lance pas seul');
   // Attente au-delà de la fin prévue du titre sauté : un minuteur resté armé, plus ancien et plus court, partirait
   // avant la fin de cette attente.
+  // gstack-timing-ok: attente négative (rien ne doit se passer) ; une machine lente ne fait que l'allonger.
   await new Promise(resolve => setTimeout(resolve, songSeconds * 1000 + 100));
   assert.deepEqual(waiting(kf.state()), next, 'minuteur effacé : rien à la fin prévue du titre sauté');
   const { queue } = kf.state();

@@ -939,3 +939,142 @@ test('remise à zéro pendant que KaraFun est déconnecté, titre envoyé revenu
   assert.ok(!s.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de « Retrait KaraFun confirmé »');
   assert.deepEqual(bridge.removed, [], 'toujours rien retiré');
 });
+
+// Regression: relecture 2, cycle 1 — titre de Zoé en cours d'envoi, annulé par « Parti »,
+// puis accusé hors scène et hors alerte : son retrait part aussitôt (removeRequestedAt
+// posé). KaraFun le lance quand même (retrait ignoré, ou arrivé trop tard). Seul un retrait
+// jamais envoyé levait l'annulation d'un titre vu sur scène : celui-ci restait annulé en
+// pleine chanson, sans reçu ni envoi noté au journal, alors que la chanson était chantée.
+// Il continue et compte comme un passage, comme l'accusé arrivé directement sur scène ;
+// aucun second retrait ne part, même quand l'état de KaraFun montre la scène libre avant
+// que sa file ne lâche le titre, et à sa fin son passage se clôt.
+test('envoi annulé par « Parti », accusé hors scène hors alerte, retrait envoyé, titre lancé quand même : il compte, aucun second retrait, passage clos', async () => {
+  const { f, s, bridge, queue, zoe } = evening();
+  const next = s.select();
+  assert.equal(next.ids[0], zoe.id, 'titre de Zoé en cours d’envoi');
+  f.setPending({ sel: next, at: Date.now(), before: new Set(queue.map(item => item.queueId)) });
+  await f.call('POST /api/staff/person/leave', { personId: zoe.id });
+  assert.equal(f.getPending()?.cancelled, true, 'envoi annulé par « Parti »');
+  const journaled = p3g2Journal(f);
+  // Accusé lisible, hors scène : Marine chante encore.
+  queue.push({ queueId: 3, songId: next.song.songId, singer: next.label });
+  f.sync();
+  const sent = f.tracked().find(tr => tr.queueId === 3);
+  assert.equal(sent?.cancelled, true, 'accusé suivi, annulé');
+  assert.ok(sent.removeRequestedAt > 0, 'retrait envoyé à l’accusé');
+  assert.deepEqual(bridge.removed, [3], 'retrait envoyé aussitôt');
+  assert.equal(next.turnCredit, undefined, 'pas compté à l’accusé');
+  // KaraFun ignore le retrait : il finit le titre de Marine et lance celui de Zoé.
+  queue.shift();
+  bridge.status = { state: 'playing', songPlaying: { queueId: 3 } };
+  f.sync();
+  assert.equal(sent.cancelled, false, 'plus annulé : il continue');
+  assert.equal(f.staffState().removalPending, 0, 'aucun retrait en attente au bar');
+  assert.ok(sent.startedAt, 'vu sur scène');
+  assert.equal(next.turnCredit?.rolledBack, false, 'compté comme passage, reçu posé');
+  assert.deepEqual(journaled.filter(e => e.ev === 'turn.sent').map(e => e.queueId), [3], 'envoi noté au journal');
+  const entry = s.stageHistory.find(item => item.entryId === next.song.entryId);
+  assert.ok(entry && !entry.endedAt, 'entrée de scène notée');
+  // La chanson dure plus de 20 s après le retrait envoyé. À sa fin, l'état de KaraFun
+  // (scène libre) arrive avant sa file, qui montre encore le titre : un titre resté
+  // annulé y verrait un retrait à renvoyer.
+  sent.removeRequestedAt -= 21000;
+  bridge.status = { state: 'idle' };
+  f.sync();
+  assert.deepEqual(bridge.removed, [3], 'aucun second retrait');
+  // Sa file suit : KaraFun n'a plus le titre de Zoé (celui de Dam y reste).
+  queue.splice(queue.findIndex(item => item.queueId === 3), 1);
+  f.sync();
+  assert.ok(!f.tracked().includes(sent), 'plus suivi');
+  assert.ok(entry.endedAt, 'passage clos');
+  assert.ok(!s.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de « Retrait KaraFun confirmé »');
+  assert.equal(next.turnCredit.rolledBack, false, 'toujours compté');
+  assert.deepEqual(bridge.removed, [3], 'toujours un seul retrait');
+});
+
+// Retrait de KaraFun pendant une coupure : le vrai pont lève « Pas connecté à KaraFun »
+// (KaraFunBridge#_emit) sans rien envoyer. Rend les retraits tentés.
+function p5gCOfflineRemove(bridge) {
+  const attempts = [];
+  const remove = bridge.remove;
+  bridge.remove = id => {
+    attempts.push(id);
+    if (!bridge.ready || !bridge.connected) throw new Error('Pas connecté à KaraFun');
+    return remove(id);
+  };
+  return attempts;
+}
+
+// Regression: relecture 2, cycle 1 — « Parti » pendant que KaraFun est déconnecté : le
+// retrait du titre chargé de Dam est tenté (removeRequestedAt posé) et le pont lève « Pas
+// connecté à KaraFun ». KaraFun revient avec ce titre sur scène, lancé pendant la coupure :
+// il restait annulé pendant toute la chanson (« 1 retrait en attente » au bar), comme un
+// titre dont KaraFun aurait ignoré le retrait. Un retrait que KaraFun n'a jamais reçu ne
+// prime pas sur la scène : le titre continue, n'est plus annulé, et son passage se clôt à
+// sa fin.
+test('« Parti » pendant que KaraFun est déconnecté, retrait refusé par le pont, titre revenu sur scène : il continue, plus annulé, aucun retrait en attente', async () => {
+  const { f, s, dam, loaded, bridge, queue } = evening();
+  const attempts = p5gCOfflineRemove(bridge);
+  Object.assign(bridge, { ready: false, connected: false });
+  f.sync();
+  await f.call('POST /api/staff/person/leave', { personId: dam.id });
+  const sent = f.tracked().find(tr => tr.queueId === 2);
+  assert.equal(sent?.cancelled, true, 'titre chargé de Dam annulé');
+  assert.deepEqual(attempts, [2], 'retrait tenté');
+  assert.ok(s.log.some(line => line.msg === 'Retrait KaraFun à vérifier : Pas connecté à KaraFun'), 'le pont refuse : KaraFun déconnecté');
+  assert.deepEqual(bridge.removed, [], 'rien n’est parti vers KaraFun');
+  assert.equal(f.staffState().removalPending, 1, 'retrait en attente pendant la coupure');
+  // KaraFun revient : il a fini le titre de Marine et lancé celui de Dam.
+  queue.shift();
+  Object.assign(bridge, { ready: true, connected: true, status: { state: 'playing', songPlaying: { queueId: 2 } } });
+  f.sync();
+  assert.equal(sent.cancelled, false, 'plus annulé : il continue');
+  assert.equal(f.staffState().removalPending, 0, 'aucun retrait en attente au bar');
+  assert.deepEqual(bridge.removed, [], 'rien retiré : il est sur scène');
+  assert.ok(sent.startedAt, 'vu sur scène');
+  assert.equal(loaded.turnCredit.rolledBack, false, 'crédit gardé : il compte comme chanté');
+  const entry = s.stageHistory.find(item => item.entryId === loaded.song.entryId);
+  assert.ok(entry && !entry.endedAt, 'passage de Dam ouvert dans les derniers passages');
+  // Fin du titre de Dam.
+  queue.shift();
+  bridge.status = { state: 'idle' };
+  f.sync();
+  assert.ok(!f.tracked().includes(sent), 'plus suivi');
+  assert.ok(entry.endedAt, 'passage de Dam clos');
+  assert.ok(!s.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de « Retrait KaraFun confirmé »');
+  assert.deepEqual(attempts, [2], 'aucun autre retrait tenté');
+});
+
+// Relecture 2, cycle 1 (case sans essai) — remise à zéro (« Supprimer toutes les tables »)
+// pendant que KaraFun est déconnecté : le titre déjà envoyé de Dam est annulé, son retrait
+// remis au retour de KaraFun (removeRequestedAt à 0). Le bar le retire dans KaraFun pendant
+// la coupure : il sort de la file sans passer sur scène. Rien n'est conclu tant que KaraFun
+// ne se voit pas ; à son retour, il reçoit le verdict d'un titre annulé (« Retrait KaraFun
+// confirmé »), rien n'est retiré, et rien de la soirée close ne compte dans la nouvelle.
+test('remise à zéro pendant que KaraFun est déconnecté, titre sorti de KaraFun pendant la coupure : au retour, annulé, rien retiré, rien compté', async () => {
+  const { f, s, loaded, bridge, queue } = evening();
+  Object.assign(bridge, { ready: false, connected: false });
+  f.sync();
+  const reset = plain(await f.call('POST /api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' }));
+  assert.deepEqual([reset.karafunOffline, reset.removalRequests, reset.removalPending], [true, 0, 1],
+    'aucun retrait envoyé, un titre à retirer au retour de KaraFun');
+  const sent = f.tracked().find(tr => tr.queueId === 2);
+  assert.equal(sent?.cancelled, true, 'titre de la soirée close annulé');
+  assert.equal(sent.removeRequestedAt, 0, 'retrait pas envoyé : KaraFun déconnecté');
+  const journaled = p3g2Journal(f);
+  // Pendant la coupure, le bar le retire dans KaraFun ; Marine chante encore.
+  queue.splice(queue.findIndex(item => item.queueId === 2), 1);
+  f.sync();
+  assert.ok(f.tracked().includes(sent), 'rien de conclu tant que KaraFun ne se voit pas');
+  assert.deepEqual(journaled.filter(e => e.ev === 'turn.unsent'), [], 'aucun verdict pendant la coupure');
+  // KaraFun revient sans lui.
+  Object.assign(bridge, { ready: true, connected: true });
+  f.sync();
+  assert.ok(!f.tracked().includes(sent), 'jugé au retour de KaraFun');
+  assert.deepEqual(journaled.filter(e => e.ev === 'turn.unsent').map(e => [e.queueId, e.reason]), [[2, 'cancelled']], 'verdict : annulé');
+  assert.ok(s.log.some(line => line.msg === `Retrait KaraFun confirmé : « ${loaded.song.title} »`), '« Retrait KaraFun confirmé »');
+  assert.deepEqual(bridge.removed, [], 'rien retiré');
+  assert.equal(s.appearanceSerial, 0, 'aucun passage compté dans la nouvelle soirée');
+  assert.deepEqual(journaled.filter(e => e.ev === 'turn.sent'), [], 'aucun envoi noté au journal de la nouvelle soirée');
+  assert.equal(f.staffState().removalPending, 0, 'plus rien à retirer');
+});

@@ -1255,14 +1255,22 @@ let lastRestartCopy = null;
 let restartSweep = null; // { songId, singer, before, until } : copies tardives à retirer
 let restartAwaitingPlay = null; // copie prête après une relance inachevée : { copyQueueId, title }
 
-// Titre suivi pas encore joué : jamais commencé, ou copie d'une relance ⏮ qui
-// attend encore sa lecture (son suivi garde le début du titre relancé,
-// syncRestart). « Vider toutes les chansons », « Parti », « Table partie » et
+// Titre suivi pas encore joué : jamais commencé, ou copie d'une relance ⏮
+// restée prête à jouer après un départ manqué (`awaitingPlay`, gardé avec le
+// suivi dans la sauvegarde de la soirée) : son suivi garde le début du titre
+// relancé. « Vider toutes les chansons », « Parti », « Table partie » et
 // « Supprimer toutes les tables » retirent cette copie comme un titre à venir.
+// Pendant la relance elle-même, la copie reste : c'est le titre en cours qui
+// continue.
 function notYetPlayed(tr) {
-  if (!tr.startedAt) return true;
-  const id = String(tr.queueId);
-  return id === restartAwaitingPlay?.copyQueueId || id === restartOp?.copyQueueId;
+  return !tr.startedAt || tr.awaitingPlay === true;
+}
+
+// Copie d'une relance ⏮ pas encore vue jouer : prête après un départ manqué,
+// ou celle de la relance en cours. Elle garde le début du titre relancé
+// (`startedAt`) sans avoir commencé : ni verdict ni rattrapage d'après lui.
+function restartCopyPending(tr) {
+  return tr.awaitingPlay === true || (restartOp?.copyQueueId != null && String(tr.queueId) === restartOp.copyQueueId);
 }
 
 // Fin de la pause de l'alerte d'un message illisible (`pausedAt`) : les délais
@@ -1352,8 +1360,21 @@ function abandonRestart(op, { current, upcoming, q }, message, now) {
   const copyId = op.copyQueueId;
   const originalLive = q.some(item => String(item.queueId) === String(op.originalQueueId));
   if (copyId && !originalLive && !current && String(upcoming[0]?.queueId) === copyId) {
+    const tr = tracked.find(item => String(item.queueId) === copyId);
+    // Vidage demandé pendant la relance : la copie, désormais à venir, part
+    // avec la file (son retrait part à la synchronisation suivante).
+    if (settings.queueClearPending) {
+      if (tr) { tr.cancelled = true; tr.removeRequestedAt = 0; }
+      sched.note(`${message} La copie du titre part avec le vidage de la file.`, 'error');
+      return;
+    }
     // Suivant a bien retiré le titre : la copie prête à jouer garde le suivi,
-    // et sa durée repartira de son lancement.
+    // et sa durée repartira de son lancement. Son repère (`awaitingPlay`) est
+    // gardé avec le suivi : un redémarrage ne la fait pas passer pour jouée.
+    // Une version plus ancienne l'ignore et traite la copie comme elle le
+    // faisait (retirée par le vidage et « Parti », gardée par la remise à
+    // zéro) : rien de la soirée n'est perdu, FULL_RESTORE_SINCE ne monte pas.
+    if (tr) tr.awaitingPlay = true;
     restartAwaitingPlay = { copyQueueId: copyId, title: op.title };
     sched.note(`${message} La copie du titre est prête : lance la lecture dans KaraFun.`, 'error');
     return;
@@ -1371,7 +1392,7 @@ function abandonRestart(op, { current, upcoming, q }, message, now) {
     'Un autre titre joue maintenant : vérifie la file de KaraFun.' : 'Vérifie la file de KaraFun.'}`, 'error');
 }
 
-function syncRestart({ current, upcoming, q }, now) {
+function syncRestart({ current, upcoming, q }, now, alertJustEnded = false) {
   // Message de KaraFun illisible : relance en cours et retrait des copies
   // tardives en pause, sans commande ni conclusion, leurs délais avec eux.
   // KaraFun a pu ajouter la copie sans qu'elle se voie dans une file figée :
@@ -1387,12 +1408,13 @@ function syncRestart({ current, upcoming, q }, now) {
   sweepRestartCopies({ current, q }, now);
   const waiting = restartAwaitingPlay;
   if (waiting) {
-    if (String(current?.queueId) === waiting.copyQueueId) {
-      const tr = tracked.find(item => String(item.queueId) === waiting.copyQueueId);
-      if (tr) tr.startedAt = now;
+    const live = String(current?.queueId) === waiting.copyQueueId;
+    // Copie suivie lancée : la boucle de sync la compte (`awaitingPlay`), même
+    // après un redémarrage. Une copie non suivie est seulement annoncée ici.
+    if (live && !tracked.some(item => String(item.queueId) === waiting.copyQueueId)) {
       sched.note(`« ${waiting.title} » repart du début.`, 'stage');
-      restartAwaitingPlay = null;
-    } else if (!q.some(item => String(item.queueId) === waiting.copyQueueId)) restartAwaitingPlay = null;
+    }
+    if (live || !q.some(item => String(item.queueId) === waiting.copyQueueId)) restartAwaitingPlay = null;
   }
   const op = restartOp;
   if (!op) return;
@@ -1437,7 +1459,12 @@ function syncRestart({ current, upcoming, q }, now) {
   }
   if (playing(op.copyQueueId)) {
     const tr = tracked.find(item => String(item.queueId) === op.copyQueueId);
-    if (tr) tr.startedAt = now; // la durée mesurée repart de la relance
+    if (tr) {
+      tr.startedAt = now; // la durée mesurée repart de la relance
+      // Lancée pendant l'alerte d'un message illisible, vue à sa fin : en pleine
+      // chanson, rien n'y est rattrapé (catchUpSongSettings).
+      if (alertJustEnded) tr.liveChecked = String(tr.queueId);
+    }
     restartOp = null;
     sched.note(`« ${op.title} » repart du début.`, 'stage');
     return;
@@ -1505,7 +1532,9 @@ function songSettingsTarget(entryId, started) {
   const { current } = analyze();
   const tr = tracked.find(item => item.sel.song?.entryId === key && !item.cancelled);
   if (tr) {
-    if (tr.startedAt || isOnStage(tr, current)) throw songSettingsError(started, 'SONG_STARTED');
+    // Copie prête d'une relance ⏮ : pas encore jouée (notYetPlayed), réglable
+    // comme un titre chargé, bien qu'elle garde le début du titre relancé.
+    if (!notYetPlayed(tr) || isOnStage(tr, current)) throw songSettingsError(started, 'SONG_STARTED');
     if (tr.pulled || tr.absent) throw new Error('Ce titre est en train de sortir de KaraFun. Réessaie dans un instant.');
     return { where: 'karafun', ids: tr.sel.ids, song: tr.sel.song, tr };
   }
@@ -1600,12 +1629,14 @@ function pushQueueItemSettings(tr) {
 // sync), il ne l'est pas non plus après elle, en pleine chanson : ses options
 // vues peuvent être figées, et le bar le règle dans KaraFun (un réglage fait
 // pendant l'alerte répond « pas encore envoyé », applySongSettings).
-// Seulement chargé, il l'est à la fin de l'alerte, avant la musique.
+// Seulement chargé, il l'est à la fin de l'alerte, avant la musique, comme une
+// copie de relance ⏮ pas encore lancée (restartCopyPending), qui garde le début
+// du titre relancé.
 function catchUpSongSettings(tr) {
   const mark = String(tr.queueId);
   if (tr.liveChecked === mark) return;
   if (bridge.unreadable) {
-    if (tr.startedAt) tr.liveChecked = mark;
+    if (tr.startedAt && !restartCopyPending(tr)) tr.liveChecked = mark;
     return;
   }
   // Options du titre tout juste envoyées : comparer à un état reçu depuis,
@@ -1719,7 +1750,9 @@ function applyStartCommands(commands, live, { title, entryId, queueId }) {
 // titre suivi qui cesse de l'être en cours de route (relance ⏮ : le suivi
 // passe sur la copie) n'est pas concerné. Une Battle garde le réglage de
 // KaraFun (le bar ne la règle pas en direct non plus). Message de KaraFun
-// illisible : rien n'est remis (voir catchUpSongSettings).
+// illisible : rien n'est remis pendant l'alerte (voir catchUpSongSettings) ;
+// chargé pendant elle, le titre l'est à sa fin s'il n'est encore que chargé
+// (sync, `untrackedResetDue`), jamais en pleine chanson.
 function checkUntrackedSettings(loadedId) {
   if (bridge.unreadable || tracked.some(tr => String(tr.queueId) === loadedId)) return;
   const live = liveFromStatus(bridge.status);
@@ -1827,8 +1860,13 @@ function restoreKaraFunDefaults() {
 // ------------------------------------------------------------------ synchronisation avec KaraFun
 // Synchronisation précédente faite pendant l'alerte d'un message illisible,
 // même suivie d'une coupure de KaraFun : la suivante, lisible, voit d'un coup
-// ce que KaraFun a fait entre-temps.
+// ce que KaraFun a fait entre-temps. Remis à faux seulement à la fin d'une
+// synchronisation lisible complète : si elle échoue en route, la suivante
+// voit encore la fin de l'alerte.
 let lastSyncBlind = false;
+// Titre ajouté directement dans KaraFun, chargé pendant l'alerte : sa remise
+// à zéro (checkUntrackedSettings) attend la première vue lisible.
+let untrackedResetDue = null;
 function sync() {
   // Une installation ne commande jamais KaraFun, même lors du contrôle de la
   // nouvelle image. L'agent hôte libère ce verrou après validation ou retour arrière.
@@ -1892,7 +1930,7 @@ function sync() {
   // rattrapé en pleine chanson (`alertJustEnded`).
   const blind = !!bridge.unreadable;
   const alertJustEnded = lastSyncBlind && !blind;
-  lastSyncBlind = blind;
+  if (blind) lastSyncBlind = true;
   if (pending) {
     // File de KaraFun illisible : le titre envoyé peut ne se voir que sur
     // scène, dans un état lisible (titre en cours hors de la file figée).
@@ -1917,6 +1955,9 @@ function sync() {
             if (settings.queueClearPending || done.cancelledByClear) dropClearedTickets(done.sel);
           }
           tracked.push({ queueId: hit.queueId, sel: done.sel, addedAt: now, startedAt: now,
+            // Vu sur scène pour la première fois à la fin de l'alerte d'un
+            // message illisible : en pleine chanson, rien n'y est rattrapé.
+            ...(alertJustEnded ? { liveChecked: String(hit.queueId) } : {}),
             ...(done.sentSettings ? { sentSettings: done.sentSettings } : {}) });
           sched.recordStage(done.sel, now);
           sched.note(`« ${done.sel.song.title} » a commencé sur scène pendant le retrait ; elle continue.`, 'stage');
@@ -1967,7 +2008,7 @@ function sync() {
     }
   }
 
-  syncRestart({ current, upcoming, q }, now);
+  syncRestart({ current, upcoming, q }, now, alertJustEnded);
 
   // Une remise à zéro peut avoir été demandée pendant une déconnexion. Au
   // retour de KaraFun, retirer aussi les titres ajoutés hors de cette page.
@@ -1976,7 +2017,10 @@ function sync() {
     const known = new Set(tracked.map(tr => String(tr.queueId)));
     for (const item of upcoming) {
       const queueId = String(item.queueId);
-      if (known.has(queueId) || now - (queueClearRemovalRequests.get(queueId) || 0) < 20000) continue;
+      // La copie d'une relance ⏮ en cours d'un titre ajouté dans KaraFun reste,
+      // comme celle d'un titre suivi : c'est le titre en cours qui continue.
+      if (known.has(queueId) || queueId === restartOp?.copyQueueId ||
+          now - (queueClearRemovalRequests.get(queueId) || 0) < 20000) continue;
       try { bridge.remove(item.queueId); queueClearRemovalRequests.set(queueId, now); }
       catch (error) { appLog(`Retrait KaraFun en attente : ${error.message}`); }
     }
@@ -2002,18 +2046,22 @@ function sync() {
   // peuvent déjà être rattrapés.
   const loadedId = loadedQueueId();
   const freshLoad = noteLoadedLive(loadedId);
+  // Titre ajouté directement dans KaraFun, chargé pendant l'alerte d'un message
+  // illisible : sa remise à zéro attend la première vue lisible, s'il n'est
+  // alors que chargé (checkUntrackedSettings, plus bas).
+  if (freshLoad && blind) untrackedResetDue = loadedId;
+  const untrackedDue = !blind && untrackedResetDue != null && untrackedResetDue === loadedId &&
+    String(current?.queueId) !== loadedId;
   for (const tr of tracked.slice()) {
     const onStage = isOnStage(tr, current);
-    // Si KaraFun était déconnecté lors du vidage, ce titre pouvait déjà être
-    // sur scène. Ne jamais interrompre la chanson effectivement en lecture,
-    // même après « Arrêter le vidage » ou une nouvelle soirée : le repère
-    // reste sur le titre quand le vidage lui-même est terminé. De même pour un
-    // retrait jamais envoyé (removeRequestedAt à 0) : « Parti », « Table
-    // partie », la remise à zéro ou l'accusé d'un envoi annulé pendant
-    // l'alerte d'un message illisible, ou la remise à zéro sans KaraFun.
-    // KaraFun a lancé le titre avant : il continue et compte comme chanté.
-    const clearProtected = settings.queueClearPending || tr.cancelledByClear;
-    if (tr.cancelled && onStage && (clearProtected || !tr.removeRequestedAt)) {
+    // Titre annulé mais sur scène : KaraFun l'a lancé avant son retrait, ou
+    // malgré lui (retrait jamais envoyé, pendant l'alerte d'un message
+    // illisible ou sans KaraFun, ou arrivé trop tard). Ne jamais interrompre la
+    // chanson effectivement en lecture : il continue et compte comme chanté,
+    // après un vidage (même arrêté, ou suivi d'une nouvelle soirée), la remise
+    // à zéro, « Parti », « Table partie » ou l'accusé d'un envoi annulé.
+    if (tr.cancelled && onStage) {
+      const clearProtected = settings.queueClearPending || tr.cancelledByClear;
       tr.cancelled = false;
       delete tr.cancelledByClear;
       // Accusé tardif d'un envoi annulé, lancé quand même : il compte comme
@@ -2055,6 +2103,18 @@ function sync() {
         forP ? `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${shownLabel(tr.sel)}) pour la priorité de ${forP.name} : retire-le dans KaraFun, ou lance-le ; ${forP.name} passera juste après lui.` :
         `KaraFun n’a pas retiré « ${tr.sel.song.title} » (${shownLabel(tr.sel)}) : retire-le dans KaraFun, ou lance-le si ${passageNames(tr.sel)} est prêt.`, 'error');
     }
+    // Copie prête d'une relance ⏮ (`awaitingPlay`), lancée : la durée mesurée
+    // repart de son lancement. Vue ici même après un redémarrage, ou pendant une
+    // alerte de la file seule (syncRestart attend alors la fin de l'alerte).
+    if (onStage && tr.awaitingPlay) {
+      delete tr.awaitingPlay;
+      tr.startedAt = Date.now();
+      // Une relance, pas un nouveau passage (changement de scène plus bas),
+      // même après un redémarrage, qui a oublié la copie en mémoire.
+      lastRestartCopy = String(tr.queueId);
+      if (alertJustEnded) tr.liveChecked = String(tr.queueId);
+      sched.note(`« ${tr.sel.song.title} » repart du début.`, 'stage');
+    }
     if (onStage && !tr.startedAt) {
       tr.startedAt = Date.now();
       // Vu sur scène pour la première fois à la fin de l'alerte d'un message
@@ -2067,7 +2127,7 @@ function sync() {
     const usable = !tr.cancelled && !tr.pulled && !tr.absent;
     // Réglé pendant l'envoi, ou KaraFun revenu : les options du titre de
     // KaraFun d'abord, tant qu'il n'a pas commencé (même déjà chargé).
-    if (usable && tr.settingsDirty && !tr.startedAt) pushQueueItemSettings(tr);
+    if (usable && tr.settingsDirty && notYetPlayed(tr)) pushQueueItemSettings(tr);
     if (usable && (onStage || loadedId === String(tr.queueId))) catchUpSongSettings(tr);
     // QueueEvent et StatusEvent ne sont pas atomiques. Quand l'ancienne chanson
     // est encore dans status.current, attendre le second message avant de
@@ -2084,7 +2144,7 @@ function sync() {
     const statusId = bridge.status && (bridge.status.current || bridge.status.songPlaying || {}).queueId;
     const gone = !qids.has(tr.queueId) && !onStage && statusId !== tr.queueId;
     if (!gone) delete tr.goneAt;
-    else if (blind && !tr.startedAt) tr.goneAt ??= now;
+    else if (blind && (!tr.startedAt || restartCopyPending(tr))) tr.goneAt ??= now;
     else {
       const unpulledLate = !!tr.unpulled && (tr.goneAt ?? now) - tr.unpulled.at < PULL_LATE_MS;
       if (!tr.startedAt) {
@@ -2121,7 +2181,8 @@ function sync() {
       sched.version++;
     }
   }
-  if (freshLoad) checkUntrackedSettings(loadedId);
+  if (freshLoad || untrackedDue) checkUntrackedSettings(loadedId);
+  if (!blind) untrackedResetDue = null;
 
   // Le même événement QueueEvent peut confirmer un solo promis puis libérer
   // immédiatement la place pour la Battle, ou confirmer le premier titre
@@ -2234,6 +2295,8 @@ function sync() {
   } else { idleSince = null; idleQueueId = null; }
   const blocker = journalOutlook({ current, upcoming, awaitingPresence }, now);
   if (songGap && !SONG_GAP_KEEPERS.has(blocker)) songGap.clean = false;
+  // Synchronisation complète : la fin de l'alerte a été traitée (alertJustEnded).
+  lastSyncBlind = blind;
   saveNight();
 }
 
@@ -3026,7 +3089,9 @@ function staffState() {
       photoUrl: p.photo ? `/photo/${p.id}` : null })),
     pending: pending ? { label: shownLabel(pending.sel), title: pending.sel.song.title } : null,
     tracked: tracked.map(tr => ({ queueId: tr.queueId, label: tr.sel.label, title: tr.sel.song.title,
-      ids: tr.sel.ids, startedAt: tr.startedAt })),
+      ids: tr.sel.ids, startedAt: tr.startedAt,
+      // Copie prête d'une relance ⏮ : la remise à zéro la retire comme un titre à venir.
+      ...(tr.awaitingPlay ? { awaitingPlay: true } : {}) })),
     kf: bridge ? bridge.snapshot() : null,
     code: CODE,
   };
@@ -6212,7 +6277,14 @@ const handlers = {
     if (body.action === 'play') {
       const status = battleVote.automation?.status;
       if (status === 'after') {
-        if (afterBattleStarting) { await afterBattleStarting; return { ok: true }; }
+        if (afterBattleStarting) {
+          await afterBattleStarting;
+          // Alerte arrivée pendant la coupure de Spotify : refusé comme le premier appui.
+          if (battleVote.automation?.status === 'after' && bridge.unreadable) {
+            throw new Error('Un message de KaraFun est illisible : lance le titre suivant depuis KaraFun.');
+          }
+          return { ok: true };
+        }
         if (!bridge.ready) throw new Error('KaraFun est déconnecté. Reconnecte-le avant de reprendre après la Battle.');
         // Message de KaraFun illisible : la reprise attend une vue lisible
         // (syncBattle) ; Spotify serait coupé sans que rien ne parte. Le bar

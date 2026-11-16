@@ -4986,3 +4986,25 @@ test('page du bar en mode PC : textes inchangés au caractère près', async () 
   await page.update({ phoneBase: 'https://chant.exemple.fr' });
   assert.equal(page.$('accessMode').textContent, 'Accès Internet actif si cette adresse redirige bien vers ce PC. Vérifie-la en données mobiles.');
 });
+
+// Regression: relecture 2, cycle 1 — la copie prête d'une relance ⏮ inachevée garde le début du titre
+// relancé (startedAt) sans avoir été jouée : « Supprimer toutes les tables » la retire comme un titre à
+// venir et coupe l'envoi automatique, mais la confirmation ne l'annonçait pas (seuls les titres sans
+// début comptaient). Marquée awaitingPlay par le serveur, elle est annoncée ; lancée puis chantée (plus
+// marquée, encore suivie dans une file figée), elle ne l'est plus, comme le serveur qui ne la retire pas.
+test('fin de soirée : la copie prête d’une relance ⏮ annonce la coupure de l’envoi automatique, plus une fois lancée', async () => {
+  const world = baseWorld();
+  world.settings.auto = true;
+  world.tracked = [{ queueId: 'C-id', startedAt: Date.now() - 200000, awaitingPlay: true }];
+  const page = await openPage({ world });
+  page.confirmAnswer = false;
+  await page.click(page.$('clearTables'));
+  assert.match(page.confirms.at(-1), /L’envoi automatique sera coupé : titres encore dans KaraFun à vérifier\./, 'copie prête');
+  // Lancée puis chantée : plus marquée.
+  world.tracked = [{ queueId: 'C-id', startedAt: Date.now() - 20000 }];
+  await page.poll();
+  await page.click(page.$('clearTables'));
+  assert.equal(page.confirms.length, 2);
+  assert.ok(!/envoi automatique sera coupé/.test(page.confirms.at(-1)), page.confirms.at(-1));
+  assert.equal(page.posts.some(post => post.path === '/api/staff/tables-clear'), false, 'confirmation refusée : rien envoyé');
+});

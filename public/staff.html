@@ -2458,7 +2458,8 @@
     // Ce que la nouvelle soirée coupe aussi, annoncé avant la confirmation :
     // l'envoi automatique tant qu'un titre envoyé attend son retrait de
     // KaraFun (comme le serveur), la lecture automatique et l'heure de fermeture.
-    const sentLeft = !!S.pending || (S.tracked || []).some(tr => !tr.startedAt && String(tr.queueId) !== String(S.stage?.queueId ?? ''));
+    // Une copie prête d'une relance ⏮ (awaitingPlay) part comme un titre à venir.
+    const sentLeft = !!S.pending || (S.tracked || []).some(tr => (!tr.startedAt || tr.awaitingPlay) && String(tr.queueId) !== String(S.stage?.queueId ?? ''));
     const stops = [S.settings?.auto && sentLeft ? 'L’envoi automatique sera coupé : titres encore dans KaraFun à vérifier. Réactive-le dans « Plus » ensuite.' : '',
       S.settings?.autoPlay && S.closing ? 'La lecture automatique sera coupée et l’heure de fermeture retirée.' :
         S.settings?.autoPlay ? 'La lecture automatique sera coupée.' : S.closing ? 'L’heure de fermeture sera retirée.' : ''].filter(Boolean);

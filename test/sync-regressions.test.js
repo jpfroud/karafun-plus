@@ -1634,6 +1634,59 @@ test('duo en cours d’envoi, autrice partie, accusé pendant l’alerte puis la
   assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de faux retrait confirmé');
 });
 
+
+// Regression: relecture 2, cycle 1 — même duo de la même table (Alice et Bob), autrice
+// partie pendant l'envoi (« Parti »), mais accusé lisible hors scène et hors alerte : le
+// retrait part aussitôt (removeRequestedAt posé). KaraFun le lance quand même. Seul un
+// retrait jamais envoyé levait l'annulation d'un titre vu sur scène : le duo restait
+// annulé, sans reçu, et Bob, resté dans la salle, chantait gratuitement (ni passage, ni
+// tour, ni duo comptés). Le passage compte pour l'invité resté, aucun second retrait ne
+// part, et le passage se clôt à sa fin.
+test('duo de la même table en cours d’envoi, autrice partie, accusé hors alerte (retrait envoyé), lancé quand même : le passage compte pour l’invité resté', async () => {
+  const f = harness();
+  f.settings.pushDelaySec = 0;
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 2 });
+  const bob = f.sched.join({ tableId: '1', name: 'Bob', headcount: 2 });
+  const s = song(614);
+  // Même table : duo direct, sans réponse demandée.
+  assert.equal(f.sched.inviteDuet(alice, bob.id, s).duet.state, 'accepted');
+  f.sync();
+  assert.equal(f.adds.length, 1, 'duo envoyé à KaraFun');
+  await f.handle('POST /api/staff/person/leave', { personId: alice.id });
+  assert.equal(f.pending()?.cancelled, true, 'envoi annulé par « Parti »');
+  const counted = () => ({ duetGuestCount: bob.duetGuestCount || 0, roundApps: f.sched.roundApps.get(bob.id) || 0,
+    lastAppearanceTurn: bob.lastAppearanceTurn || 0, appearanceSerial: f.sched.appearanceSerial });
+  const before = counted();
+  // Accusé lisible, hors scène : la scène est libre, aucune alerte.
+  const ack = item('duo-hors-alerte', s, f.adds[0].singer);
+  f.bridge.queue = [ack];
+  f.sync();
+  const sent = f.tracked()[0];
+  assert.equal(sent?.cancelled, true, 'accusé suivi, annulé');
+  assert.ok(sent.removeRequestedAt > 0, 'retrait envoyé à l’accusé');
+  assert.deepEqual(f.removes, ['duo-hors-alerte'], 'retrait envoyé aussitôt');
+  assert.equal(sent.sel.turnCredit, undefined, 'pas compté à l’accusé');
+  assert.deepEqual(counted(), before, 'Bob pas encore compté');
+  // KaraFun ignore le retrait et lance le duo : Bob chante.
+  f.bridge.status = { state: 'playing', current: ack };
+  f.sync();
+  assert.equal(sent.cancelled, false, 'il continue');
+  assert.equal(sent.sel.turnCredit?.rolledBack, false, 'le passage compte : reçu posé');
+  assert.deepEqual(counted(), { duetGuestCount: before.duetGuestCount + 1, roundApps: before.roundApps + 1,
+    lastAppearanceTurn: before.appearanceSerial + 1, appearanceSerial: before.appearanceSerial + 1 },
+  'l’apparition de Bob est comptée : duo, tour et dernier passage');
+  assert.ok(f.sched.stageHistory.at(-1)?.ids.includes(bob.id), 'l’invité resté est sur scène dans l’historique');
+  // Fin du duo.
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.tracked().length, 0);
+  assert.ok(f.sched.stageHistory.at(-1)?.endedAt, 'le passage se termine dans l’historique');
+  assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de faux retrait confirmé');
+  assert.deepEqual(f.removes, ['duo-hors-alerte'], 'aucun second retrait');
+  assert.equal(bob.duetGuestCount, before.duetGuestCount + 1, 'toujours compté');
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {
