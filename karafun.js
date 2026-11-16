@@ -14,13 +14,16 @@ const { rangesFrom, addOptions, queueItemOptions, clampSettings, songTracksOf, g
 // (`{ "toString": 1 }`) ; sans ces lectures, le filet de kcs-transport.js
 // ferait ignorer tout le message (_ignoredMessage).
 const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-// Numéro d'un titre de la file, en texte comme avant ; null pour un objet ou
-// une liste : on ne saurait pas retrouver le titre.
-const kcsKey = value => (value !== null && typeof value === 'object' ? null : String(value));
 // Valeur simple (texte, nombre, booléen, null) telle quelle ; un objet ou une liste ne compte pas.
 const kcsScalar = value => (value !== null && typeof value === 'object' ? undefined : value);
 // Texte : un texte, ou un nombre fini écrit en texte ; sinon vide.
 const kcsText = value => (typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : '');
+// Numéro d'un titre de KaraFun (file ou titre en cours) : un texte ou un
+// nombre, en texte comme avant (kcsText). null s'il manque ou s'il est vide,
+// ou pour un objet, une liste ou un booléen : on ne saurait pas retrouver le
+// titre, et tous les titres sans numéro auraient le même (« undefined »).
+// KaraFun numérote chaque titre d'un texte (journaux réels).
+const kcsKey = value => kcsText(value) || null;
 // Raison d'un refus de KaraFun montrée au bar : un texte (kcsText) de 200
 // caractères au plus, comme les raisons du journal. Sans fin, elle figerait le
 // serveur (consigne de la Battle, server.js failPlainBattleCopy) et la page du
@@ -1145,10 +1148,11 @@ class KaraFunBridge extends EventEmitter {
         // `songPlaying` : titre en cours de l'ancien protocole, jamais envoyé
         // en KCS ; il ne doit pas passer devant `current`, lu avec ses types.
         const { songPlaying: _, ...status } = p.status;
-        // Titre en cours illisible (pas un objet, numéro objet) : sans lui, le
-        // premier titre de la file passerait pour celui sur scène. Tout
-        // l'état reçu est ignoré, la file garde l'ancien. Seul null (ou son
-        // absence) veut dire « aucun titre en cours ».
+        // Titre en cours illisible (pas un objet, numéro absent ou illisible,
+        // voir kcsKey) : sans lui, le premier titre de la file passerait pour
+        // celui sur scène. Tout l'état reçu est ignoré, la file garde
+        // l'ancien. Seul null (ou son absence) veut dire « aucun titre en
+        // cours ».
         const current = status.current != null ? normalizeKcsItem(status.current) : null;
         if (status.current != null && !current) { this._ignoredMessage(m.type, 'titre en cours illisible'); return; }
         this.raw.status = p.status;
@@ -1603,7 +1607,7 @@ class KaraFunBridge extends EventEmitter {
   // trame par trame : un titre vu pour la première fois déjà en lecture (après
   // un redémarrage ou une coupure) n'en est pas un. Les derniers seulement.
   _noteLoading(status) {
-    const id = status.current?.id == null ? null : kcsKey(status.current.id);
+    const id = kcsKey(status.current?.id);
     if (id == null || !(status.state >= 1 && status.state <= 3) || this._loadingSeen.has(id)) return;
     this._loadingSeen.add(id);
     if (this._loadingSeen.size > 50) this._loadingSeen.delete(this._loadingSeen.values().next().value);
@@ -1681,7 +1685,7 @@ class KaraFunBridge extends EventEmitter {
   // remise.
   _observeDefaults(status) {
     const current = status.current;
-    const id = current?.id == null ? null : kcsKey(current.id);
+    const id = kcsKey(current?.id);
     if (id == null) return;
     if (!(status.state >= 2) || !Array.isArray(status.tracks) || !status.tracks.length) return;
     const backing = liveFromStatus({ tracks: status.tracks }).backing;

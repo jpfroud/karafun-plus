@@ -2157,8 +2157,9 @@ test('réglages de titre : valeur par défaut reprise remplacée par une remise 
 // sur 16 avec le vrai WebSocket de Node). Chaque valeur est lue avec son
 // type : une valeur secondaire imprévue compte pour absente et le reste du
 // message sert, sans « message-ignore » ; un titre illisible (pas un objet,
-// numéro objet ou liste) fait ignorer tout le message, la file garde ce
-// qu'elle savait, et la page du bar l'affiche en alerte.
+// numéro absent, vide, ou qui n'est ni un texte ni un nombre) fait ignorer
+// tout le message, la file garde ce qu'elle savait, et la page du bar
+// l'affiche en alerte.
 // `piege()` : un objet JSON qu'on ne peut convertir ni en texte ni en nombre
 // (sa clé toString n'est pas une fonction).
 const piege = () => JSON.parse('{"toString":1}');
@@ -2174,7 +2175,13 @@ const ignoredMessages = bridge => bridge.events.filter(e => e.name === 'message-
 // la file KaraFun : reprendre » renvoyait alors un titre déjà dans KaraFun :
 // une alerte rouge reste affichée jusqu'à la prochaine file lisible, et la
 // vérification d'un envoi interrompu est refusée (queueUnreadable). Le pont
-// reste prêt : les états lisibles suivent toujours la scène.
+// reste prêt : les états lisibles suivent toujours la scène. Regression:
+// relecture 2, tour 3 — un titre sans numéro (absent, null) ou au numéro
+// vide passait encore : numéroté « undefined », « null » ou vide, tous ces
+// titres avaient le même numéro, et la file prenait le premier d'entre eux
+// pour celui que KaraFun jouait. Dans les journaux réels (septembre à
+// novembre 2026), les 391 titres de file et les 556 titres en cours ont tous
+// un numéro en texte non vide.
 test('valeurs imprévues : file de KaraFun lue avec ses types ; un titre illisible fait ignorer toute la file reçue', async t => {
   mockTime(t);
   const { bridge, ws } = await adminBridge(t);
@@ -2184,8 +2191,10 @@ test('valeurs imprévues : file de KaraFun lue avec ses types ; un titre illisib
   const announced = [];
   bridge.on('queue', items => announced.push(items));
   const valid = kcsItem({ id: 'q-2' });
-  // Titre qui n'est pas un objet, ou dont le numéro est un objet ou une liste.
-  const bads = [null, 'texte', kcsItem({ id: piege() }), kcsItem({ id: [1] })];
+  // Titre qui n'est pas un objet, ou dont le numéro est absent, null, vide,
+  // un objet, une liste ou un booléen.
+  const bads = [null, 'texte', kcsItem({ id: piege() }), kcsItem({ id: [1] }), kcsItem({ id: undefined }), kcsItem({ id: null }),
+    kcsItem({ id: '' }), kcsItem({ id: true })];
   for (const bad of bads) assert.doesNotThrow(() => queue([valid, bad]));
   assert.deepEqual(bridge.queue.map(item => item.queueId), ['q-0', 'q-1'], 'file d’avant gardée telle quelle');
   assert.deepEqual(announced, [], 'aucune file annoncée au serveur');
@@ -2337,8 +2346,10 @@ test('valeurs imprévues : état de KaraFun lu avec ses types ; un titre en cour
   t.after(() => bridge.disconnect());
   const tracks = [{ track: { type: piege() }, volume: 53 }, null, { track: { type: 4 }, volume: 53 }, { track: { type: 5 }, volume: piege() }];
   const status = (current, extra = {}) => ({ type: 'remote.StatusEvent', payload: { status: { state: 3, pitch: 0, tempo: 0, tracks, current, ...extra } } });
-  // Seul null veut dire « aucun titre en cours » : 0, false ou un texte vide sont illisibles.
-  const currents = [kcsItem({ id: piege() }), 'texte', 0, false, ''];
+  // Seul null veut dire « aucun titre en cours » : 0, false ou un texte vide
+  // sont illisibles, comme un titre sans numéro lisible.
+  const currents = [kcsItem({ id: piege() }), 'texte', 0, false, '', kcsItem({ id: undefined }), kcsItem({ id: null }),
+    kcsItem({ id: '' }), kcsItem({ id: true })];
   for (const current of currents) assert.doesNotThrow(() => ws.receive(status(current)));
   assert.deepEqual([bridge.status.kcsState, bridge.status.current], [1, null], 'état d’avant gardé');
   assert.deepEqual(ignoredMessages(bridge).map(entry => entry.reason), Array(currents.length).fill('titre en cours illisible'));
