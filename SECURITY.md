@@ -27,7 +27,7 @@ plus et refuse de l'installer.
 |---|---|---|
 | Dépendances npm, Maven, actions, images Docker | Dependabot chaque lundi, alertes de sécurité aussitôt ; délai de 7 jours avant d'adopter une nouvelle version (une version piégée est souvent retirée entre-temps) | `.github/dependabot.yml` |
 | Nouvelles LTS, fins de support, outils hors Dependabot | Veille chaque lundi : une seule issue, assignée au propriétaire du dépôt (ci-dessous) | `.github/workflows/veille-versions.yml` |
-| Correctifs mineurs | Fusion automatique, seulement quand la branche exige « Tests OK » et « Sécurité OK » et qu'ils sont verts, et que GitHub a créé et signé chaque commit de la PR pour Dependabot (sinon la fusion est retirée) ; jamais pour une version majeure, l'optimiseur (Timefold et ses autres dépendances Maven : bilan avant/après exigé), Socket.IO et sa pile (Engine.IO, ws, xmlhttprequest-ssl), une image du `Dockerfile` dont le diff change autre chose que ses empreintes ni les actions GitHub, que la publication exécute avec ses droits d'écriture | `.github/workflows/dependabot-auto-merge.yml` |
+| Correctifs mineurs | Fusion automatique, seulement quand la branche exige « Tests OK » et « Sécurité OK » et qu'ils sont verts, et que GitHub a créé et signé chaque commit de la PR pour Dependabot (sinon la fusion est retirée) ; jamais pour une version majeure, l'optimiseur (Timefold et ses autres dépendances Maven : bilan avant/après exigé), Socket.IO et sa pile (Engine.IO, ws, xmlhttprequest-ssl), une image du `Dockerfile` dont le diff change autre chose que ses empreintes ou n'a pas pu être lu, ni les actions GitHub, que la publication exécute avec ses droits d'écriture | `.github/workflows/dependabot-auto-merge.yml` |
 | Code | CodeQL (JavaScript, Java, Python, workflows), requêtes `security-extended`, chaque PR et chaque lundi | `.github/workflows/codeql.yml` |
 | Dépendances ajoutées par une PR | Revue des dépendances : refus d'une version vulnérable (gravité moyenne ou plus) | `.github/workflows/securite.yml` |
 | Dépendances de production | `npm audit --omit=dev --audit-level=high` | `.github/workflows/securite.yml` |
@@ -75,11 +75,20 @@ Le dépôt reste sur la dernière LTS de ses outils (décision du mainteneur, 6 
   celles du Java du runner (V36 à V38 de `test/verifier-image.sh`) : elle voit une JVM
   de l'image qui décide autrement, pas un changement commun aux deux. Le dernier
   garde-fou est la publication, décidée à la main : rien n'arrive au bar avant.
+  `.github/RELEASE.md` y fait lancer `node test/comparer-images.js <dernier tag>` :
+  pour toute empreinte d'image de base changée depuis la dernière version (ou depuis
+  sa montée, pour une ligne montée depuis : la montée s'essaie dans sa PR), l'outil
+  contrôle les versions de Node et de Java et compare les décisions de l'ancienne et
+  de la nouvelle image, au même code, pour l'architecture du PC (l'autre n'a que V36
+  à V38) ; pour un autre Node, la télécommande KaraFun s'essaie en plus. Les notes de
+  chaque release donnent les versions de Node et de Java de son image ; la publication
+  échoue si leur version majeure n'est pas celle des étiquettes du `Dockerfile`.
 - **Comment monter.** D'un seul tenant, dans une PR : `Dockerfile`, CI, tests et
   documents ; le test W11 de `test/workflows.test.js` refuse une montée partielle.
   Java : bilan avant/après d'une vraie soirée (`AGENTS.md`). Node : essai réel de la
-  télécommande KaraFun, car Socket.IO 2.x change de moteur. Laisser passer le délai
-  de 7 jours, sauf faille à corriger.
+  télécommande KaraFun, car le lien avec la télécommande actuelle passe par le
+  WebSocket de Node (`kcs-transport.js:9`), qu'aucun essai automatique n'ouvre vers
+  le vrai KaraFun. Laisser passer le délai de 7 jours, sauf faille à corriger.
 - **Exception.** Socket.IO reste en 2.x (ci-dessous). Une migration se traite à part.
 
 ## Chaîne d'approvisionnement

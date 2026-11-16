@@ -212,7 +212,8 @@ const DISCOVERY_COVER_MS = 420000;
 const URL_FAIL_REDISCOVER = 20;
 // Fermeture du WebSocket par laquelle KaraFun refuse l'URL avant
 // l'authentification : session finie (4403, observé la nuit du 2 octobre),
-// KaraFun fermé, code changé, 4210 vu une fois. L'URL est alors oubliée.
+// KaraFun fermé, code changé, 4210 vu une fois. L'URL est alors oubliée. La
+// sonde de la télécommande (test/probe-kcs.js) juge ses fermetures de même.
 const urlRejected = code => code === 4210 || (code >= 4400 && code <= 4499);
 const CLOSED_REASON = 'KaraFun fermé ou code changé';
 // Gigue : ±15 %, 20 s au plus ; heure pleine suivante : 5 à 60 s après.
@@ -1677,4 +1678,4 @@ function normalizeResults(data) {
 
 module.exports = { KaraFunBridge, normalizeResults, readSettings, normalizeKcsItem, BATTLE_MOD, BATTLE_MODS_MAX, isBattleItem, battleModFor,
   maskCode, lockIdentity, unknownSettingsSupport: freshSupport,
-  CHALLENGE, DISCOVERY_HEADERS, classifyDiscovery, retryAfterAt };
+  CHALLENGE, DISCOVERY_HEADERS, classifyDiscovery, retryAfterAt, urlRejected };
