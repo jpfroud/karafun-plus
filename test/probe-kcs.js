@@ -8,15 +8,16 @@
 // la file (karafun.js, _openKcs) : core.AuthenticatedEvent, le code accepté ;
 // remote.AppLeftEvent, KaraFun fermé ou sa télécommande désactivée (le serveur KCS répond
 // encore, avec son dernier état) ; Error, une erreur de KaraFun ; fermeture par KaraFun, ou
-// 10 s sans message (KcsTransport ferme alors le canal), une connexion perdue (lost).
+// KaraFun muet plus longtemps que KcsTransport ne l'accepte (son chien de garde, 'stale', ou
+// isStale à la fin de l'essai), une connexion perdue (lost).
 // Les messages s'affichent. Lancée depuis la racine du dépôt, la sonde les garde aussi dans
 // journal/kcs-probe.json ; dans le conteneur de l'essai de .github/RELEASE.md (docker run
 // --rm, rien de monté sur /app/journal), ce fichier part avec le conteneur : les messages ne
 // restent qu'à l'écran.
 // Codes de sortie : 0 WebSocket ouvert, code accepté par KaraFun et canal tenu les 12 s, sans
 // AppLeftEvent ni Error ; 1 WebSocket en échec (impossible à créer, jamais ouvert, aucun
-// message, code jamais accepté, AppLeftEvent, Error, ou fermé par KaraFun ou muet avant la fin
-// des 12 s : refus, 4210 ou 44xx comme pour la file, ou connexion perdue, même après le code
+// message, code jamais accepté, AppLeftEvent, Error, ou fermé par KaraFun ou muet pendant les
+// 12 s : refus, 4210 ou 44xx comme pour la file, ou connexion perdue, même après le code
 // accepté) ; 2 rien d'essayé : usage, page que la file refuse ou qui ne répond pas (aucun
 // WebSocket ouvert), ou page sans adresse KCS, que la file lit par le protocole historique
 // (Socket.IO), sans le WebSocket de Node : rien à sonder ici.
@@ -26,6 +27,7 @@ const { KaraFunBridge, DISCOVERY_HEADERS, classifyDiscovery, urlRejected } = req
 const { KcsTransport } = require('../kcs-transport');
 
 const DUREE_MS = 12000;
+const MUET = 'KaraFun ne répond plus (canal muet)';
 const RAISONS = {
   refused: 'KaraFun refuse cette adresse Internet (401, 403, 429 ou défi anti-robot)',
   'unknown-code': 'code inconnu ou KaraFun fermé',
@@ -69,7 +71,14 @@ const RAISONS = {
   // Ce qu'en dirait la file (karafun.js, _openKcs) : code accepté, KaraFun parti, erreur de
   // KaraFun, adresse refusée, ou connexion perdue avant la fin de l'essai (coupure).
   let ouvert = false, accepte = false, parti = false, erreur = null, refus = null, coupure = null, fini = false;
-  const minuteur = setTimeout(() => finir(), DUREE_MS);
+  // Au bout des 12 s, la sonde ferme le canal. Un silence commencé au code accepté, le chien de
+  // garde de KcsTransport (toutes les 2 s, 10 s de silence) ne le juge qu'autour de la fin de
+  // l'essai, parfois après elle : la sonde le juge alors comme lui (isStale), connexion perdue
+  // pour la file.
+  const minuteur = setTimeout(() => {
+    if (canal.isStale()) coupure = MUET;
+    finir();
+  }, DUREE_MS);
   const finir = () => {
     if (fini) return;
     fini = true;
@@ -91,7 +100,7 @@ const RAISONS = {
     else if (erreur !== null) echec = `KaraFun a répondu par une erreur (${erreur}).`;
     else if (!messages.length) echec = 'aucun message de KaraFun.';
     else if (!accepte) echec = `code jamais accepté par KaraFun (aucun core.AuthenticatedEvent en ${nombre}).`;
-    else if (coupure !== null) echec = `${coupure} avant la fin des ${DUREE_MS / 1000} s ; la file y verrait une connexion perdue et se reconnecterait.`;
+    else if (coupure !== null) echec = `${coupure} pendant les ${DUREE_MS / 1000} s de l'essai ; la file y verrait une connexion perdue et se reconnecterait.`;
     if (echec === null) console.log(`Essai réussi : WebSocket ouvert, code accepté par KaraFun (core.AuthenticatedEvent), canal tenu ${DUREE_MS / 1000} s, ${nombre} de KaraFun.`);
     else console.error(`Essai en échec : ${echec}`);
     process.exitCode = echec === null ? 0 : 1;
@@ -111,7 +120,7 @@ const RAISONS = {
   // file (karafun.js, 'stale'), même après le code accepté.
   canal.on('stale', () => {
     console.error('KaraFun ne répond plus : canal fermé.');
-    coupure = 'KaraFun ne répond plus, canal fermé';
+    coupure = MUET;
     finir();
   });
   // Fermé par KaraFun avant la fin de l'essai (la sonde ferme elle-même le canal au bout des

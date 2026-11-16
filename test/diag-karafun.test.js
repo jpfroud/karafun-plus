@@ -602,6 +602,7 @@ test('F3 test/probe-kcs.js lit la page comme la file : page refusée ou sans ré
 test('F4 test/probe-kcs.js ouvre le canal de la file (KcsTransport) et le juge comme elle : code 0 au code accepté (core.AuthenticatedEvent), canal tenu les 12 s, sinon 1', async t => {
   const { lecture, protocole } = valeursDeLaFile(t);
   const dossier = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-kcs-'));
+  const dossierMuet = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-kcs-'));
   try {
     const page = pageSonde({ kcs_url: 'wss://kcs.example.invalid/socket' });
     const ouverture = `${lecture}WebSocket ${JSON.stringify(['wss://kcs.example.invalid/socket', protocole])}\n`;
@@ -611,13 +612,25 @@ test('F4 test/probe-kcs.js ouvre le canal de la file (KcsTransport) et le juge c
     const etat = { type: 'remote.StatusEvent', payload: { status: { state: 1 } } }, parti = { type: 'remote.AppLeftEvent', payload: {} };
     const erreur = { type: 'Error', payload: { type: 1, message: 'Invalid request' } };
     const journal = path.join(dossier, 'journal', 'kcs-probe.json');
+    const perdue = 'la file y verrait une connexion perdue et se reconnecterait';
+    // Les deux essais qui durent les 12 s de la sonde tournent ensemble, chacun dans son dossier.
     // Code accepté par KaraFun (core.AuthenticatedEvent, comme pour la file), puis canal tenu
     // jusqu'à la fin des 12 s, un battement toutes les 4 s (10 s sans message, KcsTransport
     // ferme le canal) : chaque battement reçoit sa réponse, comme dans la file, et la sonde
     // ferme elle-même le canal après le dernier, au bout de ses 12 s. Les messages restent dans
     // journal/kcs-probe.json du dossier où la sonde est lancée.
-    const reussi = await sonde(dossier, { page, evenements: [['open'], ['message', ping], ['message', authentifie],
-      ['attente', 4000], ['message', battement(2)], ['attente', 4000], ['message', battement(3)]] });
+    // KaraFun muet dès le code accepté : le chien de garde de KcsTransport (toutes les 2 s, 10 s
+    // de silence) ne le jugerait qu'au passage des 12 s, en même temps que la fin de l'essai ;
+    // la sonde le juge alors comme lui (isStale) : connexion perdue, comme pour la file.
+    const [reussi, muet] = (await Promise.allSettled([
+      sonde(dossier, { page, evenements: [['open'], ['message', ping], ['message', authentifie],
+        ['attente', 4000], ['message', battement(2)], ['attente', 4000], ['message', battement(3)]] }),
+      sonde(dossierMuet, { page, evenements: [['open'], ['message', ping], ['message', authentifie]] }),
+    ])).map(essai => { if (essai.status === 'rejected') throw essai.reason; return essai.value; });
+    assert.equal(muet.code, 1, `${muet.stdout} ${muet.stderr}`);
+    assert.ok(muet.stdout.endsWith(`${JSON.stringify(authentifie)}\nfermeture\n`), muet.stdout);
+    // Le chien de garde peut passer juste avant la fin : sa ligne s'ajoute, le verdict reste le même.
+    assert.match(muet.stderr, new RegExp(`^(KaraFun ne répond plus : canal fermé\\.\\n)?Essai en échec : KaraFun ne répond plus \\(canal muet\\) pendant les 12 s de l'essai ; ${perdue}\\.\\n$`));
     assert.equal(reussi.code, 0, `${reussi.stdout} ${reussi.stderr}`);
     assert.ok(reussi.stdout.startsWith(`${ouverture}WebSocket ouvert\n`), reussi.stdout);
     for (const id of [1, 2]) assert.ok(reussi.stdout.includes(`envoi ${JSON.stringify(reponse(id))}\n`), reussi.stdout);
@@ -629,8 +642,9 @@ test('F4 test/probe-kcs.js ouvre le canal de la file (KcsTransport) et le juge c
     // Échecs : jamais ouvert, aucun message, code jamais accepté, KaraFun fermé ou télécommande
     // désactivée (AppLeftEvent, même après le code accepté), Error de KaraFun, fermé par un
     // refus de KaraFun (4210 ou 44xx, comme pour la file), même après des messages, ou canal
-    // fermé par KaraFun (1000, 1006) ou muet avant la fin des 12 s, même après le code accepté :
-    // la file y perd la connexion (karafun.js, lost) et se reconnecte.
+    // fermé par KaraFun (1000, 1006) ou fermé muet par le chien de garde de KcsTransport
+    // ('stale') pendant les 12 s, même après le code accepté : la file y perd la connexion
+    // (karafun.js, lost) et se reconnecte.
     for (const [cas, evenements, motif] of [['jamais ouvert', [['error'], ['close', 1006]], /Essai en échec : WebSocket jamais ouvert/],
       ['aucun message', [['open'], ['close', 1000]], /Essai en échec : aucun message de KaraFun/],
       ['code jamais accepté', [['open'], ['message', ping], ['message', etat], ['close', 1000]],
@@ -642,11 +656,11 @@ test('F4 test/probe-kcs.js ouvre le canal de la file (KcsTransport) et le juge c
       ['refus 4210 après un message', [['open'], ['message', authentifie], ['close', 4210]], /Essai en échec : KaraFun a refusé l'adresse KCS \(fermeture 4210/],
       ['refus 4403', [['open'], ['close', 4403]], /Essai en échec : KaraFun a refusé l'adresse KCS \(fermeture 4403/],
       ['fermé par KaraFun après le code accepté', [['open'], ['message', ping], ['message', authentifie], ['close', 1000]],
-        /^WebSocket fermé par KaraFun \(code 1000\)\.\nEssai en échec : KaraFun a fermé le canal \(code 1000\) avant la fin des 12 s ; la file y verrait une connexion perdue et se reconnecterait\.\n$/],
+        new RegExp(`^WebSocket fermé par KaraFun \\(code 1000\\)\\.\\nEssai en échec : KaraFun a fermé le canal \\(code 1000\\) pendant les 12 s de l'essai ; ${perdue}\\.\\n$`)],
       ['coupure 1006 après le code accepté', [['open'], ['message', authentifie], ['close', 1006]],
-        /Essai en échec : KaraFun a fermé le canal \(code 1006\) avant la fin des 12 s/],
-      ['KaraFun muet après le code accepté', [['open'], ['message', ping], ['message', authentifie], ['silence', 11000]],
-        /^KaraFun ne répond plus : canal fermé\.\nEssai en échec : KaraFun ne répond plus, canal fermé avant la fin des 12 s ; la file y verrait une connexion perdue et se reconnecterait\.\n$/]]) {
+        /Essai en échec : KaraFun a fermé le canal \(code 1006\) pendant les 12 s de l'essai/],
+      ['KaraFun muet après le code accepté, fermé par le chien de garde', [['open'], ['message', ping], ['message', authentifie], ['silence', 11000]],
+        new RegExp(`^KaraFun ne répond plus : canal fermé\\.\\nEssai en échec : KaraFun ne répond plus \\(canal muet\\) pendant les 12 s de l'essai ; ${perdue}\\.\\n$`)]]) {
       const run = await sonde(dossier, { page, evenements });
       assert.equal(run.code, 1, `${cas} : ${run.stdout} ${run.stderr}`);
       assert.ok(run.stdout.startsWith(ouverture), `${cas} : ${run.stdout}`);
@@ -669,7 +683,10 @@ test('F4 test/probe-kcs.js ouvre le canal de la file (KcsTransport) et le juge c
     assert.equal(sansWebSocket.code, 1, sansWebSocket.stderr);
     assert.equal(sansWebSocket.stdout, lecture);
     assert.match(sansWebSocket.stderr, /^Essai en échec : WebSocket impossible à créer \(.+\)\.\n$/);
-  } finally { fs.rmSync(dossier, { recursive: true, force: true }); }
+  } finally {
+    fs.rmSync(dossier, { recursive: true, force: true });
+    fs.rmSync(dossierMuet, { recursive: true, force: true });
+  }
 });
 
 // --- G : garde --------------------------------------------------------------

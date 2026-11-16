@@ -49,12 +49,19 @@ class KcsTransport extends EventEmitter {
       this.emit('close', { code: event.code });
     });
     this.watchdog = setInterval(() => {
-      if (Date.now() - this.lastMessageAt > (this.opened ? 10000 : 15000)) {
+      if (this.isStale()) {
         this.emit('stale', 'KaraFun ne répond plus ; reconnexion en cours.');
         this.close();
       }
     }, 2000);
     this.watchdog.unref();
+  }
+
+  // KaraFun muet plus longtemps que le chien de garde ne l'accepte : 10 s une fois ouvert,
+  // 15 s avant. La sonde de la télécommande (test/probe-kcs.js) le demande aussi à la fin
+  // de son essai, entre deux passages du chien de garde.
+  isStale() {
+    return Date.now() - this.lastMessageAt > (this.opened ? 10000 : 15000);
   }
 
   _send(type, payload, id) {
