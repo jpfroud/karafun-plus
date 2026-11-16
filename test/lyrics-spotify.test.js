@@ -157,6 +157,76 @@ test('Spotify : une action par silence ou par titre, jamais à l’aveugle si Ka
   assert.equal(auto.step('silent', { ...opts, autoResume: false }), null, 'relance désactivée');
 });
 
+// Regression: relecture 2, tour 5 — pendant une alerte « message de KaraFun
+// illisible », l'automate recevait « unknown », une période comme une autre :
+// la fin de l'alerte ouvrait un nouveau silence, et Spotify était relancé au
+// bout de resumeDelaySec, ce qui défaisait « ⏸ Spotify » du bar (GUIDE-BAR.md
+// promet le contraire jusqu'au prochain titre ou au prochain silence).
+// « blind » n'ouvre pas de période : celle d'avant l'alerte continue, avec le
+// choix du bar, fait avant ou pendant l'alerte.
+test('Spotify : alerte « message de KaraFun illisible », la période d’avant continue avec le choix du bar', () => {
+  let now = 0;
+  const auto = new SpotifyAutomation({ now: () => now });
+  const opts = { autoResume: true, autoPause: true, resumeDelaySec: 3 };
+  // Reproduction de la relecture : « ⏸ Spotify » pendant un silence, puis l'alerte.
+  assert.equal(auto.step('silent', opts), null);
+  auto.handled();
+  assert.equal(auto.step('blind', opts), null, 'pendant l’alerte : rien');
+  assert.equal(auto.step('silent', opts), null);
+  now += 3000;
+  assert.equal(auto.step('silent', opts), null, 'fin de l’alerte, même silence : le choix du bar tient');
+  // Le titre suivant, puis un nouveau silence : de nouveau automatique.
+  assert.equal(auto.step('singing', opts), 'pause');
+  auto.settle(true);
+  now += 1000;
+  assert.equal(auto.step('silent', opts), null);
+  now += 3000;
+  assert.equal(auto.step('silent', opts), 'resume', 'nouveau silence : relance');
+  auto.settle(true);
+  // Choix du bar fait pendant l'alerte, avant que l'automate ait agi : il
+  // vaut pour la période d'avant, qui continue après l'alerte.
+  now += 1000;
+  assert.equal(auto.step('singing', opts), 'pause');
+  auto.settle(true);
+  now += 1000;
+  assert.equal(auto.step('silent', opts), null, 'silence : relance dans 3 s');
+  assert.equal(auto.step('blind', opts), null);
+  auto.handled(); // « ⏸ Spotify » pendant l'alerte
+  now += 3000;
+  assert.equal(auto.step('blind', opts), null);
+  assert.equal(auto.step('silent', opts), null, 'fin de l’alerte : le choix fait pendant l’alerte tient');
+  // Même choix donné avec la soirée vue pendant l'alerte : pas de période « blind ».
+  assert.equal(auto.step('singing', opts), 'pause');
+  auto.settle(true);
+  now += 1000;
+  assert.equal(auto.step('silent', opts), null);
+  auto.handled('blind');
+  assert.equal(auto.phase, 'silent', 'la période d’avant l’alerte continue');
+  now += 3000;
+  assert.equal(auto.step('silent', opts), null, 'choix du bar gardé pour ce silence');
+  // Titre vu après l'alerte, puis son silence : chaque changement vu ouvre sa
+  // période, comme sans alerte.
+  assert.equal(auto.step('singing', opts), 'pause');
+  auto.settle(true);
+  assert.equal(auto.step('blind', opts), null);
+  now += 1000;
+  assert.equal(auto.step('silent', opts), null, 'silence vu après l’alerte : nouvelle période');
+  now += 3000;
+  assert.equal(auto.step('silent', opts), 'resume');
+  // Échec d'une relance puis alerte : le nouvel essai garde son délai de 30 s.
+  auto.settle(false);
+  assert.equal(auto.step('blind', opts), null);
+  now += 10000;
+  assert.equal(auto.step('silent', opts), null, 'nouvel essai pas avant 30 s');
+  now += 20000;
+  assert.equal(auto.step('silent', opts), 'resume');
+  // Alerte avant toute période : rien, puis la première période s'ouvre.
+  const fresh = new SpotifyAutomation({ now: () => now });
+  assert.equal(fresh.step('blind', opts), null);
+  assert.equal(fresh.phase, null, 'aucune période ouverte');
+  assert.equal(fresh.step('singing', opts), 'pause');
+});
+
 // Regression: retours de la soirée du 4 octobre — le contrôle de Spotify
 // lâchait : identifiant d'appareil périmé (404 sur la lecture, la liste
 // retombait sur « Appareil actif »), 204 affiché en vert, erreur ancienne

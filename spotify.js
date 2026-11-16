@@ -459,10 +459,14 @@ const RECOVER_EVERY_MS = 10 * 60000;
 // arrive : Spotify n'est pas relancé entre deux chansons), « silent » (file
 // vide ou bar fermé : plus rien ne sera lancé), « battle » (rien ne joue et la
 // Battle attend le bar : prête en tête de KaraFun, ou finie avant le titre
-// suivant ; relance comme en silence), « unknown » (KaraFun déconnecté, ou
-// message de KaraFun illisible : on ne touche à rien). Une seule action par
-// période : si le bar coupe lui-même Spotify pendant un silence,
-// l'application ne le relance pas.
+// suivant ; relance comme en silence), « unknown » (KaraFun déconnecté : on ne
+// touche à rien). Une seule action par période : si le bar coupe lui-même
+// Spotify pendant un silence, l'application ne le relance pas.
+// « blind » (message de KaraFun illisible : ce que voit la file est peut-être
+// figé) n'est pas une période : rien n'est fait, et la période d'avant
+// l'alerte continue, avec le choix du bar (handled, fait avant ou pendant
+// l'alerte). Sinon la fin de l'alerte ouvrirait un nouveau silence, et Spotify
+// repartirait malgré « ⏸ Spotify ».
 class SpotifyAutomation {
   constructor({ now = Date.now } = {}) {
     this.now = now;
@@ -480,15 +484,17 @@ class SpotifyAutomation {
     resumeDelaySec = DEFAULTS.resumeDelaySec } = {}) {
     const now = this.now();
     this._enter(karaoke, now);
-    if (this.done || karaoke === 'unknown' || now < this.retryAt) return null;
+    if (this.done || karaoke === 'unknown' || karaoke === 'blind' || now < this.retryAt) return null;
     if (karaoke === 'singing') return autoPause ? 'pause' : null;
     if ((karaoke === 'silent' || karaoke === 'battle') && autoResume && now - this.since >= resumeDelaySec * 1000) return 'resume';
     return null;
   }
 
-  // Nouvelle période : une action de plus permise.
+  // Nouvelle période : une action de plus permise. « blind » n'en ouvre pas
+  // (voir plus haut), ni par step() ni par handled() : un choix du bar fait
+  // pendant l'alerte vaut pour la période d'avant.
   _enter(karaoke, now = this.now()) {
-    if (karaoke === this.phase) return;
+    if (karaoke === this.phase || karaoke === 'blind') return;
     this.phase = karaoke;
     this.since = now;
     this.done = false;
@@ -503,7 +509,8 @@ class SpotifyAutomation {
   // changement (titre qui démarre, ou nouveau silence). `karaoke` : la période
   // en cours, que l'automate n'a peut-être pas encore vue (geste juste après
   // la fin d'un titre ; le serveur ne la donne que pour l'attente de la
-  // Battle) ; sans elle, le choix vaut pour la dernière période vue.
+  // Battle) ; sans elle, ou pendant une alerte (« blind »), le choix vaut pour
+  // la dernière période vue.
   handled(karaoke = this.phase) {
     this._enter(karaoke);
     this.done = true;
