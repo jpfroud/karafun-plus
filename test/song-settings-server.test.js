@@ -39,7 +39,7 @@ function harness({ setTimeout: later = () => ({ unref() {} }), Date: clock = nul
     globalThis.fixture = { sched, settings, handlers, access, journal, sync, staffState, publicState, battleVote, clearEvening,
       resendWithoutOptions, restoreKaraFunDefaults: typeof restoreKaraFunDefaults === 'function' ? restoreKaraFunDefaults : null,
       safeSync: typeof safeSync === 'function' ? safeSync : null, wireBridge, connectionAnswer,
-      connectKaraFun, spotify,
+      connectKaraFun, spotify, karaokeOutlook, spotifyTick,
       tracked: () => tracked, pending: () => pending, setBridge: b => { bridge = b; },
       handle: server.listeners('request')[0], STAFF_KEY, PORT };
   `, context, { filename: 'server.js' });
@@ -2541,16 +2541,53 @@ test('valeurs imprévues : file de KaraFun illisible, titre ajouté dans KaraFun
 // illisible, un réglage changé sur un titre déjà dans KaraFun lui renvoyait
 // toutes ses options, tirées de la file figée (nom, mode, volumes) : ce que le
 // bar venait de changer dans KaraFun était écrasé. L'envoi attend une file
-// lisible, et part alors si le titre n'a pas commencé.
+// lisible, et part alors si le titre n'a pas commencé. Depuis le tour 4, la
+// réponse le dit pas encore envoyé (essai suivant).
 test('valeurs imprévues : file de KaraFun illisible, réglages d’un titre déjà dans KaraFun envoyés après l’alerte', async t => {
   const { f, frames, A, B, trB } = aThenB(t);
   frames(queueEvent(A, B, ODD_ITEM));
   const answer = await f.call('POST /api/staff/song/settings', { personId: trB.sel.ids[0], entryId: trB.sel.song.entryId,
     settings: { pitch: 2 } });
-  assert.equal(answer.applied, 'start');
+  assert.equal(answer.applied, 'unreadable');
   assert.deepEqual(frames(), [], 'rien n’est envoyé pendant l’alerte');
   assert.deepEqual(frames(queueEvent(A, B)).map(m => [m.type, m.payload.queueItemId, m.payload.options?.pitch]),
     [['remote.SetQueueItemOptionsRequest', 'B-id', 2]], 'file lisible : envoyé');
+});
+
+// Regression: relecture 2, tour 4 (relecteurs) — pendant une alerte « message
+// de KaraFun illisible », le réglage d'un titre déjà dans KaraFun répondait
+// « appliqué au début du titre », celui d'un titre en cours d'envoi « dès que
+// KaraFun reçoit le titre ». Lancé pendant l'alerte, le titre n'est pourtant
+// pas rattrapé, ni pendant elle ni après elle, en pleine chanson : le réglage
+// était perdu sans que le chanteur le sache. La réponse le dit pas encore
+// envoyé (« unreadable ») : le téléphone renvoie au bar, qui le règle dans
+// KaraFun.
+test('valeurs imprévues : message de KaraFun illisible, un réglage pas encore envoyé à KaraFun le dit', async t => {
+  const { f, frames, A, B, trB } = aThenB(t);
+  frames(queueEvent(A, B, ODD_ITEM));
+  const zoe = f.sched.people.get(trB.sel.ids[0]);
+  const phone = { table: '1', access: f.access.issue('1'), personId: zoe.id, token: zoe.token, entryId: trB.sel.song.entryId };
+  assert.equal((await f.call('POST /api/table/song/settings', { ...phone, settings: { pitch: 2 } })).applied, 'unreadable',
+    'téléphone : pas « appliqué au début du titre »');
+  assert.equal((await f.call('POST /api/staff/song/settings', { personId: zoe.id, entryId: trB.sel.song.entryId,
+    settings: { pitch: 2 } })).applied, 'unreadable', 'page du bar');
+  // B est lancé pendant l'alerte (état lisible), puis la file redevient
+  // lisible en pleine chanson : rien ne part, le bar le règle dans KaraFun.
+  const sent = [isoStatus(1, B), isoStatus(2, B), isoStatus(3, B), isoStatus(4, B), queueEvent(B), isoStatus(4, B)]
+    .flatMap(m => bare(frames(m)));
+  assert.deepEqual(sent, []);
+});
+test('valeurs imprévues : message de KaraFun illisible, un réglage d’un titre en cours d’envoi le dit pas encore envoyé', async t => {
+  const f = harness();
+  const { frames } = replayBridge(t, f);
+  const lea = singer(f, openTable(f, '1'), 'Léa', 12458);
+  f.settings.auto = true;
+  assert.equal(frames()[0]?.type, 'remote.AddToQueueRequest');
+  f.settings.auto = false;
+  frames(queueEvent(ODD_ITEM));
+  const answer = await f.call('POST /api/table/song/settings', { ...lea.body, entryId: f.pending().sel.song.entryId,
+    settings: { pitch: 2 } });
+  assert.equal(answer.applied, 'unreadable', 'pas « dès que KaraFun reçoit le titre »');
 });
 
 // Regression: relecture 2, tour 2 (maintenabilité, passe adverse) — pendant
@@ -2823,6 +2860,62 @@ test('valeurs imprévues : file illisible pendant la coupure de Spotify, la lect
   for (const timer of lead) timer.fn(...timer.args);
   for (let i = 0; i < 3; i++) await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(ws.out.filter(m => m.type === 'remote.PlayRequest'), []);
+});
+
+// Faux Spotify (comme dans spotify-fermeture.test.js) : rend la liste des
+// lectures et des pauses demandées.
+function fakeSpotify(f) {
+  const calls = [];
+  let playing = false;
+  const json = body => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => body, text: async () => JSON.stringify(body) });
+  const done = { ok: true, status: 204, text: async () => '' };
+  f.spotify.fetchImpl = async url => {
+    if (url.endsWith('/api/token')) return json({ access_token: 't', expires_in: 3600 });
+    if (url.endsWith('/me/player')) return json({ is_playing: playing, device: { id: 'pc', name: 'PC' } });
+    if (url.endsWith('/me/player/devices')) return json({ devices: [{ id: 'pc', name: 'PC', is_active: true }] });
+    if (url.includes('/me/player/play')) { calls.push('lecture'); playing = true; return done; }
+    if (url.includes('/me/player/pause')) { calls.push('pause'); playing = false; return done; }
+    throw new Error(`inattendu : ${url}`);
+  };
+  f.spotify.config = { ...f.spotify.config, clientId: '0123456789abcdef0123456789abcdef', refreshToken: 'r',
+    autoResume: true, autoPause: true, resumeDelaySec: 0, pauseLeadSec: 0 };
+  return calls;
+}
+
+// Regression: relecture 2, tour 4 (relecteurs) — pendant une alerte « message
+// de KaraFun illisible », l'automate de Spotify jugeait la soirée d'après la
+// vue figée : file vide et KaraFun à l'arrêt, il relançait Spotify alors que
+// KaraFun jouait peut-être le titre illisible ; un titre figé sur scène lui
+// faisait couper la musique du bar. Pendant l'alerte, Spotify voit la soirée
+// « unknown », comme KaraFun déconnecté : rien n'est relancé ni coupé d'office
+// (le bar s'en charge), et l'automate reprend à la vue lisible suivante.
+test('valeurs imprévues : message de KaraFun illisible, Spotify ni relancé ni coupé d’après la vue figée', async t => {
+  const f = harness();
+  const { frames } = replayBridge(t, f);
+  const calls = fakeSpotify(f);
+  const oddStatus = { type: 'remote.StatusEvent', payload: { status: { state: 4, pitch: 0, tempo: 0, tracks: [], current: ODD_ITEM } } };
+  // File vide, KaraFun à l'arrêt ; le bar lance dans KaraFun un titre que la
+  // file ne sait pas lire : la file et l'état reçus sont ignorés.
+  frames(queueEvent(ODD_ITEM), oddStatus);
+  assert.equal(f.karaokeOutlook(), 'unknown');
+  await f.spotifyTick();
+  assert.deepEqual(calls, [], 'pas relancé par-dessus le titre');
+  // Vue lisible : file vide, KaraFun à l'arrêt, Spotify est relancé.
+  frames(queueEvent(), isoStatus(1, null));
+  assert.equal(f.karaokeOutlook(), 'silent');
+  await f.spotifyTick();
+  assert.deepEqual(calls, ['lecture']);
+  // Un titre lisible sur scène, puis un état illisible : la vue figée garde
+  // le titre sur scène.
+  const A = isoItem('A-id', 777, { singer: 'Quelqu’un' });
+  frames(queueEvent(A), isoStatus(4, A), oddStatus);
+  assert.equal(f.karaokeOutlook(), 'unknown');
+  await f.spotifyTick();
+  assert.deepEqual(calls, ['lecture'], 'pas coupé d’après la vue figée');
+  frames(isoStatus(4, A));
+  assert.equal(f.karaokeOutlook(), 'singing');
+  await f.spotifyTick();
+  assert.deepEqual(calls, ['lecture', 'pause'], 'état lisible : coupé');
 });
 
 // Regression: relecture 2, tour 2 (équipe rouge) — pendant un état illisible,

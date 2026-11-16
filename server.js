@@ -1440,16 +1440,22 @@ function songSettingsInput(input, { song, ids }) {
 
 // Enregistre les réglages sur le titre, puis les applique selon où il en est.
 // Rend 'list' (au prochain envoi), 'sending' (dès l'accusé de KaraFun),
-// 'karafun' (envoyés) ou 'start' (au début du titre, ou au retour de KaraFun).
+// 'karafun' (envoyés), 'start' (au début du titre, ou au retour de KaraFun)
+// ou 'unreadable' : message de KaraFun illisible, titre déjà dans KaraFun ou
+// en cours d'envoi. Ils ne partent alors qu'à la fin de l'alerte, si le titre
+// n'a pas commencé ; lancé pendant l'alerte, il n'est pas rattrapé
+// (catchUpSongSettings) : le téléphone renvoie au bar, qui le règle dans
+// KaraFun.
 function applySongSettings(target, values, fields) {
   sched.setSongSettings(target.song, values);
   for (const copy of target.copies || []) sched.setSongSettings(copy, values);
+  const unreadable = !!(bridge?.ready && bridge.unreadable); // comme pushQueueItemSettings
   let applied = 'list';
-  if (target.where === 'sending') { pending.settingsChanged = true; applied = 'sending'; }
+  if (target.where === 'sending') { pending.settingsChanged = true; applied = unreadable ? 'unreadable' : 'sending'; }
   else if (target.where === 'karafun') {
     target.tr.settingsDirty = true;
     delete target.tr.liveChecked; // déjà chargé par KaraFun : rattrapage refait si besoin
-    applied = pushQueueItemSettings(target.tr) ? 'karafun' : 'start';
+    applied = pushQueueItemSettings(target.tr) ? 'karafun' : unreadable ? 'unreadable' : 'start';
   }
   journalEvent('song.settings', { ...fields, personId: target.ids[0], entryId: target.song.entryId, where: target.where, settings: values });
   return applied;
@@ -1489,7 +1495,8 @@ function pushQueueItemSettings(tr) {
 // fait ensuite n'est pas « rattrapé » une seconde fois. Message de KaraFun
 // illisible : rien n'est rattrapé ni remis à ce titre, ni pendant l'alerte
 // ni après elle, en pleine chanson. Ses options vues peuvent être figées, et
-// le bar le règle dans KaraFun.
+// le bar le règle dans KaraFun (un réglage fait pendant l'alerte répond
+// « pas encore envoyé », applySongSettings).
 function catchUpSongSettings(tr) {
   const mark = String(tr.queueId);
   if (tr.liveChecked === mark) return;
@@ -1753,9 +1760,10 @@ function sync() {
   // qu'elle déciderait seule (fermeture, vidage, nouvel essai d'un retrait,
   // accusé d'un envoi annulé), ni suite d'une relance ⏮ (syncRestart), ni
   // mode Battle ou reprise après Battle (syncBattle), ni réglage de titre
-  // rattrapé ou envoyé (catchUpSongSettings, pushQueueItemSettings). Les
-  // gestes du bar et des chanteurs, eux, partent, sauf ⏮ et le retrait de
-  // « Pas prêt » (deferTurn), refusés.
+  // rattrapé ou envoyé (catchUpSongSettings, pushQueueItemSettings ; la
+  // réponse au réglage le dit, applySongSettings), ni pause ou relance de
+  // Spotify (karaokeOutlook). Les gestes du bar et des chanteurs, eux,
+  // partent, sauf ⏮ et le retrait de « Pas prêt » (deferTurn), refusés.
   const blind = !!bridge.unreadable;
   if (pending) {
     // File de KaraFun illisible : le titre envoyé peut ne se voir que sur
@@ -4445,8 +4453,12 @@ let spotifyWork = null;
 // lancée, que KaraFun retire de sa file avant d'annoncer sa lecture), puis
 // relance à la main le titre suivant (Battle finie) : Spotify comble
 // l'attente, comme en silence ; chaque lancement le coupe.
+// « unknown » : KaraFun déconnecté, ou message de KaraFun illisible (alerte
+// rouge, voir sync()) : la vue de la file peut être figée, et KaraFun jouer un
+// titre qu'elle ne voit pas. L'automate ne touche pas à Spotify, le bar s'en
+// charge ; il reprend à la vue lisible suivante.
 function karaokeOutlook() {
-  if (!bridge?.ready) return 'unknown';
+  if (!bridge?.ready || bridge.unreadable) return 'unknown';
   const { current, upcoming } = analyze();
   if (current) return 'singing';
   if (closingBlocksStart(null)) return 'silent';

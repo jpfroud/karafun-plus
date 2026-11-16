@@ -1838,7 +1838,9 @@
   }
   const LIVE_CONFIRM_MS = 8000; // sans écho de KaraFun passé ce délai, sa valeur revient
   const SAVED_TUNE = { karafun: 'Enregistré ✓ · envoyé à KaraFun', start: 'Enregistré ✓ · appliqué au début du titre',
-    sending: 'Enregistré ✓ · appliqué dès que KaraFun reçoit le titre' };
+    sending: 'Enregistré ✓ · appliqué dès que KaraFun reçoit le titre',
+    // Envoyé à la fin de l'alerte si le titre n'a pas commencé, sinon jamais (GUIDE-BAR.md).
+    unreadable: 'Enregistré ✓ · pas encore envoyé : message de KaraFun illisible, règle-le dans KaraFun' };
   const tuneRanges = () => ({ pitch: { min: -6, max: 6, step: 1, ...S?.songSettings?.ranges?.pitch },
     tempo: { min: -50, max: 50, step: 5, ...S?.songSettings?.ranges?.tempo } });
   const tuneDefaults = () => ({ pitch: 0, tempo: 0, guide: 0, backing: 100, ...S?.songSettings?.defaults });

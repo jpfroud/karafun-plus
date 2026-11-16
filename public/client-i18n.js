@@ -656,6 +656,7 @@ window.CLIENT_TRANSLATIONS = {
       'Enregistré ✓ · envoyé à KaraFun': 'Saved ✓ · sent to KaraFun',
       'Enregistré ✓ · appliqué au début du titre': 'Saved ✓ · applied when the song starts',
       'Enregistré ✓ · appliqué dès que KaraFun reçoit le titre': 'Saved ✓ · applied as soon as KaraFun gets the song',
+      'Enregistré ✓ · pas encore envoyé à KaraFun : demande au bar': 'Saved ✓ · not sent to KaraFun yet: ask the bar',
       'Non enregistré : {error}': 'Not saved: {error}',
       'Le bar a désactivé les réglages de titre depuis les téléphones.': 'The bar has turned off song settings from phones.',
       'Ce titre n’est plus prévu : il a peut-être déjà été chanté ou retiré.': 'This song is no longer planned: it may already have been sung or removed.',

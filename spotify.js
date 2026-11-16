@@ -459,9 +459,10 @@ const RECOVER_EVERY_MS = 10 * 60000;
 // arrive : Spotify n'est pas relancé entre deux chansons), « silent » (file
 // vide ou bar fermé : plus rien ne sera lancé), « battle » (rien ne joue et la
 // Battle attend le bar : prête en tête de KaraFun, ou finie avant le titre
-// suivant ; relance comme en silence), « unknown » (KaraFun déconnecté : on ne
-// touche à rien). Une seule action par période : si le bar coupe lui-même
-// Spotify pendant un silence, l'application ne le relance pas.
+// suivant ; relance comme en silence), « unknown » (KaraFun déconnecté, ou
+// message de KaraFun illisible : on ne touche à rien). Une seule action par
+// période : si le bar coupe lui-même Spotify pendant un silence,
+// l'application ne le relance pas.
 class SpotifyAutomation {
   constructor({ now = Date.now } = {}) {
     this.now = now;

@@ -3572,6 +3572,15 @@ test('réglages de titre : une voix guide par curseur en direct et dans la fiche
   await page.flush();
   assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { guide: 50, guideVoices: { 6: 100 } });
   assert.equal(page.$('songSheetStatus').textContent, 'Enregistré ✓ · envoyé à KaraFun');
+  // Relecture 2, tour 4 : message de KaraFun illisible, le réglage n'est pas
+  // encore parti (réponse « unreadable ») : la fiche le dit.
+  page.replies['/api/staff/song/settings'] = { ok: true, applied: 'unreadable' };
+  await page.click(page.in('songSheetBody', '[data-tune="voice:6"][data-value="50"]'));
+  page.runTimers(700);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { guide: 50, guideVoices: { 6: 50 } });
+  assert.equal(page.$('songSheetStatus').textContent,
+    'Enregistré ✓ · pas encore envoyé : message de KaraFun illisible, règle-le dans KaraFun');
 });
 
 test('réglages de titre : file au téléphone, nom du titre avant le badge des réglages', async () => {
