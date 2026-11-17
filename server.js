@@ -1432,7 +1432,7 @@ function syncRestart({ current, upcoming, q }, now, alertJustEnded = false) {
   // relance ratée.
   if (bridge.unreadable) {
     if (restartOp?.copyQueueId != null && String(current?.queueId) === restartOp.copyQueueId) concludeRestart(restartOp, now, false);
-    if (restartOp) restartOp.pausedAt ??= now;
+    if (restartOp) { restartOp.pausedAt ??= now; restartOp.pausedByAlert = true; }
     if (restartSweep) restartSweep.pausedAt ??= now;
     return;
   }
@@ -1473,6 +1473,13 @@ function syncRestart({ current, upcoming, q }, now, alertJustEnded = false) {
       abandonRestart(op, state, 'Le titre a changé dans KaraFun pendant la relance : relance annulée.', now);
       return;
     }
+    // Relance mise en pause par l'alerte, titre fini entre-temps et KaraFun à
+    // l'arrêt, la copie en tête : « Lecture » rejouerait tout le titre, des
+    // minutes après sa fin. Sans pause, ce cas reste la relance (plus bas).
+    if (!started && !current && op.pausedByAlert && !q.some(item => String(item.queueId) === String(op.originalQueueId))) {
+      abandonRestart(op, state, 'Le titre est fini pendant l’alerte de KaraFun : relance annulée.', now);
+      return;
+    }
     if (!started && (copies.length > 1 || String(upcoming[0]?.queueId) !== String(copy.queueId))) {
       // Sans place juste après le titre en cours, « Suivant » lancerait un autre titre.
       abandonRestart(op, state, 'KaraFun n’a pas placé la copie juste après le titre en cours : relance annulée. Utilise le bouton de KaraFun.', now);
@@ -1500,6 +1507,13 @@ function syncRestart({ current, upcoming, q }, now, alertJustEnded = false) {
   }
   if (playing(op.copyQueueId)) {
     concludeRestart(op, now, alertJustEnded);
+    return;
+  }
+  // Après « Suivant », un autre titre sur scène (lancé dans KaraFun pendant
+  // l'alerte) : comme pendant l'ajout, la relance est annulée et sa copie
+  // retirée ; « Lecture » la rejouerait après lui.
+  if (current && String(current.queueId) !== String(op.originalQueueId)) {
+    abandonRestart(op, state, 'Le titre a changé dans KaraFun pendant la relance : relance annulée.', now);
     return;
   }
   if (!current && String(upcoming[0]?.queueId) === op.copyQueueId && !op.playSentAt && now - op.at > RESTART_PLAY_NUDGE_MS) {

@@ -2628,7 +2628,14 @@ test('KcsTransport : une erreur en lisant le texte d’un message le rend illisi
   ws.open();
   const data = { toString() { throw new RangeError('Invalid string length'); } };
   assert.doesNotThrow(() => ws.dispatch('message', { data }));
-  assert.deepEqual(errors, ['Message KaraFun illisible.']);
+  // Relecture 3, passe 2 (essais) : la coupe elle-même (branche de plus de 32 niveaux) qui
+  // échoue, et non la seule conversion du texte, reste sous le même filet.
+  const slice = t.mock.method(String.prototype, 'slice', () => { throw new RangeError('Invalid string length'); });
+  let thrown = null;
+  try { ws.receive(`{"type":"remote.QueueEvent","payload":${'['.repeat(40)}${']'.repeat(40)}}`); } catch (error) { thrown = error; }
+  slice.mock.restore();
+  assert.equal(thrown, null, 'rien ne sort de l’écouteur');
+  assert.deepEqual(errors, ['Message KaraFun illisible.', 'Message KaraFun illisible.']);
 });
 
 // Même relecture (essais, maintenabilité, machines à états) : une branche coupée n'est jamais

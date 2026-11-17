@@ -2700,6 +2700,46 @@ test('valeurs imprévues : relance ⏮ en cours, autre titre lancé dans KaraFun
   assert.ok(!f.tracked().some(tr => tr.queueId === 'C-id'), 'le suivi ne passe pas à la copie');
 });
 
+// Regression: relecture 3 de la PR #64, passe 2 (contradictoire) — même pause, titre relancé
+// fini pendant l'alerte et KaraFun à l'arrêt, la copie en tête : à la fin de l'alerte,
+// « Lecture » rejouait tout le titre, des minutes après sa fin. Une relance mise en pause par
+// l'alerte, dont le titre n'est plus dans la file et la scène libre, est annulée, et sa copie
+// retirée. Sans pause, ce cas reste la relance (review-v04-fixes.test.js).
+test('valeurs imprévues : relance ⏮ en cours, titre fini pendant l’alerte, KaraFun à l’arrêt : rien rejoué, copie retirée', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
+  const C = isoItem('C-id', 101, add.payload.options);
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C, ODD_ITEM));
+  clock.now += 4 * 60000;
+  assert.deepEqual(frames(isoStatus(1, null)), [], 'ni commande ni conclusion pendant l’alerte');
+  clock.now += 30000;
+  const after = frames(queueEvent(C));
+  assert.deepEqual(after.filter(m => m.type === 'remote.PlayRequest' || m.type === 'remote.NextRequest'), [], 'le titre fini n’est pas rejoué');
+  assert.deepEqual(removals(after), ['C-id'], 'copie retirée');
+  assert.ok(notes(f).some(line => /Le titre est fini pendant l’alerte de KaraFun : relance annulée\./.test(line)), 'le bar l’apprend');
+});
+
+// Regression: même passe (machines à états) — la garde de 18b3d90 ne valait que pendant l'ajout.
+// « Suivant » déjà parti, un titre lancé dans KaraFun pendant l'alerte restait sur scène, et
+// s'il finissait la copie en tête, « Lecture » rejouait le titre relancé après lui. Comme
+// pendant l'ajout, la relance est annulée et sa copie retirée.
+test('valeurs imprévues : relance ⏮ après « Suivant », autre titre lancé pendant l’alerte : relance annulée, la copie ne rejoue pas', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
+  const C = isoItem('C-id', 101, add.payload.options);
+  const sent = frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C));
+  assert.ok(sent.some(m => m.type === 'remote.NextRequest'), '« Suivant » envoyé');
+  frames(queueEvent(A, C, ODD_ITEM));
+  const U = isoItem('U-id', 202, { singer: 'Quelqu’un' });
+  clock.now += 60000;
+  assert.deepEqual(frames(isoStatus(4, U)), [], 'ni commande ni conclusion pendant l’alerte');
+  clock.now += 60000;
+  const after = frames(queueEvent(U, C), isoStatus(4, U));
+  assert.deepEqual(removals(after), ['C-id'], 'copie retirée');
+  clock.now += 5000;
+  const later = frames(queueEvent(), isoStatus(1, null));
+  assert.deepEqual([...after, ...later].filter(m => m.type === 'remote.PlayRequest' || m.type === 'remote.NextRequest'), [], 'ni « Lecture » ni « Suivant »');
+  assert.ok(notes(f).some(line => /Le titre a changé dans KaraFun pendant la relance : relance annulée\./.test(line)), 'le bar l’apprend');
+});
+
 // Relecture 2, tour 3 (tests) : rien n'essayait les délais mis en pause avec
 // la relance pendant l'alerte. Sans cette pause, « rien n'a été passé »
 // partirait dès la première file lisible, sans laisser à KaraFun le reste de

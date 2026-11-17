@@ -185,6 +185,24 @@ test('relance : titre fini seul et KaraFun à l’arrêt, la copie est lancée s
   assert.equal(f.restart(), null);
 });
 
+// Relecture 3 de la PR #64, passe 2 (essais) : la garde de 18b3d90 vaut aussi hors alerte. Le
+// titre relancé finit pendant l'ajout, KaraFun lance le suivant et place la copie juste après
+// lui : « Suivant » couperait ce titre pour rejouer celui qui vient de finir.
+test('relance : autre titre lancé pendant l’ajout, hors alerte : relance annulée, copie retirée, rien coupé', () => {
+  const f = harness();
+  const { live, queue, bridge } = onStage(f);
+  let copy;
+  bridge.add = (songId, singer, pos) => { bridge.calls.push(['add', pos]); copy = { queueId: 3, songId, singer }; };
+  f.startRestart();
+  queue.shift(); // le titre relancé a fini
+  queue.splice(1, 0, copy); // KaraFun a lancé le suivant (2) et placé la copie juste après lui
+  bridge.status = { state: 'playing', songPlaying: { queueId: 2 } };
+  f.syncRestart(f.analyze(), Date.now());
+  assert.deepEqual(bridge.calls, [['add', 1], ['remove', 3]], 'copie retirée, ni « Suivant » ni « Lecture »');
+  assert.equal(live.queueId, 1, 'le suivi reste sur le titre relancé');
+  assert.equal(f.restart(), null);
+});
+
 test('relance : titre fini seul pendant l’ajout, la copie qui joue garde le passage', () => {
   const f = harness();
   const { live, queue, bridge } = onStage(f);
