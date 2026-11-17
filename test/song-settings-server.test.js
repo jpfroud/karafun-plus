@@ -2740,6 +2740,118 @@ test('valeurs imprévues : relance ⏮ en cours, alerte finie le titre encore su
   assert.ok(!notes(f).some(line => /fini pendant l’alerte/.test(line)), 'aucun « fini pendant l’alerte »');
 });
 
+// Regression: relecture finale de la PR #64 (essais, maintenabilité, machines à états) — ec81073
+// ne décidait la fin du titre pendant l'alerte qu'à la première vue lisible tant que la pause des
+// délais existait. Une coupure de KaraFun (« Reconnecter » de la carte de l'alerte, ou une perte)
+// reprend ces délais sans vue lisible : de retour, la relance dont le titre avait fini pendant
+// l'alerte lançait sa copie (« Lecture ») et rejouait tout le titre. La pause de l'alerte a son
+// propre repère, que seule la première vue lisible consomme.
+test('valeurs imprévues : relance ⏮, titre fini pendant l’alerte, KaraFun reconnecté ensuite : rien rejoué, copie retirée', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const rb = replayBridge(t, f);
+  singer(f, openTable(f, '1'), 'Léa', 101);
+  const a = sendNext(f, 'A-id');
+  const A = isoItem('A-id', 101, { singer: a.sel.label });
+  rb.frames(queueEvent(A), isoStatus(4, A));
+  a.liveChecked = 'A-id';
+  await f.call('POST /api/staff/kf', { action: 'restart' });
+  const add = rb.frames().find(m => m.type === 'remote.AddToQueueRequest');
+  const C = isoItem('C-id', 101, add.payload.options);
+  rb.frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C, ODD_ITEM));
+  clock.now += 240000;
+  rb.reconnect();
+  const after = rb.frames(queueEvent(C), isoStatus(1, null));
+  clock.now += 3000;
+  after.push(...rb.frames());
+  assert.deepEqual(after.filter(m => m.type === 'remote.PlayRequest'), [], 'le titre fini n’est pas rejoué');
+  assert.deepEqual(removals(after), ['C-id'], 'copie retirée');
+});
+
+// Regression: même relecture (machines à états) — « à l'arrêt » ne valait que pour l'état 1 de KCS.
+// Après chaque titre, le KaraFun du bar annonce le suivant (état 1), le charge (état 2), puis attend
+// « Lecture » (état 3), 5 à 20 s le plus souvent (journaux du bar). Titre relancé fini pendant
+// l'alerte, la copie chargée à sa fin : « Lecture » rejouait tout le titre. Pendant un chargement,
+// la relance attend l'état suivant : en attente de « Lecture », elle est annulée ; la copie lancée
+// dans KaraFun, elle conclut ; un chargement sans fin l'annule après RESTART_START_TIMEOUT_MS.
+const restartEndedDuringAlert = async t => {
+  const run = await restartRequested(t);
+  const C = isoItem('C-id', 101, run.add.payload.options);
+  run.frames({ id: run.add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(run.A, C, ODD_ITEM));
+  run.clock.now += 4 * 60000;
+  return { ...run, C };
+};
+const replayed = sent => sent.filter(m => m.type === 'remote.PlayRequest' || m.type === 'remote.NextRequest');
+const endedNote = f => notes(f).some(line => /Le titre est fini pendant l’alerte de KaraFun : relance annulée\./.test(line));
+
+test('valeurs imprévues : relance ⏮, titre fini pendant l’alerte, copie chargée en attente de « Lecture » : rien rejoué, copie retirée', async t => {
+  const { clock, f, frames, C } = await restartEndedDuringAlert(t);
+  assert.deepEqual(frames(isoStatus(1, C), isoStatus(3, C)), [], 'ni commande ni conclusion pendant l’alerte');
+  clock.now += 30000;
+  const after = frames(queueEvent(C));
+  clock.now += 3000;
+  after.push(...frames());
+  assert.deepEqual(replayed(after), [], 'le titre fini n’est pas rejoué');
+  assert.deepEqual(removals(after), ['C-id'], 'copie retirée');
+  assert.ok(endedNote(f), 'le bar l’apprend');
+});
+
+test('valeurs imprévues : relance ⏮, titre fini pendant l’alerte, fin d’alerte pendant le chargement de la copie, puis attente de « Lecture » : rien rejoué, copie retirée', async t => {
+  const { f, frames, C } = await restartEndedDuringAlert(t);
+  frames(isoStatus(1, C), isoStatus(2, C));
+  const first = frames(queueEvent(C));
+  assert.deepEqual(replayed(first), [], 'pendant le chargement, rien n’est envoyé');
+  assert.deepEqual(removals(first), [], 'ni retiré');
+  assert.equal(f.tracked().map(tr => tr.queueId).join(), 'A-id', 'le passage du titre attend la relance');
+  const after = frames(isoStatus(3, C));
+  assert.equal(f.tracked().length, 0, 'puis il se clôt');
+  assert.deepEqual(replayed(after), [], 'le titre fini n’est pas rejoué');
+  assert.deepEqual(removals(after), ['C-id'], 'copie retirée');
+  assert.ok(endedNote(f), 'le bar l’apprend');
+});
+
+test('valeurs imprévues : relance ⏮, titre fini pendant l’alerte, fin d’alerte pendant le chargement de la copie, puis copie lancée dans KaraFun : relance conclue', async t => {
+  const { f, frames, C } = await restartEndedDuringAlert(t);
+  frames(isoStatus(1, C), isoStatus(2, C));
+  const after = [...frames(queueEvent(C)), ...frames(isoStatus(4, C))];
+  assert.deepEqual(replayed(after), [], 'KaraFun la lance seul');
+  assert.deepEqual(removals(after), [], 'copie gardée');
+  assert.ok(notes(f).some(line => /repart du début/.test(line)), 'relance conclue');
+  assert.ok(!endedNote(f), 'pas de « fini pendant l’alerte »');
+  assert.equal(f.tracked().map(tr => tr.queueId).join(), 'C-id', 'le suivi passe à la copie');
+});
+
+test('valeurs imprévues : relance ⏮, titre fini pendant l’alerte, chargement de la copie sans fin : relance annulée après le délai', async t => {
+  const { clock, f, frames, C } = await restartEndedDuringAlert(t);
+  frames(isoStatus(1, C), isoStatus(2, C));
+  const after = frames(queueEvent(C));
+  clock.now += 10000;
+  after.push(...frames());
+  assert.deepEqual(removals(after), [], 'le chargement est attendu');
+  clock.now += 11000;
+  after.push(...frames());
+  assert.deepEqual(replayed(after), [], 'le titre fini n’est pas rejoué');
+  assert.deepEqual(removals(after), ['C-id'], 'copie retirée après le délai');
+  assert.ok(endedNote(f), 'le bar l’apprend');
+});
+
+// Regression: même relecture (machines à états) — la fin du titre pendant l'alerte ne se lisait que
+// dans la file. Le KaraFun du bar ne liste pas toujours dans sa file le titre qu'il joue (journaux
+// du bar, surtout juste après « Suivant » ou « Lecture ») : encore sur scène à la fin de l'alerte,
+// le titre passait pour fini, et s'il finissait ensuite, la relance était annulée au lieu de lancer
+// sa copie. Fini veut dire sorti de la file et de la scène.
+test('valeurs imprévues : relance ⏮, alerte finie le titre encore sur scène mais sorti de la file de KaraFun, titre fini ensuite : copie lancée', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, ODD_ITEM));
+  clock.now += 1000;
+  frames(queueEvent(), isoStatus(4, A));
+  clock.now += 2000;
+  const after = frames(isoStatus(1, null), queueEvent(isoItem('C-id', 101, add.payload.options)));
+  assert.deepEqual(removals(after), [], 'copie gardée');
+  assert.ok(after.some(m => m.type === 'remote.PlayRequest'), '« Lecture » de la copie, comme sans alerte');
+  assert.ok(!endedNote(f), 'aucun « fini pendant l’alerte »');
+});
+
 // Même passe (essais) : titre fini pendant l'alerte, mais le bar lance la copie dans KaraFun (la
 // carte de l'alerte le lui demande). L'alerte finit pendant son chargement (état 2 de KCS, sans
 // titre en lecture) : la relance n'est pas annulée, la copie chargée n'est pas retirée.

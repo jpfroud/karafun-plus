@@ -1432,15 +1432,24 @@ function syncRestart({ current, upcoming, q }, now, alertJustEnded = false) {
   // relance ratée.
   if (bridge.unreadable) {
     if (restartOp?.copyQueueId != null && String(current?.queueId) === restartOp.copyQueueId) concludeRestart(restartOp, now, false);
-    if (restartOp) restartOp.pausedAt ??= now;
+    // `alertPaused` : repère de l'alerte elle-même, que la reprise des délais
+    // (resumeRestartDeadlines, aussi à une coupure de KaraFun) n'efface pas.
+    if (restartOp) { restartOp.pausedAt ??= now; restartOp.alertPaused = true; }
     if (restartSweep) restartSweep.pausedAt ??= now;
     return;
   }
-  // Première vue lisible après la pause de l'alerte : le titre relancé a-t-il
-  // fini pendant elle (sorti de la file de KaraFun) ? Décidé à cette vue, pas
-  // plus tard : fini après l'alerte, le titre laisse la relance comme sans elle.
-  if (restartOp?.pausedAt != null) {
-    restartOp.endedDuringAlert = !q.some(item => String(item.queueId) === String(restartOp.originalQueueId));
+  // Première vue lisible après l'alerte, même si une coupure de KaraFun en a
+  // déjà repris les délais (« Reconnecter », perte) : le titre relancé a-t-il
+  // fini pendant elle, sorti de la file de KaraFun et de la scène (le KaraFun
+  // du bar ne liste pas toujours dans sa file le titre qu'il joue, surtout
+  // juste après « Suivant » ou « Lecture ») ? Décidé à cette vue, pas plus
+  // tard : fini après l'alerte, le titre laisse la relance comme sans elle.
+  if (restartOp?.alertPaused) {
+    const id = String(restartOp.originalQueueId);
+    const statusId = (bridge.status?.current || bridge.status?.songPlaying || {}).queueId;
+    restartOp.endedDuringAlert = !q.some(item => String(item.queueId) === id) &&
+      String(current?.queueId) !== id && String(statusId) !== id;
+    delete restartOp.alertPaused;
   }
   resumeRestartDeadlines(now);
   sweepRestartCopies({ current, q }, now);
@@ -1479,12 +1488,19 @@ function syncRestart({ current, upcoming, q }, now, alertJustEnded = false) {
       abandonRestart(op, state, 'Le titre a changé dans KaraFun pendant la relance : relance annulée.', now);
       return;
     }
-    // Titre relancé fini pendant l'alerte et KaraFun à l'arrêt (état 1 de KCS),
-    // la copie en tête : « Lecture » rejouerait tout le titre, des minutes après
-    // sa fin. Sans alerte, ou quand KaraFun charge déjà la copie (lancée par le
-    // bar pendant l'alerte), ce cas reste la relance (plus bas).
-    const idle = Number.isInteger(bridge.status?.kcsState) ? bridge.status.kcsState === 1 : true;
-    if (!started && !current && op.endedDuringAlert && idle) {
+    // Titre relancé fini pendant l'alerte, ni sa copie ni un autre titre sur
+    // scène : KaraFun s'est arrêté après lui. Le KaraFun du bar annonce alors le
+    // titre suivant (état 1 de KCS), le charge (état 2), puis attend « Lecture »
+    // (état 3) : la copie en tête, « Lecture » rejouerait tout le titre, des
+    // minutes après sa fin. La relance est annulée, et sa copie retirée. Pendant
+    // un chargement (`loadWait`), elle attend l'état suivant, au plus
+    // RESTART_START_TIMEOUT_MS, et le passage du titre avec elle (boucle des
+    // titres suivis, dans sync) : la copie a pu être lancée dans KaraFun pendant
+    // l'alerte, où le bar le pilote, et la relance conclut quand elle se voit sur
+    // scène. Sans alerte, ce cas reste la relance (plus bas).
+    if (!started && !current && op.endedDuringAlert) {
+      op.loadWait = bridge.status?.kcsState === 2 && now - op.at <= RESTART_START_TIMEOUT_MS;
+      if (op.loadWait) return;
       abandonRestart(op, state, 'Le titre est fini pendant l’alerte de KaraFun : relance annulée.', now);
       return;
     }
@@ -2200,7 +2216,10 @@ function sync() {
     const gone = !qids.has(tr.queueId) && !onStage && statusId !== tr.queueId;
     if (!gone) delete tr.goneAt;
     else if (blind && (!tr.startedAt || restartCopyPending(tr))) tr.goneAt ??= now;
-    else {
+    // Titre d'une relance ⏮ fini pendant l'alerte, sa copie en chargement à sa
+    // fin (`loadWait`, syncRestart) : son passage attend l'état suivant de
+    // KaraFun, et se clôt avec la relance ou passe à la copie lancée.
+    else if (!restartOp?.loadWait || String(tr.queueId) !== String(restartOp.trackedQueueId)) {
       const unpulledLate = !!tr.unpulled && (tr.goneAt ?? now) - tr.unpulled.at < PULL_LATE_MS;
       if (!tr.startedAt) {
         journalEvent('turn.unsent', { entryId: tr.sel.song.entryId || null, ids: tr.sel.ids, queueId: tr.queueId,
