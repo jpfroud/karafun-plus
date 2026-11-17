@@ -10,20 +10,37 @@ const EventEmitter = require('events');
 // JSON.stringify). Le reste du message sert : des options trop imbriquées
 // dans un seul titre ne font pas ignorer toute la file.
 const MAX_DEPTH = 32;
-// Coupe sur place ce qui dépasse `room` niveaux (celui de `value` compris) et
-// dit si quelque chose a été coupé. Récursion bornée par la limite (32 appels
-// imbriqués au plus), sans copie ni pile par valeur : une trame très large ne
-// coûte pas plus de mémoire que ses propres objets (une mémoire épuisée
-// arrêterait le serveur, aucun filet n'y peut rien). Une boucle pour une liste
-// comme pour un objet : celle d'une liste ne construit aucune liste de clés.
-function prune(value, room) {
-  let cut = false;
-  for (const key of Array.isArray(value) ? value.keys() : Object.keys(value)) {
-    const child = value[key];
-    if (child === null || typeof child !== 'object') continue;
-    if (room <= 1) { value[key] = null; cut = true; } else if (prune(child, room - 1)) cut = true;
+// Texte du message où chaque liste ou objet au-delà de `limit` niveaux (le
+// message compris) est remplacé par null ; null quand rien n'est coupé. Un
+// texte mal formé le reste, coupé ou non : JSON.parse le dira illisible.
+// La coupe se fait dans le texte, avant JSON.parse, en un seul passage sans
+// récursion ni pile : une trame très imbriquée n'est jamais construite (deux
+// millions de niveaux, 4 Mo de texte, épuisaient la mémoire du serveur, ce
+// qu'aucun filet ne rattrape), et une trame très large ne coûte que son texte.
+// Aucune propriété n'est écrite sous un nom venu de KaraFun (CodeQL,
+// js/remote-property-injection) : JSON.parse construit seul le message.
+function cutDeep(text, limit) {
+  let depth = 0, inString = false, skipFrom = -1, kept = '', from = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (inString) {
+      if (c === 0x5c) i++; // \ : le caractère suivant est échappé
+      else if (c === 0x22) inString = false;
+    } else if (c === 0x22) {
+      inString = true;
+    } else if (c === 0x7b || c === 0x5b) { // { [
+      depth++;
+      if (depth > limit && skipFrom < 0) skipFrom = i;
+    } else if (c === 0x7d || c === 0x5d) { // } ]
+      if (depth === limit + 1 && skipFrom >= 0) {
+        kept += text.slice(from, skipFrom) + 'null';
+        from = i + 1;
+        skipFrom = -1;
+      }
+      depth--;
+    }
   }
-  return cut;
+  return from === 0 ? null : kept + text.slice(from);
 }
 // Raison d'une erreur pour le journal, sans rien convertir d'imprévu.
 const reasonOf = error => (typeof error === 'string' ? error : typeof error?.message === 'string' ? error.message : 'erreur inconnue');
@@ -46,15 +63,17 @@ class KcsTransport extends EventEmitter {
     this.ws.addEventListener('message', (event) => {
       if (this.closed) return;
       this.lastMessageAt = Date.now();
+      const text = String(event.data);
+      const cut = cutDeep(text, MAX_DEPTH);
       let message;
-      try { message = JSON.parse(String(event.data)); }
+      try { message = JSON.parse(cut ?? text); }
       catch { this.emit('transport-error', 'Message KaraFun illisible.'); return; }
       if (!message || typeof message.type !== 'string') return;
       // Identifiant renvoyé tel quel : un nombre ou un texte, jamais un objet.
       const id = typeof message.id === 'number' || typeof message.id === 'string' ? message.id : undefined;
       // Message coupé au-delà de 32 niveaux : signalé au pont, qui le note
       // dans le journal de KaraFun, puis lu comme les autres.
-      if (prune(message, MAX_DEPTH)) {
+      if (cut !== null) {
         try { this.emit('message-pruned', message.type); } catch { /* rien de plus à faire */ }
       }
       // Filet : l'erreur d'un écouteur du WebSocket, Node la relance hors de

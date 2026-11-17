@@ -2530,3 +2530,62 @@ test('valeurs imprévues : état illisible puis connexion fermée, l’alerte d�
   assert.equal(lost.retryAt, Date.now() + 3000, 'nouvel essai déjà prévu');
   assert.match(bridge.lastError, /^Télécommande KaraFun déconnectée \(code 1006\)/, 'l’avis du message ignoré est remplacé');
 });
+
+// Regression: PR #64, CodeQL (js/remote-property-injection) — la coupe au-delà de 32 niveaux
+// écrivait null sous un nom de propriété venu de KaraFun, dans le message déjà construit. Elle se
+// fait maintenant dans le texte, avant JSON.parse (cutDeep). Une trame de deux millions de
+// niveaux (4 Mo) n'est donc plus construite : elle épuisait la mémoire du serveur, ce qu'aucun
+// filet ne rattrape. Essai dans un processus à 96 Mo de mémoire, comme la trame large plus haut.
+test('KcsTransport : une trame de deux millions de niveaux est coupée sans épuiser la mémoire du serveur', () => {
+  const child = `class WS { static OPEN = 1; constructor() { this.readyState = 1; this.listeners = {}; }
+    addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); } send() {} close() {} }
+    globalThis.WebSocket = WS;
+    const { KcsTransport } = require(${JSON.stringify(path.join(__dirname, '..', 'kcs-transport.js'))});
+    const transport = new KcsTransport('wss://kcs.exemple.invalid/');
+    let read = 0, cut = 0;
+    transport.on('message', () => { read++; }); transport.on('message-pruned', () => { cut++; }); transport.on('message-error', () => {});
+    const data = '{"type":"remote.QueueEvent","payload":{"list":' + '['.repeat(2e6) + '1' + ']'.repeat(2e6) + '}}';
+    for (const listener of transport.ws.listeners.message) listener({ data });
+    transport.close(); console.log(read === 1 && cut === 1 ? 'vivant' : 'non lu');`;
+  const run = spawnSync(process.execPath, ['--max-old-space-size=96', '-e', child], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr.slice(0, 300));
+  assert.match(run.stdout, /vivant/, 'trame lue une fois, coupée une fois');
+});
+
+// Même relecture : la coupe dans le texte ne compte ni les crochets ni les accolades d'un texte
+// (guillemets et barres obliques échappés compris), coupe chaque branche trop profonde à sa place
+// et laisse le reste du message intact. Un texte trop profond qui ne se referme pas reste
+// illisible, comme avant la coupe.
+test('KcsTransport : coupe dans le texte, textes avec crochets et guillemets échappés, plusieurs branches, texte mal fermé', t => {
+  mockTime(t);
+  fakes(t);
+  const transport = new KcsTransport(KCS_URL);
+  t.after(() => transport.close());
+  const ws = FakeWebSocket.instances[0];
+  const messages = [], pruned = [], errors = [];
+  transport.on('message', m => messages.push(m));
+  transport.on('message-pruned', type => pruned.push(type));
+  transport.on('transport-error', reason => errors.push(reason));
+  ws.open();
+  // Crochets et accolades équilibrés sur 40 niveaux, dans des textes : comptés, ils seraient coupés.
+  const brackets = `${'['.repeat(40)}${']'.repeat(40)}${'{'.repeat(40)}${'}'.repeat(40)}`;
+  const quoted = `a"${'['.repeat(40)}${']'.repeat(40)}"b\\`; // guillemets et barre oblique, échappés dans le message
+  ws.receive({ type: 'remote.QueueEvent', payload: { title: brackets, artist: quoted, items: [1, { x: ']}' }] } });
+  assert.deepEqual([messages.length, pruned, errors], [1, [], []], 'crochets et guillemets dans un texte : rien de coupé');
+  assert.deepEqual([messages[0].payload.title, messages[0].payload.artist], [brackets, quoted], 'textes intacts');
+  const nested = levels => '{"a":'.repeat(levels) + '1' + '}'.repeat(levels);
+  // Deux branches trop profondes (40 niveaux) et, entre elles, un texte qui ressemble à du JSON.
+  ws.receive(`{"type":"remote.QueueEvent","payload":{"first":${nested(40)},"note":"\\"{[ ]}\\"","second":[${nested(40)}],"last":2}}`);
+  assert.deepEqual(pruned, ['remote.QueueEvent'], 'un seul signalement par message');
+  const read = messages[1].payload;
+  let first = read.first;
+  for (let level = 3; level < 32; level++) first = first.a;
+  assert.deepEqual(first, { a: null }, 'première branche coupée au 32e niveau');
+  let second = read.second[0];
+  for (let level = 4; level < 32; level++) second = second.a;
+  assert.deepEqual(second, { a: null }, 'seconde branche coupée au 32e niveau');
+  assert.deepEqual([read.note, read.last], ['"{[ ]}"', 2], 'le reste du message est intact');
+  // Trop profond et jamais refermé : illisible, comme sans la coupe.
+  ws.receive(`{"type":"remote.QueueEvent","payload":${'{"a":'.repeat(40)}1`);
+  assert.deepEqual([messages.length, pruned.length, errors], [2, 1, ['Message KaraFun illisible.']]);
+});
