@@ -3,7 +3,8 @@
 // une version antérieure à FULL_RESTORE_SINCE reprend la soirée sans tout ce
 // que celle-ci sauvegarde ; tant qu'une soirée est en mémoire, la route et la
 // page la refusent. Les chemins de champs sauvegardés d'une soirée remplie
-// (tables, personnes, titres, duo, prochain annoncé) sont figés par version
+// (tables, personnes, titres, duo, prochain annoncé, envoi en cours, titres
+// suivis dans KaraFun) sont figés par version
 // dans test/fixtures/sauvegarde-chemins-<version>.json. Un champ ajouté ou
 // retiré demande de mettre FULL_RESTORE_SINCE à la version qui le publiera,
 // puis d'enregistrer ses chemins : node test/night-state-versions.test.js --ecrire.
@@ -31,6 +32,10 @@ function populatedNight() {
   // Ordre de la soirée : envoi à KaraFun, début sur scène, fin du titre.
   scheduler.commit(turn); scheduler.recordStage(turn); scheduler.songEnded(turn.ids);
   scheduler.chooseSong(first, { songId: 44, title: 'T3', artist: 'A' });
+  // Envoi en cours (server.js, `pending`) et copie prête d'une relance ⏮
+  // suivie dans KaraFun (`tracked`, `awaitingPlay`) : la sélection y est
+  // gardée entière, avec le dernier départ de table noté (`departures`).
+  const next = scheduler.select();
   // Champs que v3.2.0 sauvegarde pour une priorité et pour la chaîne du
   // prochain annoncé (night-state.js : validDeferral, reservedNext) ; les
   // gestes du bar qui les créent passent par server.js.
@@ -38,7 +43,9 @@ function populatedNight() {
   second.deferral = { entryId: 'e1', total: 0, until: now + 60000, afterPriority: true, endedFor: third.id, endedAt: now };
   scheduler.reservedNext = { personId: third.id, reservedAt: now, byStaff: true, borrowable: true, pulledBack: now,
     then: { personId: first.id, reservedAt: now, pulled: true, forId: third.id, forAt: now, retry: true, back: true } };
-  return JSON.parse(JSON.stringify(snapshotNight({ scheduler, access, settings: { auto: true, autoPlay: false,
+  const pending = { sel: next, before: new Set([7]), at: now, attempts: 1, retryAt: null };
+  const tracked = [{ queueId: 7, sel: turn, addedAt: now, startedAt: now, awaitingPlay: true }];
+  return JSON.parse(JSON.stringify(snapshotNight({ scheduler, access, pending, tracked, settings: { auto: true, autoPlay: false,
     baseUrl: 'https://test.invalid', pushDelaySec: 45, playDelaySec: 8 } })));
 }
 
@@ -70,7 +77,8 @@ test('chaque champ sauvegardé d’une soirée remplie est repris depuis FULL_RE
   assert.deepEqual([...savedPaths(populatedNight())].sort(), expected,
     'champ sauvegardé ajouté ou retiré : mettre FULL_RESTORE_SINCE (night-state.js) à la version qui le publiera, puis enregistrer ses chemins (--ecrire)');
   for (const known of ['.scheduler.firstCycle', '.scheduler.reservedNext.then.personId', '.scheduler.reservedNext.pulledBack',
-    '.scheduler.stageHistory[].turn', '.scheduler.people[].deferral.afterPriority']) assert.ok(expected.includes(known), known);
+    '.scheduler.stageHistory[].turn', '.scheduler.people[].deferral.afterPriority',
+    '.tracked[].awaitingPlay', '.pending.sel.departures', '.tracked[].sel.departures']) assert.ok(expected.includes(known), known);
 });
 
 test('--ecrire ne remplace jamais les chemins figés d’une version', { skip: process.argv.includes('--ecrire') ? 'appel imbriqué' : false }, () => {

@@ -596,10 +596,11 @@ réussie depuis 3 heures, la liste disparaît de la page.
 
 Les tables, les chansons et l'ordre de passage sont conservés. Une fonction apparue après
 la version choisie n'y existe pas. Tant que la soirée n'est pas remplacée par « Nouvelle
-soirée », même quand plus personne n'est inscrit, les versions antérieures à la v3.2.0 sont
+soirée », même quand plus personne n'est inscrit, les versions antérieures à la v3.4.0 sont
 grisées (« après la soirée seulement ») et refusées : elles reprendraient la soirée sans les
-priorités, le prochain annoncé ni l'historique des passages, perdus aussi au retour à une
-version récente. Après « Nouvelle soirée », elles restent possibles. Les réglages de `.env`
+priorités, le prochain annoncé, l'historique des passages ni la copie prête d'une relance ⏮,
+perdus aussi au retour à une version récente. Après « Nouvelle soirée », elles restent
+possibles. Les réglages de `.env`
 ajoutés depuis restent en place pour la mise à jour suivante ; une version qui demande un
 réglage absent est refusée avant remplacement.
 

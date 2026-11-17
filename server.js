@@ -1384,9 +1384,10 @@ function abandonRestart(op, { current, upcoming, q }, message, now) {
     // Suivant a bien retiré le titre : la copie prête à jouer garde le suivi,
     // et sa durée repartira de son lancement. Son repère (`awaitingPlay`) est
     // gardé avec le suivi : un redémarrage ne la fait pas passer pour jouée.
-    // Une version plus ancienne l'ignore et traite la copie comme elle le
-    // faisait (retirée par le vidage et « Parti », gardée par la remise à
-    // zéro) : rien de la soirée n'est perdu, FULL_RESTORE_SINCE ne monte pas.
+    // Une version plus ancienne l'ignorerait et prendrait la copie pour un
+    // titre déjà joué (gardée par la remise à zéro, son attente comptée comme
+    // la durée d'une chanson) : le retour vers elle pendant une soirée est
+    // refusé (FULL_RESTORE_SINCE, night-state.js).
     if (tr) tr.awaitingPlay = true;
     restartAwaitingPlay = { copyQueueId: copyId, title: op.title };
     sched.note(`${message} La copie du titre est prête : lance la lecture dans KaraFun.`, 'error');
@@ -5493,10 +5494,10 @@ const handlers = {
     const version = 'version' in body ? body.version : null;
     if (version !== null && !serverUpdate.offers(version)) throw new Error(NOT_OFFERED);
     // Tant qu'une soirée est en mémoire, seulement une version qui reprend
-    // toute la file : une plus ancienne perdrait priorités, prochain annoncé et
-    // historique des passages (FULL_RESTORE_SINCE, night-state.js).
+    // toute la file : une plus ancienne perdrait ou lirait mal ce que la
+    // sauvegarde a gagné depuis (FULL_RESTORE_SINCE, night-state.js).
     if (version !== null && compareVersions(version, FULL_RESTORE_SINCE) < 0 && nightInMemory()) {
-      const error = new Error(`Tant que la soirée n’est pas remplacée par « Nouvelle soirée », choisis une version à partir de la ${FULL_RESTORE_SINCE} : une version plus ancienne perdrait les priorités, le prochain annoncé et l’équilibre des passages.`);
+      const error = new Error(`Tant que la soirée n’est pas remplacée par « Nouvelle soirée », choisis une version à partir de la ${FULL_RESTORE_SINCE} : une version plus ancienne ne reprendrait pas toute la file.`);
       error.status = 409;
       throw error;
     }

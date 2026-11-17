@@ -594,8 +594,8 @@
     return `${item.version}${role}${date}`;
   }
   // Tant qu'une soirée est en mémoire (jusqu'à « Nouvelle soirée »), une
-  // version antérieure à fullRestoreSince perdrait priorités, prochain annoncé
-  // et historique des passages : affichée, jamais choisie (le serveur la refuse aussi).
+  // version antérieure à fullRestoreSince ne reprendrait pas toute la file
+  // (night-state.js) : affichée, jamais choisie (le serveur la refuse aussi).
   const eveningOnlyLater = (update, version) => !!update.nightInMemory && !!update.fullRestoreSince &&
     compareVersions(version, update.fullRestoreSince) < 0;
   function renderVersionChoice(update) {
