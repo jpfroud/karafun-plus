@@ -11,12 +11,18 @@ const EventEmitter = require('events');
 // dans un seul titre ne font pas ignorer toute la file.
 const MAX_DEPTH = 32;
 // Texte du message où chaque liste ou objet au-delà de `limit` niveaux (le
-// message compris) est remplacé par null ; null quand rien n'est coupé. Un
-// texte mal formé le reste, coupé ou non : JSON.parse le dira illisible.
+// message compris) est remplacé par null ; null quand rien n'est coupé ; ''
+// quand une branche trop profonde ne se referme pas. La coupe compte les
+// crochets et les accolades hors des textes : une branche coupée n'est jamais
+// lue, bien formée ou non, et JSON.parse ne juge que le reste (mal formé
+// ailleurs, le message reste illisible). Une branche jamais refermée rend tout
+// le texte illisible sans le lire : JSON.parse y descendrait sur toute sa
+// profondeur avant de le refuser, en mémoire hors du tas de Node.
 // La coupe se fait dans le texte, avant JSON.parse, en un seul passage sans
 // récursion ni pile : une trame très imbriquée n'est jamais construite (deux
 // millions de niveaux, 4 Mo de texte, épuisaient la mémoire du serveur, ce
-// qu'aucun filet ne rattrape), et une trame très large ne coûte que son texte.
+// qu'aucun filet ne rattrape). Une trame large sans branche trop profonde ne
+// coûte que son texte ; chaque coupe ajoute quelques dizaines d'octets.
 // Aucune propriété n'est écrite sous un nom venu de KaraFun (CodeQL,
 // js/remote-property-injection) : JSON.parse construit seul le message.
 function cutDeep(text, limit) {
@@ -40,6 +46,8 @@ function cutDeep(text, limit) {
       depth--;
     }
   }
+  // Branche trop profonde jamais refermée : texte mal formé, refusé sans être lu.
+  if (skipFrom >= 0) return '';
   return from === 0 ? null : kept + text.slice(from);
 }
 // Raison d'une erreur pour le journal, sans rien convertir d'imprévu.
@@ -63,11 +71,16 @@ class KcsTransport extends EventEmitter {
     this.ws.addEventListener('message', (event) => {
       if (this.closed) return;
       this.lastMessageAt = Date.now();
-      const text = String(event.data);
-      const cut = cutDeep(text, MAX_DEPTH);
-      let message;
-      try { message = JSON.parse(cut ?? text); }
-      catch { this.emit('transport-error', 'Message KaraFun illisible.'); return; }
+      // Conversion, coupe et lecture sous le même filet : un texte que la coupe
+      // ne peut pas traiter (plus long que le plus long texte de Node) est
+      // illisible comme celui que JSON.parse refuse, sans erreur hors de
+      // l'écouteur.
+      let message, cut;
+      try {
+        const text = String(event.data);
+        cut = cutDeep(text, MAX_DEPTH);
+        message = JSON.parse(cut ?? text);
+      } catch { this.emit('transport-error', 'Message KaraFun illisible.'); return; }
       if (!message || typeof message.type !== 'string') return;
       // Identifiant renvoyé tel quel : un nombre ou un texte, jamais un objet.
       const id = typeof message.id === 'number' || typeof message.id === 'string' ? message.id : undefined;

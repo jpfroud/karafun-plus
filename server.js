@@ -1464,6 +1464,15 @@ function syncRestart({ current, upcoming, q }, now, alertJustEnded = false) {
     // Le titre a pu finir seul pendant l'ajout : la copie joue déjà.
     const started = copies.find(copy => playing(String(copy.queueId)));
     const copy = started || copies[0];
+    // Un autre titre sur scène (lancé dans KaraFun pendant l'alerte d'un
+    // message illisible, où le bar pilote KaraFun) : « Suivant » le couperait,
+    // et le suivi du titre relancé passerait à la copie. La relance ne porte
+    // que sur le titre demandé, encore en cours, ou sur une scène libre ;
+    // annulée, sa copie est retirée (sweepRestartCopies).
+    if (!started && current && String(current.queueId) !== String(op.originalQueueId)) {
+      abandonRestart(op, state, 'Le titre a changé dans KaraFun pendant la relance : relance annulée.', now);
+      return;
+    }
     if (!started && (copies.length > 1 || String(upcoming[0]?.queueId) !== String(copy.queueId))) {
       // Sans place juste après le titre en cours, « Suivant » lancerait un autre titre.
       abandonRestart(op, state, 'KaraFun n’a pas placé la copie juste après le titre en cours : relance annulée. Utilise le bouton de KaraFun.', now);

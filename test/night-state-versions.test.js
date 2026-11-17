@@ -9,7 +9,10 @@
 // retiré demande de mettre FULL_RESTORE_SINCE à la version qui le publiera,
 // puis d'enregistrer ses chemins : node test/night-state-versions.test.js --ecrire.
 // Ce test ne voit pas une valeur ou une règle de reprise nouvelle dans un champ
-// existant : la règle d'AGENTS.md s'applique aussi à elles.
+// existant : la règle d'AGENTS.md s'applique aussi à elles. Il ne voit pas non
+// plus un champ nouveau que server.js pose sur l'envoi en cours ou un titre
+// suivi : écrits ici à la main (`pending`, `tracked`), seules leurs sélections
+// viennent de l'ordonnanceur.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

@@ -2679,6 +2679,27 @@ test('valeurs imprévues : relance ⏮ en cours pendant une file illisible : cop
   assert.equal(f.tracked().map(tr => tr.queueId).join(), 'C-id', 'le suivi passe à la copie');
 });
 
+// Regression: relecture 3 de la PR #64 (contradictoire) — la relance ⏮ mise en pause par
+// l'alerte reprenait à sa fin sans regarder la scène. Pendant l'alerte, le bar pilote dans
+// KaraFun : un autre titre qu'il y lançait était coupé par « Suivant » dès la première file
+// lisible, et le suivi du titre relancé passait à la copie. La relance ne porte que sur le
+// titre demandé, encore en cours, ou sur une scène libre : sinon elle est annulée, et sa copie
+// retirée (elle rejouerait le titre après lui).
+test('valeurs imprévues : relance ⏮ en cours, autre titre lancé dans KaraFun pendant l’alerte : rien coupé, relance annulée', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
+  const C = isoItem('C-id', 101, add.payload.options);
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C, ODD_ITEM));
+  clock.now += 3 * 60000;
+  const B = isoItem('B-id', 202, { singer: 'Quelqu’un' });
+  assert.deepEqual(frames(isoStatus(4, B)), [], 'ni commande ni conclusion pendant l’alerte');
+  clock.now += 60000;
+  const after = frames(queueEvent(B, C));
+  assert.deepEqual(after.filter(m => m.type === 'remote.NextRequest' || m.type === 'remote.PlayRequest'), [], 'le titre lancé dans KaraFun n’est pas coupé');
+  assert.deepEqual(removals(after), ['C-id'], 'copie retirée');
+  assert.ok(notes(f).some(line => /Le titre a changé dans KaraFun pendant la relance : relance annulée\./.test(line)), 'le bar l’apprend');
+  assert.ok(!f.tracked().some(tr => tr.queueId === 'C-id'), 'le suivi ne passe pas à la copie');
+});
+
 // Relecture 2, tour 3 (tests) : rien n'essayait les délais mis en pause avec
 // la relance pendant l'alerte. Sans cette pause, « rien n'a été passé »
 // partirait dès la première file lisible, sans laisser à KaraFun le reste de

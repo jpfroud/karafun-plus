@@ -2589,3 +2589,70 @@ test('KcsTransport : coupe dans le texte, textes avec crochets et guillemets éc
   ws.receive(`{"type":"remote.QueueEvent","payload":${'{"a":'.repeat(40)}1`);
   assert.deepEqual([messages.length, pruned.length, errors], [2, 1, ['Message KaraFun illisible.']]);
 });
+
+// Regression: relecture 3 de la PR #64 (sécurité) — une branche de plus de 32 niveaux jamais
+// refermée restait dans le texte : JSON.parse y descendait sur toute sa profondeur avant de le
+// refuser, en mémoire hors du tas de Node (plus de 500 Mo pour une trame de 8 Mo), que
+// --max-old-space-size ne borne pas. Le texte est maintenant illisible sans être confié à
+// JSON.parse, même après une branche déjà coupée.
+test('KcsTransport : une branche trop profonde jamais refermée est illisible sans être lue', t => {
+  mockTime(t);
+  fakes(t);
+  const transport = new KcsTransport(KCS_URL);
+  t.after(() => transport.close());
+  const ws = FakeWebSocket.instances[0];
+  const messages = [], errors = [];
+  transport.on('message', m => messages.push(m));
+  transport.on('transport-error', reason => errors.push(reason));
+  ws.open();
+  const parse = t.mock.method(JSON, 'parse');
+  const open = '['.repeat(2e6);
+  ws.receive(`{"type":"remote.QueueEvent","payload":${open}`);
+  ws.receive(`{"type":"remote.QueueEvent","payload":[${'['.repeat(40)}${']'.repeat(40)},${open}`);
+  assert.deepEqual([messages.length, errors], [0, ['Message KaraFun illisible.', 'Message KaraFun illisible.']]);
+  assert.ok(parse.mock.calls.every(call => String(call.arguments[0]).length < 1000), 'texte jamais confié à JSON.parse');
+});
+
+// Même relecture (contradictoire) : la coupe se faisait hors du filet de l'écouteur. Un texte
+// qu'elle ne pouvait pas traiter (plus long que le plus long texte de Node : environ 270 Mo de
+// branches vides) lançait une erreur hors de toute portée, et le serveur du bar s'arrêtait.
+// Conversion, coupe et lecture sont sous le même filet : une erreur rend le message illisible.
+test('KcsTransport : une erreur en lisant le texte d’un message le rend illisible, sans sortir de l’écouteur', t => {
+  mockTime(t);
+  fakes(t);
+  const transport = new KcsTransport(KCS_URL);
+  t.after(() => transport.close());
+  const ws = FakeWebSocket.instances[0];
+  const errors = [];
+  transport.on('transport-error', reason => errors.push(reason));
+  ws.open();
+  const data = { toString() { throw new RangeError('Invalid string length'); } };
+  assert.doesNotThrow(() => ws.dispatch('message', { data }));
+  assert.deepEqual(errors, ['Message KaraFun illisible.']);
+});
+
+// Même relecture (essais, maintenabilité, machines à états) : une branche coupée n'est jamais
+// lue, bien formée ou non. Un contenu mal formé seulement au-delà de 32 niveaux part donc avec
+// elle et le message est lu, alors que JSON.parse seul l'aurait refusé ; mal formé ailleurs, le
+// message reste illisible.
+test('KcsTransport : contenu mal formé seulement au-delà de 32 niveaux : coupé avec sa branche, message lu', t => {
+  mockTime(t);
+  fakes(t);
+  const transport = new KcsTransport(KCS_URL);
+  t.after(() => transport.close());
+  const ws = FakeWebSocket.instances[0];
+  const messages = [], pruned = [], errors = [];
+  transport.on('message', m => messages.push(m));
+  transport.on('message-pruned', type => pruned.push(type));
+  transport.on('transport-error', reason => errors.push(reason));
+  ws.open();
+  const frame = (inside, after = '') => `{"type":"remote.QueueEvent","payload":{"list":${'['.repeat(40)}${inside}${']'.repeat(40)}${after},"last":2}}`;
+  for (const inside of ['1,,2', '[1}', '{"a" 1}']) {
+    assert.throws(() => JSON.parse(frame(inside)), SyntaxError, `${inside} : texte mal formé`);
+    ws.receive(frame(inside));
+  }
+  assert.deepEqual([messages.length, pruned.length, errors], [3, 3, []]);
+  assert.deepEqual(messages.map(m => m.payload.last), [2, 2, 2], 'le reste du message est lu');
+  ws.receive(frame('1', ','));
+  assert.deepEqual([messages.length, errors], [3, ['Message KaraFun illisible.']], 'mal formé hors de la branche coupée : illisible');
+});

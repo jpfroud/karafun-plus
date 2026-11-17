@@ -925,6 +925,27 @@ test('chacun son tour : table partie pendant l’envoi de son titre et rouverte 
   });
 });
 
+// Relecture 3 de la PR #64 (essais) : une sélection gardée par une version d'avant la v3.4.0 n'a
+// pas de `departures` (envoi en cours ou titre suivi repris après une mise à jour en pleine
+// soirée). Le départ de table n'y est pas connu : la table du passage, présente à son accusé, est
+// comptée servie comme avant (_presentGroups sans repère), jamais sortie du tour faute de repère.
+test('chacun son tour : sélection d’une sauvegarde d’avant la v3.4.0, sans repère de départ : la table présente est comptée servie', () => withClock(tick => {
+  const s = new Scheduler();
+  let n = 1;
+  const add = (tableId, name) => { const p = s.join({ tableId, name, headcount: 2 }); tick(); s.chooseSong(p, song(n++)); return p; };
+  add('1', 'A1'); add('2', 'B1');
+  s.tableLeft('2'); // partie puis rouverte avant le choix du passage
+  add('2', 'N1'); add('2', 'N2'); add('1', 'A2');
+  assert.equal(sing(s), 'A1');
+  const sel = s.select();
+  assert.deepEqual(sel.names, ['N1']);
+  assert.equal(sel.departures, 1, 'le choix note le départ de la table');
+  delete sel.departures; // forme d'une sauvegarde d'avant la v3.4.0
+  s.commit(sel);
+  s.songEnded(sel.ids);
+  assert.equal(s.roundGroups.has('2'), true, 'la table rouverte, servie par ce passage, est dans le tour');
+}));
+
 // Relecture 2, cycle 2 (relecture préalable) : même règle quand l'invitée quitte un duo chargé qui
 // fermait le cycle (_dropPartnerCredit) et qu'une table est partie puis rouverte entre le choix de
 // ce duo et son accusé. Le cycle rouvert sans la table de l'invitée reprenait les tables notées à
