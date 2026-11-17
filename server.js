@@ -1361,15 +1361,24 @@ function abandonRestart(op, { current, upcoming, q }, message, now) {
   const originalLive = q.some(item => String(item.queueId) === String(op.originalQueueId));
   if (copyId && !originalLive && !current && String(upcoming[0]?.queueId) === copyId) {
     const tr = tracked.find(item => String(item.queueId) === copyId);
-    // Vidage demandé pendant la relance, ou chanteurs partis entre-temps
+    // Vidage demandé pendant la relance, ou auteur du titre parti entre-temps
     // (« Parti », « Table partie », remise à zéro, qui laissent la copie d'une
     // relance en cours) : la copie, désormais à venir, part comme un titre à
-    // venir (son retrait part à la synchronisation suivante).
-    const left = !!tr && tr.sel.ids.every(id => !sched.people.get(id) || sched.people.get(id).withdrawnAt);
+    // venir (son retrait part à la synchronisation suivante). Comme pour un
+    // titre à venir (removeLeaversTracks), le départ de l'auteur d'un duo
+    // l'annule, et ses invités restés l'apprennent. Sinon la copie, restée
+    // prête, ne partait plus : le départ suivant d'un invité la laisse dans
+    // KaraFun au nom de son auteur (keepSentDuosOfLeavers).
+    const gone = id => !sched.people.get(id) || !!sched.people.get(id).withdrawnAt;
+    const left = !!tr && gone(tr.sel.ids[0]);
     if (settings.queueClearPending || left) {
       if (tr) { tr.cancelled = true; tr.removeRequestedAt = 0; }
+      const guests = left ? tr.sel.ids.slice(1).filter(id => !gone(id)) : [];
+      const ownerName = left ? sched.people.get(tr.sel.ids[0])?.name || tr.sel.names?.[0] || '' : '';
+      for (const gid of guests) sched.notify(gid, 'duoCancelled', { name: ownerName, title: tr.sel.song.title });
       sched.note(`${message} ${settings.queueClearPending ? 'La copie du titre part avec le vidage de la file.' :
-        'La copie du titre est retirée de KaraFun : ses chanteurs sont partis.'}`, 'error');
+        !guests.length ? 'La copie du titre est retirée de KaraFun : ses chanteurs sont partis.' :
+        `La copie du titre est retirée de KaraFun : ${ownerName ? `${ownerName} n’est plus là, ` : ''}le duo est annulé.`}`, 'error');
       return;
     }
     // Suivant a bien retiré le titre : la copie prête à jouer garde le suivi,
@@ -1396,14 +1405,32 @@ function abandonRestart(op, { current, upcoming, q }, message, now) {
     'Un autre titre joue maintenant : vérifie la file de KaraFun.' : 'Vérifie la file de KaraFun.'}`, 'error');
 }
 
+// Copie de la relance vue sur scène : la relance a réussi.
+function concludeRestart(op, now, alertJustEnded) {
+  const tr = tracked.find(item => String(item.queueId) === op.copyQueueId);
+  if (tr) {
+    tr.startedAt = now; // la durée mesurée repart de la relance
+    // Lancée pendant l'alerte d'un message illisible, vue à sa fin : en pleine
+    // chanson, rien n'y est rattrapé (catchUpSongSettings).
+    if (alertJustEnded) tr.liveChecked = String(tr.queueId);
+  }
+  restartOp = null;
+  sched.note(`« ${op.title} » repart du début.`, 'stage');
+}
+
 function syncRestart({ current, upcoming, q }, now, alertJustEnded = false) {
   // Message de KaraFun illisible : relance en cours et retrait des copies
   // tardives en pause, sans commande ni conclusion, leurs délais avec eux.
   // KaraFun a pu ajouter la copie sans qu'elle se voie dans une file figée :
   // « rien n'a été passé » serait faux, et la copie retirée à tort. Chaque
   // délai garde sa propre pause (`pausedAt`) : une relance demandée après
-  // l'alerte, avant ce passage, n'a pas été en pause.
+  // l'alerte, avant ce passage, n'a pas été en pause. Seule conclusion
+  // pendant l'alerte : la copie déjà vue sur scène, que seul KaraFun a pu y
+  // mettre (état lisible pendant l'alerte de la file seule, ou état figé sur
+  // elle). Conclue après l'alerte, la copie finie entre-temps passait pour une
+  // relance ratée.
   if (bridge.unreadable) {
+    if (restartOp?.copyQueueId != null && String(current?.queueId) === restartOp.copyQueueId) concludeRestart(restartOp, now, false);
     if (restartOp) restartOp.pausedAt ??= now;
     if (restartSweep) restartSweep.pausedAt ??= now;
     return;
@@ -1462,15 +1489,7 @@ function syncRestart({ current, upcoming, q }, now, alertJustEnded = false) {
     }
   }
   if (playing(op.copyQueueId)) {
-    const tr = tracked.find(item => String(item.queueId) === op.copyQueueId);
-    if (tr) {
-      tr.startedAt = now; // la durée mesurée repart de la relance
-      // Lancée pendant l'alerte d'un message illisible, vue à sa fin : en pleine
-      // chanson, rien n'y est rattrapé (catchUpSongSettings).
-      if (alertJustEnded) tr.liveChecked = String(tr.queueId);
-    }
-    restartOp = null;
-    sched.note(`« ${op.title} » repart du début.`, 'stage');
+    concludeRestart(op, now, alertJustEnded);
     return;
   }
   if (!current && String(upcoming[0]?.queueId) === op.copyQueueId && !op.playSentAt && now - op.at > RESTART_PLAY_NUDGE_MS) {
@@ -2165,7 +2184,12 @@ function sync() {
         sched.note(`Retrait KaraFun confirmé : « ${tr.sel.song.title} »`, 'staff');
       }
       else if (tr.startedAt) {
-        sched.recordSlot((Date.now() - tr.startedAt) / 1000);
+        // Copie d'une relance ⏮ retirée sans avoir rejoué (prête ou annulée) :
+        // sa durée compterait depuis le début du titre relancé, attente
+        // comprise, et fausserait la durée moyenne d'un passage (heures
+        // estimées, fermeture), jusque dans la soirée suivante après la remise
+        // à zéro. Son passage se clôt sans mesure.
+        if (!tr.cancelled && !restartCopyPending(tr)) sched.recordSlot((Date.now() - tr.startedAt) / 1000);
         sched.songEnded(tr.sel.ids);
         sched.endStage(tr.sel);
       }
@@ -2900,9 +2924,11 @@ function publicState(person, tableId, managed = null) {
       ...(managed?.has(p.id) ? { inbox: sched.inboxOf(p).map(n => ({ id: n.id, kind: n.kind, params: n.params, at: n.at })) } : {}),
       // Réglages de titre : seul l'auteur du titre les change, avant son début.
       // `lock` dit pourquoi le téléphone ne peut plus : 'duo' (partenaire),
-      // 'started' (commencé ou sur scène), 'leaving' (sort de KaraFun).
+      // 'started' (commencé ou sur scène), 'leaving' (sort de KaraFun). La
+      // copie prête d'une relance ⏮ se règle encore, comme au bar
+      // (notYetPlayed, songSettingsTarget).
       inKaraFun: tracked.filter(tr => tr.sel.ids.includes(p.id)).map(tr => {
-        const lock = tr.sel.ids[0] !== p.id ? 'duo' : tr.startedAt || isOnStage(tr, current) ? 'started'
+        const lock = tr.sel.ids[0] !== p.id ? 'duo' : !notYetPlayed(tr) || isOnStage(tr, current) ? 'started'
           : tr.cancelled || tr.pulled || tr.absent ? 'leaving' : null;
         return { title: tr.sel.song.title, artist: tr.sel.song.artist,
           songId: tr.sel.song.songId, img: coverUrl(tr.sel.song.img), queueId: tr.queueId, stage: !!(stage && stage.queueId === tr.queueId),

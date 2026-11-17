@@ -863,3 +863,32 @@ test('« Je suis là » obligatoire : un habitué intercalé reste une dette, co
   assert.ok(free.some((step, k) => k > 4 && step.name.startsWith('R')), 'des habitués s’intercalent');
   assert.deepEqual(presence, free);
 });
+
+// Relecture 2, cycle 2 (adversaire) : le titre d'une table partie pendant son envoi, lancé
+// malgré son retrait (ou accusé après son départ), la remettait dans le cycle des premiers
+// passages et dans le tour à son accusé (_commit), après que son départ l'en avait sortie.
+// Rouverte avec le même numéro, sa nouvelle tablée passait pour déjà servie : N1, qui a ajouté
+// avant E1, passait après lui.
+test('chacun son tour : titre d’une table partie pendant son envoi, compté quand même : la table rouverte n’est pas comptée servie', () => {
+  withClock(tick => {
+    const s = new Scheduler();
+    let n = 1;
+    const add = (tableId, name) => {
+      const p = s.join({ tableId, name, headcount: 1 });
+      tick(); s.chooseSong(p, song(n++));
+      return p;
+    };
+    for (const [tableId, name] of [['1', 'A1'], ['2', 'B1'], ['3', 'C1']]) add(tableId, name);
+    assert.equal(sing(s), 'A1');
+    const sel = s.select();
+    assert.deepEqual(sel.names, ['B1']);
+    s.tableLeft('2'); // la table de B1 part pendant l'envoi
+    s.commit(sel); // KaraFun lance quand même son titre
+    s.songEnded(sel.ids);
+    assert.deepEqual([...s.firstCycle], ['1'], 'la table partie ne revient pas dans le cycle');
+    assert.equal(s.roundGroups.has('2'), false, 'ni dans le tour');
+    add('2', 'N1');
+    add('4', 'E1');
+    assert.deepEqual(order(s), ['C1', 'N1', 'E1'], 'la table rouverte passe dans le cycle en cours, dans l’ordre d’ajout');
+  });
+});
