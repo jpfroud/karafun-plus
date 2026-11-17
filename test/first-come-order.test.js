@@ -892,3 +892,67 @@ test('chacun son tour : titre d’une table partie pendant son envoi, compté qu
     assert.deepEqual(order(s), ['C1', 'N1', 'E1'], 'la table rouverte passe dans le cycle en cours, dans l’ordre d’ajout');
   });
 });
+
+// Relecture 2, cycle 2 (relecture préalable) : même règle quand la table partie pendant l'envoi de
+// son titre est rouverte avant son accusé (retrait ignoré par KaraFun, ou reporté par l'alerte
+// d'un message illisible). Présente à l'accusé, sa nouvelle tablée passait pour déjà servie, dans
+// la prévision du titre en route comme après l'accusé : N1, qui a ajouté avant E1, passait après
+// lui. Le choix du passage note le dernier départ de table (`departures`) : une table partie
+// depuis n'y revient pas, rouverte ou non.
+test('chacun son tour : table partie pendant l’envoi de son titre et rouverte avant son accusé : la nouvelle tablée n’est pas comptée servie', () => {
+  withClock(tick => {
+    const s = new Scheduler();
+    let n = 1;
+    const add = (tableId, name) => {
+      const p = s.join({ tableId, name, headcount: 1 });
+      tick(); s.chooseSong(p, song(n++));
+      return p;
+    };
+    for (const [tableId, name] of [['1', 'A1'], ['2', 'B1'], ['3', 'C1']]) add(tableId, name);
+    assert.equal(sing(s), 'A1');
+    const sel = s.select();
+    assert.deepEqual(sel.names, ['B1']);
+    s.tableLeft('2'); // la table de B1 part pendant l'envoi
+    add('2', 'N1'); // rouverte avant l'accusé
+    add('4', 'E1');
+    const sending = () => s.readyView(sel.consumedIds || sel.ids, sel).map(item => item.name);
+    assert.deepEqual(sending(), ['C1', 'N1', 'E1'], 'prévision avec le titre en route : N1 passe dans le cycle en cours');
+    s.commit(sel); // KaraFun lance quand même le titre de B1
+    s.songEnded(sel.ids);
+    assert.deepEqual([...s.firstCycle], ['1'], 'la table partie ne revient pas dans le cycle');
+    assert.equal(s.roundGroups.has('2'), false, 'ni dans le tour');
+    assert.deepEqual(order(s), ['C1', 'N1', 'E1'], 'après l’accusé, le même ordre');
+  });
+});
+
+// Relecture 2, cycle 2 (relecture préalable) : même règle quand l'invitée quitte un duo chargé qui
+// fermait le cycle (_dropPartnerCredit) et qu'une table est partie puis rouverte entre le choix de
+// ce duo et son accusé. Le cycle rouvert sans la table de l'invitée reprenait les tables notées à
+// la fermeture, en gardant celles où quelqu'un est inscrit au moment du reçu : la table rouverte
+// avec Nina passait pour déjà servie, et Max, la deuxième personne de la table A, chantait avant
+// elle. Les tables parties depuis le choix du duo n'y reviennent pas (`departures`).
+test('invitée qui quitte un duo chargé qui fermait le cycle : une table partie et rouverte avant son accusé n’y revient pas', () => withClock(tick => {
+  let n = 1;
+  const s = new Scheduler();
+  s.setHeadcount('A', 2); s.setHeadcount('B', 1); s.setHeadcount('C', 1);
+  const gus = s.join({ tableId: 'C', name: 'Gus' });
+  const ines = s.join({ tableId: 'A', name: 'Inès' }), max = s.join({ tableId: 'A', name: 'Max' });
+  const zoe = s.join({ tableId: 'B', name: 'Zoé' });
+  tick(); s.chooseSong(gus, song(n++));
+  tick(); const duo = s.inviteDuet(ines, zoe.id, song(n++));
+  tick(); s.chooseSong(max, song(n++));
+  tick(); s.chooseSong(zoe, song(n++));
+  s.answerDuet(zoe, true, duo.entryId);
+  assert.equal(sing(s), 'Gus');
+  tick();
+  const sel = s.select();
+  assert.deepEqual(sel.cycleClosing, ['C', 'A', 'B']);
+  s.tableLeft('C'); // la table de Gus part pendant l'envoi du duo
+  const nina = s.join({ tableId: 'C', name: 'Nina', headcount: 1 });
+  tick(); s.chooseSong(nina, song(n++)); // rouverte avant l'accusé
+  s.commit(sel); // le duo Inès & Zoé ferme le cycle, chargé dans KaraFun
+  s.leaveSentDuet(sel, zoe.id); // « Je ne chante plus ce duo »
+  assert.deepEqual([...s.firstCycle], ['A'], 'le cycle reste ouvert sans la table de Zoé ni la table partie depuis le choix');
+  s.songEnded(sel.ids);
+  assert.deepEqual(order(s), ['Zoé', 'Nina', 'Max'], 'la table rouverte passe dans le cycle en cours');
+}));
