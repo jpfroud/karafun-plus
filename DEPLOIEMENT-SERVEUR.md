@@ -600,8 +600,8 @@ soirée », même quand plus personne n'est inscrit, les versions antérieures �
 grisées (« après la soirée seulement ») et refusées : elles ne reprendraient pas toute la
 soirée. Une version antérieure à la v3.2.0 la reprendrait sans les priorités, le prochain
 annoncé ni l'historique des passages ; une v3.2 ou une v3.3 prendrait la copie prête d'une
-relance ⏮ pour un titre déjà joué et ignorerait les derniers départs de table et les repères
-des alertes de KaraFun. Ce qui est perdu l'est aussi au retour à une version récente. Après
+relance ⏮ pour un titre déjà joué et ignorerait les derniers départs de table et la sortie
+de file notée pendant une alerte de KaraFun. Ce qui est perdu l'est aussi au retour à une version récente. Après
 « Nouvelle soirée », elles restent possibles. Les réglages de `.env`
 ajoutés depuis restent en place pour la mise à jour suivante ; une version qui demande un
 réglage absent est refusée avant remplacement.

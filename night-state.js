@@ -23,10 +23,9 @@ const FORMAT = 1;
 // reprend la soirée sans eux et les efface à sa première sauvegarde. v3.4.0 y
 // ajoute des repères des titres suivis dans KaraFun : la copie prête d'une
 // relance ⏮ (`tracked[].awaitingPlay`, qu'une version plus ancienne prendrait
-// pour un titre déjà joué), la sortie de la file vue pendant l'alerte d'un
-// message illisible (`goneAt`) et le titre vu sur scène à sa fin
-// (`liveChecked`) ; et le dernier départ de table noté au choix d'un passage
-// (`departures` d'une sélection).
+// pour un titre déjà joué) et la sortie de la file vue pendant l'alerte d'un
+// message illisible (`goneAt`) ; et le dernier départ de table noté au choix
+// d'un passage (`departures` d'une sélection).
 // Tant qu'une soirée est en mémoire (jusqu'à « Nouvelle soirée »), le retour à une
 // version précédente s'arrête donc à celle-ci (server.js, page du bar). Un champ, une valeur ou une règle de reprise de
 // plus : mettre ici la version qui le publiera. test/night-state-versions.test.js

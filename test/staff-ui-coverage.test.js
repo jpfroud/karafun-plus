@@ -2048,6 +2048,18 @@ test('Battle : lancement par le bar depuis la recherche de titres', async () => 
   page.doc.activeElement = null;
 });
 
+// Relecture 3 de la PR #64, passe 3 (contradictoire, interface) : avant le filet de la
+// synchronisation, une erreur de sync() arrêtait le serveur ; avec lui, la file cesse de piloter
+// KaraFun, et le bar ne le voyait qu'à une ligne du journal. L'alerte reste en haut de la page tant
+// que la mise à jour échoue, et part avec le retour à la normale.
+test('alerte du bar : la mise à jour avec KaraFun échoue, la file ne pilote plus KaraFun', async () => {
+  const page = await openPage();
+  await page.update({ syncFailing: true });
+  assert.match(page.$('staffAlerts').textContent, /La mise à jour avec KaraFun échoue : la file ne pilote plus KaraFun et réessaie seule\. Pilote dans KaraFun en attendant\./);
+  await page.update({ syncFailing: false });
+  assert.doesNotMatch(page.$('staffAlerts').textContent, /La mise à jour avec KaraFun échoue/);
+});
+
 test('alertes et notifications du bar : sonnerie, personnes parties, avis KaraFun, mémoire', async () => {
   const page = await openPage({ secure: true, permission: 'default' });
   assert.equal(page.$('enableStaffAlerts').textContent, 'Activer les notifications');

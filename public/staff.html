@@ -1405,6 +1405,7 @@
     const many = S.removalPending > 1;
     const alerts = [
       ['persistence', S.persistenceError ? `Sauvegarde impossible : ${S.persistenceError}. Envoi automatique suspendu.` : ''],
+      ['sync', S.syncFailing ? 'La mise à jour avec KaraFun échoue : la file ne pilote plus KaraFun et réessaie seule. Pilote dans KaraFun en attendant.' : ''],
       ['recovered', S.recoveredPending ? 'Envoi interrompu à vérifier dans KaraFun avant de reprendre la file.' : ''],
       ['clear', !S.queueClearPending ? '' : kfReady ? 'Vidage de la file en cours : vérifie KaraFun. Les nouveaux titres attendent la confirmation des retraits.' :
         'File vidée ici, mais KaraFun n’est pas connecté : ses titres en attente seront retirés dès sa connexion, avant tout nouvel envoi.',

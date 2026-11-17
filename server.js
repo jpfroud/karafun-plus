@@ -1432,9 +1432,15 @@ function syncRestart({ current, upcoming, q }, now, alertJustEnded = false) {
   // relance ratée.
   if (bridge.unreadable) {
     if (restartOp?.copyQueueId != null && String(current?.queueId) === restartOp.copyQueueId) concludeRestart(restartOp, now, false);
-    if (restartOp) { restartOp.pausedAt ??= now; restartOp.pausedByAlert = true; }
+    if (restartOp) restartOp.pausedAt ??= now;
     if (restartSweep) restartSweep.pausedAt ??= now;
     return;
+  }
+  // Première vue lisible après la pause de l'alerte : le titre relancé a-t-il
+  // fini pendant elle (sorti de la file de KaraFun) ? Décidé à cette vue, pas
+  // plus tard : fini après l'alerte, le titre laisse la relance comme sans elle.
+  if (restartOp?.pausedAt != null) {
+    restartOp.endedDuringAlert = !q.some(item => String(item.queueId) === String(restartOp.originalQueueId));
   }
   resumeRestartDeadlines(now);
   sweepRestartCopies({ current, q }, now);
@@ -1473,10 +1479,12 @@ function syncRestart({ current, upcoming, q }, now, alertJustEnded = false) {
       abandonRestart(op, state, 'Le titre a changé dans KaraFun pendant la relance : relance annulée.', now);
       return;
     }
-    // Relance mise en pause par l'alerte, titre fini entre-temps et KaraFun à
-    // l'arrêt, la copie en tête : « Lecture » rejouerait tout le titre, des
-    // minutes après sa fin. Sans pause, ce cas reste la relance (plus bas).
-    if (!started && !current && op.pausedByAlert && !q.some(item => String(item.queueId) === String(op.originalQueueId))) {
+    // Titre relancé fini pendant l'alerte et KaraFun à l'arrêt (état 1 de KCS),
+    // la copie en tête : « Lecture » rejouerait tout le titre, des minutes après
+    // sa fin. Sans alerte, ou quand KaraFun charge déjà la copie (lancée par le
+    // bar pendant l'alerte), ce cas reste la relance (plus bas).
+    const idle = Number.isInteger(bridge.status?.kcsState) ? bridge.status.kcsState === 1 : true;
+    if (!started && !current && op.endedDuringAlert && idle) {
       abandonRestart(op, state, 'Le titre est fini pendant l’alerte de KaraFun : relance annulée.', now);
       return;
     }
@@ -3103,7 +3111,9 @@ function staffState() {
       // Un soliste est nommé par son seul prénom (jamais « En solo »).
       id: p.id, name: p.name, table: sched.table(p.tableId, false)?.individual ? '' : sched.table(p.tableId, false)?.name || '',
       title: p.maybeGone.title, skips: p.maybeGone.skips, at: p.maybeGone.at })),
-    persistenceError, recoveredPending, queueClearPending: !!settings.queueClearPending,
+    // Panne de la mise à jour avec KaraFun (safeSync) : la file ne pilote plus
+    // KaraFun tant qu'elle dure ; la page du bar le dit en haut, pas seulement au journal.
+    persistenceError, recoveredPending, syncFailing: !!syncFailure, queueClearPending: !!settings.queueClearPending,
     removalPending: tracked.filter(tr => tr.cancelled).length,
     log: sched.log.slice(-120).reverse(),
     settings: { ...settings, gap: sched.opts.gap, cap: sched.opts.cap, requirePresence: sched.opts.requirePresence,
