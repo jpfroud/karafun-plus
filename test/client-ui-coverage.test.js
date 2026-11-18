@@ -2380,6 +2380,41 @@ test('réglages de titre : message de KaraFun illisible, le téléphone dit « p
   }
 });
 
+// Suite 5 de la PR 64 — l'avis « pas encore envoyé » prenait la teinte du succès et s'effaçait au
+// bout de 2,6 s, comme « Enregistré ✓ » : le chanteur pouvait le manquer et croire son réglage
+// parti. C'est un avertissement, qui reste tant que la fiche est ouverte, jusqu'au changement
+// suivant ; la fiche refermée, il ne revient pas.
+test('réglages de titre : l’avis « pas encore envoyé » est un avertissement qui reste, jusqu’au changement suivant', async () => {
+  let applied = 'unreadable';
+  const page = await open({ state: tuneState(), respond: (url, body, self) => url === '/api/table/song/settings'
+    ? { ...keepSettings(self, body), applied } : undefined });
+  const unsent = 'Enregistré ✓ · pas encore envoyé à KaraFun : demande au bar';
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  await page.tap('songSettingsBody', '[data-tune="tempo"][data-step="5"]');
+  await page.runTimers(600);
+  assert.equal(page.node('tuneStatus').textContent, unsent);
+  assert.equal(page.node('tuneStatus').className, 'tune-status warn', 'teinte d’avertissement, pas celle du succès');
+  await page.runTimers(2600);
+  await page.poll();
+  assert.equal(page.node('tuneStatus').textContent, unsent, 'toujours affiché après 2,6 s');
+  // Changement suivant, envoyé cette fois : succès ordinaire, qui s'efface.
+  applied = 'karafun';
+  await page.tap('songSettingsBody', '[data-tune="tempo"][data-step="5"]');
+  await page.runTimers(600);
+  assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓ · envoyé à KaraFun');
+  assert.equal(page.node('tuneStatus').className, 'tune-status ok');
+  await page.runTimers(2600);
+  assert.equal(page.node('tuneStatus').textContent, 'Chaque changement s’enregistre tout seul.');
+  // Nouvel avis, puis la fiche refermée et rouverte : il ne revient pas.
+  applied = 'unreadable';
+  await page.tap('songSettingsBody', '[data-tune="tempo"][data-step="5"]');
+  await page.runTimers(600);
+  assert.equal(page.node('tuneStatus').textContent, unsent);
+  await page.click(page.find('sheetPanel', '[data-close-sheet]'));
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  assert.equal(page.node('tuneStatus').textContent, 'Chaque changement s’enregistre tout seul.', 'fiche rouverte : plus l’avis');
+});
+
 test('réglages de titre : le rafraîchissement n’écrase pas un réglage en cours d’envoi ; fermer la fiche l’envoie', async () => {
   const waiting = [];
   const page = await open({ state: tuneState(), respond: (url, body, self) => url === '/api/table/song/settings'

@@ -784,6 +784,9 @@
   const drafts = new Map(); // clé → { kind, id, value, state, error, seq, timer }
   const savedAt = new Map(); // clé → fin de l'affichage « Enregistré ✓ »
   const savedText = new Map(); // clé → message du serveur à afficher
+  // clé → avertissement gardé tant que la fonction le dit (réglage de titre pas
+  // encore envoyé à KaraFun : pendant l'alerte d'un message illisible)
+  const savedKeep = new Map();
   let saveSeq = 0;
   // Rafraîchissements : numéro de la demande affichée. Une réponse partie
   // avant la fin d'un enregistrement ne compte pas pour ce champ.
@@ -857,6 +860,9 @@
         // Clé des autres voix guides toujours envoyée ({} : plus aucune).
         const result = await post('/api/staff/song/settings', { personId: songOwners.get(id) || '', entryId: id,
           settings: { guideVoices: {}, ...JSON.parse(value || '{}') } });
+        // Pas encore envoyé : un avertissement, gardé tant que dure l'alerte ; à
+        // sa fin, le réglage part vers KaraFun si le titre n'a pas commencé.
+        if (result?.applied === 'unreadable') return { text: SAVED_TUNE.unreadable, keepWhile: () => !!S?.kf?.connection?.canReconnect };
         return SAVED_TUNE[result?.applied] || 'Enregistré ✓';
       },
       server: id => tuneKey(songTarget(id)?.q.song?.settings),
@@ -894,7 +900,11 @@
     else if (d?.state === 'error') { html = `Non enregistré : ${esc(d.error)} · <button type="button" class="link-btn" data-retry="${esc(key)}">Réessayer</button>`; cls += ' bad'; }
     else if (d?.state === 'saving') html = 'Enregistrement…';
     else if (d?.state === 'editing') html = 'Modifié…';
-    else if ((savedAt.get(key) || 0) > Date.now()) { html = esc(savedText.get(key) || 'Enregistré ✓'); cls += ' ok'; }
+    else if ((savedAt.get(key) || 0) > Date.now()) {
+      const keep = savedKeep.get(key);
+      if (keep && !keep()) { savedKeep.delete(key); savedAt.delete(key); }
+      else { html = esc(savedText.get(key) || 'Enregistré ✓'); cls += keep ? ' warn' : ' ok'; }
+    }
     for (const node of statusNodes(key)) { node.innerHTML = html; node.className = cls; }
     const [kind, ...rest] = key.split(':');
     for (const el of fieldsOf(kind, rest.join(':'))) {
@@ -955,9 +965,21 @@
       if (drafts.get(key) !== d || d.seq !== seq || d.state !== 'saving') return; // modifié entre-temps : la nouvelle valeur repartira
       d.state = 'saved';
       d.afterLoad = loadsStarted;
-      savedText.set(key, typeof message === 'string' ? message : 'Enregistré ✓');
-      savedAt.set(key, Date.now() + 2500);
-      setTimeout(() => renderStatus(key), 2600);
+      // Réponse : un texte (« Enregistré ✓ … », effacé au bout de 2,5 s), ou un
+      // avertissement { text, keepWhile } : gardé jusqu'au premier état relu
+      // après cette réponse (celui d'avant peut ignorer l'alerte), puis tant
+      // que keepWhile() le dit.
+      const notice = message && typeof message === 'object' ? message : { text: typeof message === 'string' ? message : 'Enregistré ✓' };
+      savedText.set(key, notice.text);
+      if (notice.keepWhile) {
+        const since = loadsStarted;
+        savedKeep.set(key, () => shownLoad <= since || notice.keepWhile());
+        savedAt.set(key, Infinity);
+      } else {
+        savedKeep.delete(key);
+        savedAt.set(key, Date.now() + 2500);
+        setTimeout(() => renderStatus(key), 2600);
+      }
       renderStatus(key);
       load();
     } catch (e) {
