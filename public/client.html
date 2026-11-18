@@ -2292,10 +2292,16 @@
         draft.state = 'saved';
         draft.afterLoad = stateRequest;
         const mark = { applied: result?.applied || null };
-        tuneSaved.set(key, mark);
-        // « Pas encore envoyé » reste jusqu'au changement suivant (editTune) ou à
-        // la fermeture de la fiche (dropUnsentTune) ; un succès s'efface seul.
-        if (mark.applied !== 'unreadable') setTimeout(() => { if (tuneSaved.get(key) === mark) tuneSaved.delete(key); renderTune(); }, TUNE_SAVED_MS);
+        if (mark.applied === 'unreadable' && !(tuneSheet?.entryId === key && !$('sheet').hidden)) {
+          // Fiche déjà fermée (changement envoyé à sa fermeture, ou encore en
+          // route) : un message le dit, et l'avis ne revient pas à sa réouverture.
+          toast(t('Réglages de « {title} » pas encore envoyés à KaraFun : demande au bar', { title: draft.title || t('cette chanson') }), false, { warn: true });
+        } else {
+          tuneSaved.set(key, mark);
+          // « Pas encore envoyé » reste jusqu'au changement suivant (editTune) ou à
+          // la fermeture de la fiche (dropUnsentTune) ; un succès s'efface seul.
+          if (mark.applied !== 'unreadable') setTimeout(() => { if (tuneSaved.get(key) === mark) tuneSaved.delete(key); renderTune(); }, TUNE_SAVED_MS);
+        }
       }
     } catch (error) {
       if (error.status === 403 && error.code === 'TABLE_ACCESS') { invalidAccess = true; showInvalidLink(); return; }

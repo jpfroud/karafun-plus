@@ -860,9 +860,10 @@
         // Clé des autres voix guides toujours envoyée ({} : plus aucune).
         const result = await post('/api/staff/song/settings', { personId: songOwners.get(id) || '', entryId: id,
           settings: { guideVoices: {}, ...JSON.parse(value || '{}') } });
-        // Pas encore envoyé : un avertissement, gardé tant que dure l'alerte ; à
-        // sa fin, le réglage part vers KaraFun si le titre n'a pas commencé.
-        if (result?.applied === 'unreadable') return { text: SAVED_TUNE.unreadable, keepWhile: () => !!S?.kf?.connection?.canReconnect };
+        // Pas encore envoyé : un avertissement, gardé tant que KaraFun n'est pas
+        // prêt et lisible (alerte, « Reconnecter », coupure) ; ensuite, le
+        // réglage part vers KaraFun si le titre n'a pas commencé.
+        if (result?.applied === 'unreadable') return { text: SAVED_TUNE.unreadable, keepWhile: () => !!S?.kf?.connection?.canReconnect || !S?.kf?.ready };
         return SAVED_TUNE[result?.applied] || 'Enregistré ✓';
       },
       server: id => tuneKey(songTarget(id)?.q.song?.settings),
@@ -1314,6 +1315,9 @@
       // Écart entre l'horloge du serveur et celle de cet appareil (barre de lecture).
       clockSkew = Number.isFinite(S.now) ? S.now - Date.now() : 0;
       shownLoad = Math.max(shownLoad, number);
+      // Avertissements gardés qui n'ont plus lieu d'être, même fiche fermée :
+      // sinon une alerte suivante les ressortirait à sa réouverture.
+      for (const [saved, keep] of savedKeep) if (!keep()) { savedKeep.delete(saved); savedAt.delete(saved); }
       if (!dragging) render();
       const currentBattle = S.battle?.id === undefined ? null : `${S.battle.id}:${S.battle.phase}`;
       document.title = S.battle?.phase === 'requested' ? '🎤 Battle demandée — File karaoké' : 'File karaoké — page du bar';

@@ -1175,6 +1175,31 @@ test('invitée marquée partie, duo chargé ou en cours d’envoi : la ligne gar
   }
 });
 
+// Suite de la PR 64 (relecture de la branche, essais) — `started` : passage déjà monté sur scène, dont le
+// titre va être repris (copie prête d'une relance ⏮). Gil, marqué parti, quitte la reprise ; il a chanté
+// le duo : ni les lignes gardées sorties pour lui ne reviennent, ni les décisions de l'accusé ne sont revues
+// (_guestLeft, _guestLeftSent), comme pour un duo chanté jusqu'au bout.
+test('invitée marquée partie d’un passage déjà chanté (started) : ni ligne gardée rendue, ni décision de l’accusé revue', () => {
+  const { s, people } = evening();
+  gesture(s, people.Elsa, 4); // Paulo, Maud, Gil, Hugo, Elsa
+  const hugoDuo = s.inviteDuet(people.Hugo, people.Gil.id, song());
+  s.reorderSongs(people.Hugo, hugoDuo.entryId, 0);
+  s.answerDuet(people.Gil, true, hugoDuo.entryId);
+  s.openDuet(people.Paulo, { entryId: people.Paulo.song.entryId });
+  s.acceptOpenDuet(people.Gil, people.Paulo.id, people.Paulo.song.entryId);
+  const sel = s.select();
+  assert.equal(label(s, sel), 'Paulo & Gil');
+  s.commit(sel);
+  const order = fixed(s);
+  let revisited = false;
+  const guestLeftSent = s._guestLeftSent;
+  s._guestLeftSent = (...args) => { revisited = true; return guestLeftSent.apply(s, args); };
+  s.leaveSentDuet(sel, people.Gil.id, { by: 'staff', started: true });
+  assert.deepEqual(sel.ids, [people.Paulo.id], 'Gil quitte la reprise');
+  assert.deepEqual(fixed(s), order, 'aucune ligne gardée ne revient : le duo a été chanté');
+  assert.equal(revisited, false, 'les décisions de l’accusé restent');
+});
+
 // Relecture de la correction : un duo improvisé noté par erreur, puis annulé
 // ou corrigé, laissait la place ou la priorité de cette personne terminée.
 test('duo improvisé noté par erreur avec une personne placée par le bar, puis annulé : son geste revient', () => {

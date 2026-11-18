@@ -618,10 +618,13 @@ function rememberCode() {
 }
 
 // Le texte reçu (prénom, titre de KaraFun, message d'erreur) est écrit sur une
-// seule ligne : ses retours à la ligne (\r, \n, U+2028, U+2029) sont retirés,
-// sans quoi il pourrait forger une ligne du journal, datée comme les vraies.
+// seule ligne : ses retours à la ligne (\r, \n, U+2028, U+2029) et les autres
+// caractères de contrôle (C0 et C1 sauf la tabulation : Échap des séquences de
+// curseur, NEL…) sont retirés. Sinon il pourrait forger une ligne du journal,
+// datée comme les vraies, ou déplacer le curseur de la console qui le montre.
+// Le \n reste une alternative à part : CodeQL y reconnaît le nettoyage.
 function appLog(msg) {
-  const text = String(msg).replace(/\r|\n|\u2028|\u2029/g, '');
+  const text = String(msg).replace(/\r|\n|\u2028|\u2029|[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '');
   const line = `${new Date().toISOString()} ${text}`;
   console.log(text);
   try { fs.appendFileSync(path.join(LOG_DIR, `serveur-${line.slice(0, 10)}.log`), line + '\n'); } catch (e) { /* */ }
@@ -1331,8 +1334,13 @@ function startRestart() {
   // la copie est aussi reconnue. Ligne non suivie : le nom vu dans KaraFun,
   // sans le groupe individuel, comme la carte Scène l'affiche.
   const singer = tr ? shownLabel(tr.sel) : withoutSoloGroup(String(current.singer || ''));
+  // Le titre en cours compte parmi les titres d'avant la copie, même absent de
+  // la file reçue : vu ensuite sur scène hors de la file, il ne passe pas pour
+  // sa propre copie (syncRestart), et le retrait des copies tardives l'épargne.
+  const before = q.map(item => String(item.queueId));
+  if (current.queueId != null && !before.includes(String(current.queueId))) before.push(String(current.queueId));
   restartOp = { songId, singer, title: tr?.sel.song.title || current.title || 'le titre',
-    before: q.map(item => String(item.queueId)), at: Date.now(), phase: 'adding',
+    before, at: Date.now(), phase: 'adding',
     originalQueueId: current.queueId, trackedQueueId: tr ? tr.queueId : null };
   // La copie garde les réglages du titre (ceux de la file, sinon l'état en
   // direct d'un titre ajouté dans KaraFun).
@@ -1361,6 +1369,34 @@ function sweepRestartCopies({ current, q }, now) {
   }
 }
 
+// Personne partie de la soirée : marquée partie, ou retirée avec sa table ou
+// la remise à zéro.
+const personGone = id => !sched.people.get(id) || !!sched.people.get(id).withdrawnAt;
+
+// Copie d'une relance ⏮ restée prête (`awaitingPlay`) alors que des gestes du
+// bar l'ont laissée pendant la relance (c'était le titre en cours qui
+// continuait), ou reprise après un arrêt brutal du serveur qui a oublié la
+// relance : réglée comme à l'échec de la relance (abandonRestart). Vidage en
+// attente ou auteur parti : elle part comme un titre à venir, et les invités
+// restés apprennent l'annulation du duo ; invités partis : ils la quittent,
+// leur passage chanté gardé (leaveSentDuet `started`).
+function settleReadyCopy(tr) {
+  const title = tr.sel.song.title;
+  const left = personGone(tr.sel.ids[0]);
+  if (settings.queueClearPending || left) {
+    tr.cancelled = true;
+    tr.removeRequestedAt = 0;
+    const guests = left ? tr.sel.ids.slice(1).filter(id => !personGone(id)) : [];
+    const ownerName = left ? sched.people.get(tr.sel.ids[0])?.name || tr.sel.names?.[0] || '' : '';
+    for (const gid of guests) sched.notify(gid, 'duoCancelled', { name: ownerName, title });
+    sched.note(settings.queueClearPending ? `La copie prête de « ${title} » part avec le vidage de la file.` :
+      !guests.length ? `La copie prête de « ${title} » est retirée de KaraFun : ses chanteurs sont partis.` :
+      `La copie prête de « ${title} » est retirée de KaraFun : ${ownerName ? `${ownerName} n’est plus là, ` : ''}le duo est annulé.`, 'staff');
+    return;
+  }
+  for (const gid of tr.sel.ids.slice(1).filter(personGone)) sched.leaveSentDuet(tr.sel, gid, { by: 'staff', started: true });
+}
+
 function abandonRestart(op, { current, upcoming, q }, message, now) {
   restartOp = null;
   const copyId = op.copyQueueId;
@@ -1375,15 +1411,14 @@ function abandonRestart(op, { current, upcoming, q }, message, now) {
     // l'annule, et ses invités restés l'apprennent. Sinon la copie, restée
     // prête, ne partait plus : le départ suivant d'un invité la laisse dans
     // KaraFun au nom de son auteur (keepSentDuosOfLeavers).
-    const gone = id => !sched.people.get(id) || !!sched.people.get(id).withdrawnAt;
-    const left = !!tr && gone(tr.sel.ids[0]);
+    const left = !!tr && personGone(tr.sel.ids[0]);
     if (settings.queueClearPending || left) {
       // Comme la copie prête (plus bas), elle garde son repère de copie pas
       // encore jouée (`awaitingPlay`, posé quand le suivi lui est passé) : si
       // KaraFun la lance quand même, elle continue, et sa durée repart de son
       // lancement (sync).
       if (tr) { tr.cancelled = true; tr.removeRequestedAt = 0; }
-      const guests = left ? tr.sel.ids.slice(1).filter(id => !gone(id)) : [];
+      const guests = left ? tr.sel.ids.slice(1).filter(id => !personGone(id)) : [];
       const ownerName = left ? sched.people.get(tr.sel.ids[0])?.name || tr.sel.names?.[0] || '' : '';
       for (const gid of guests) sched.notify(gid, 'duoCancelled', { name: ownerName, title: tr.sel.song.title });
       sched.note(`${message} ${settings.queueClearPending ? 'La copie du titre part avec le vidage de la file.' :
@@ -1488,9 +1523,10 @@ function syncRestart({ current, upcoming, q }, now, alertJustEnded = false) {
     const copies = restartCopies(op, outOfQueue ? [...q, current] : q);
     const started = copies.find(copy => playing(String(copy.queueId)));
     // Le titre a quitté la file mais KaraFun l'annonce encore en lecture :
-    // attendre son état suivant avant de choisir entre Lecture et Suivant.
-    if (outOfQueue && !started) return;
-    if (!copies.length) {
+    // attendre son état suivant avant de choisir entre Lecture et Suivant, au
+    // plus le délai de l'ajout (une file qui ne le liste jamais ne retient pas
+    // la relance tout le titre).
+    if ((outOfQueue && !started) || !copies.length) {
       if (now - op.at > RESTART_ADD_TIMEOUT_MS) abandonRestart(op, state, 'KaraFun n’a pas confirmé la relance du titre : rien n’a été passé.', now);
       return;
     }
@@ -2146,6 +2182,10 @@ function sync() {
     String(current?.queueId) !== loadedId;
   for (const tr of tracked.slice()) {
     const onStage = isOnStage(tr, current);
+    // Copie prête d'une relance ⏮ face aux gestes faits pendant la relance, ou
+    // après un arrêt brutal (settleReadyCopy) ; pas pendant l'alerte d'un
+    // message illisible, où la scène vue peut être figée.
+    if (!blind && !onStage && tr.awaitingPlay && !tr.cancelled && notYetPlayed(tr)) settleReadyCopy(tr);
     // Titre annulé mais sur scène : KaraFun l'a lancé avant son retrait, ou
     // malgré lui (retrait jamais envoyé, pendant l'alerte d'un message
     // illisible ou sans KaraFun, ou arrivé trop tard). Ne jamais interrompre la
@@ -4711,14 +4751,17 @@ function keepSentDuosOfLeavers(ids) {
   // passage se clôt quand il la quitte. La copie d'une relance ⏮ qui attend
   // sa lecture, elle, est encore à venir (notYetPlayed).
   const upcoming = tracked.filter(tr => notYetPlayed(tr) && !isOnStage(tr, current) && tr.sel.ids.some(id => ids.has(id)));
-  const asGuest = upcoming.filter(tr => !ids.has(tr.sel.ids[0]));
+  // Un titre dont l'auteur n'est plus là (copie prête reprise après un arrêt
+  // brutal du serveur pendant sa relance, son auteur parti entre-temps) part
+  // comme celui d'un auteur qui part : leaveSentDuet ne trouverait plus le duo.
+  const asGuest = upcoming.filter(tr => !ids.has(tr.sel.ids[0]) && !personGone(tr.sel.ids[0]));
   let keptAsSolo = 0;
   for (const tr of asGuest) {
+    if (tr.cancelled) continue;
+    const leaving = !!(tr.pulled || tr.absent);
     // La copie prête d'une relance ⏮ (notYetPlayed) perd aussi l'invité parti :
     // elle rejouera le titre au nom de son auteur seul. Monté sur scène avec le
     // titre relancé (`startedAt`), l'invité garde ce passage, comme son auteur.
-    if (tr.cancelled || !notYetPlayed(tr)) continue;
-    const leaving = !!(tr.pulled || tr.absent);
     for (const gid of tr.sel.ids.slice(1).filter(id => ids.has(id))) {
       if (leaving) leaveLeavingDuo(tr.sel, gid);
       else sched.leaveSentDuet(tr.sel, gid, { by: 'staff', started: !!tr.startedAt });
@@ -4730,7 +4773,9 @@ function keepSentDuosOfLeavers(ids) {
     for (const gid of guests) sched.leaveSentDuet(pending.sel, gid, { by: 'staff', keepLabel: true });
     if (guests.length) keptAsSolo++;
   }
-  return { upcomingTracks: upcoming.filter(tr => !asGuest.includes(tr)), keptAsSolo };
+  // Un titre déjà annulé dont l'auteur est parti avant attend seulement son
+  // retrait de KaraFun : rien de plus à retirer pour ce départ.
+  return { upcomingTracks: upcoming.filter(tr => !asGuest.includes(tr) && (ids.has(tr.sel.ids[0]) || !tr.cancelled)), keptAsSolo };
 }
 
 // Titres déjà chargés dont l'auteur part : retirés de KaraFun. Les invités

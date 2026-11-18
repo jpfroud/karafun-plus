@@ -3668,6 +3668,53 @@ test('réglages de titre : alerte commencée juste avant la réponse « pas enco
   assert.equal(page.$('songSheetStatus').className, 'save-status warn');
 });
 
+// Relecture de la branche (adversaire, mainteneur) — l'avis ne tenait qu'à l'alerte affichée
+// (canReconnect) : « Reconnecter » ou KaraFun perdu l'effaçaient, alors que rien n'était parti ; et une
+// entrée gardée fiche fermée restait jusqu'à sa réouverture, où une alerte suivante la ressortait, le
+// réglage pourtant parti entre-temps. Il reste tant que KaraFun n'est pas prêt et lisible, et chaque
+// état relu retire les avis qui n'ont plus lieu d'être, fiche ouverte ou non.
+const unreadableKf = () => ({ phase: 'ready', level: 'error', label: 'Message de KaraFun illisible (remote.QueueEvent)', since: Date.now(),
+  attempt: 1, canRename: false, nameConflict: null, alert: 'Message de KaraFun illisible (remote.QueueEvent)', canReconnect: true });
+const readyKf = () => ({ phase: 'ready', level: 'ok', label: 'KaraFun connecté au bar', since: Date.now(), attempt: 0 });
+test('réglages de titre : l’avis « pas encore envoyé » reste pendant « Reconnecter », jusqu’à KaraFun prêt et lisible', async () => {
+  const world = tuneWorld();
+  world.kf = { ...world.kf, connection: unreadableKf() };
+  const page = await openPage({ world });
+  const unsent = 'Enregistré ✓ · pas encore envoyé : message de KaraFun illisible, règle-le dans KaraFun';
+  page.replies['/api/staff/song/settings'] = { ok: true, applied: 'unreadable' };
+  await page.click(page.in('qBody', '[data-song-settings="k1"]'));
+  await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]'));
+  page.runTimers(700);
+  await page.flush();
+  assert.equal(page.$('songSheetStatus').textContent, unsent);
+  // « Reconnecter » : la connexion se rouvre, KaraFun n'est pas encore prêt.
+  page.world.kf = { ...page.world.kf, ready: false, connection: { phase: 'opening', level: 'wait', label: 'Ouverture de la connexion à KaraFun…', since: Date.now(), attempt: 1 } };
+  await page.poll();
+  assert.equal(page.$('songSheetStatus').textContent, unsent, 'reconnexion : toujours pas envoyé');
+  page.world.kf = { ...page.world.kf, ready: true, connection: readyKf() };
+  await page.poll();
+  assert.equal(page.$('songSheetStatus').textContent, '', 'KaraFun prêt et lisible : le réglage part, plus d’avis');
+});
+
+test('réglages de titre : fiche du bar fermée à la fin de l’alerte : l’ancien avis ne revient pas à l’alerte suivante', async () => {
+  const world = tuneWorld();
+  world.kf = { ...world.kf, connection: unreadableKf() };
+  const page = await openPage({ world });
+  page.replies['/api/staff/song/settings'] = { ok: true, applied: 'unreadable' };
+  await page.click(page.in('qBody', '[data-song-settings="k1"]'));
+  await page.click(page.in('songSheetBody', '[data-tune="pitch"][data-step="1"]'));
+  page.runTimers(700);
+  await page.flush();
+  assert.equal(page.$('songSheetStatus').className, 'save-status warn', 'avis affiché');
+  await page.click(page.$('songSheetClose'));
+  page.world.kf = { ...page.world.kf, connection: readyKf() };
+  await page.poll(); // fin de l'alerte, fiche fermée : le réglage part
+  page.world.kf = { ...page.world.kf, connection: unreadableKf() };
+  await page.poll(); // nouvelle alerte
+  await page.click(page.in('qBody', '[data-song-settings="k1"]'));
+  assert.equal(page.$('songSheetStatus').textContent, '', 'fiche rouverte : pas l’ancien avis');
+});
+
 test('réglages de titre : file au téléphone, nom du titre avant le badge des réglages', async () => {
   const page = await openPage({ world: tuneWorld() });
   const cell = page.in('qBody', '[data-song-settings="k1"]').closest('.queue-item').querySelector('.song-cell');

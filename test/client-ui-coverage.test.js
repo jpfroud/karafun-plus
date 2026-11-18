@@ -2415,6 +2415,25 @@ test('réglages de titre : l’avis « pas encore envoyé » est un avertissemen
   assert.equal(page.node('tuneStatus').textContent, 'Chaque changement s’enregistre tout seul.', 'fiche rouverte : plus l’avis');
 });
 
+// Relecture de la branche (simplification, design, mainteneur, essais, adversaire) — un changement envoyé à
+// la fermeture de la fiche (moins de 0,6 s après lui) ou encore en route recevait « pas encore envoyé »
+// fiche fermée : l'avis, sans délai, revenait à sa réouverture, peut-être après la fin de l'alerte et
+// l'envoi du réglage. Fiche fermée, un message le dit, en avertissement, et l'avis ne revient pas.
+test('réglages de titre : fiche fermée avant la réponse « pas encore envoyé » : un message le dit, l’avis ne revient pas', async () => {
+  const page = await open({ state: tuneState(), respond: (url, body, self) => url === '/api/table/song/settings'
+    ? { ...keepSettings(self, body), applied: 'unreadable' } : undefined });
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  await page.tap('songSettingsBody', '[data-tune="tempo"][data-step="5"]');
+  await page.click(page.find('sheetPanel', '[data-close-sheet]')); // le changement part à la fermeture
+  await page.poll();
+  assert.equal(tunePosts(page).length, 1, 'changement envoyé à la fermeture');
+  assert.deepEqual([page.toast().text, page.toast().warn, page.toast().bad],
+    ['Réglages de « Déjà prête » pas encore envoyés à KaraFun : demande au bar', true, false], 'message d’avertissement');
+  await page.runTimers(2600);
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  assert.equal(page.node('tuneStatus').textContent, 'Chaque changement s’enregistre tout seul.', 'fiche rouverte : pas d’ancien avis');
+});
+
 test('réglages de titre : le rafraîchissement n’écrase pas un réglage en cours d’envoi ; fermer la fiche l’envoie', async () => {
   const waiting = [];
   const page = await open({ state: tuneState(), respond: (url, body, self) => url === '/api/table/song/settings'
