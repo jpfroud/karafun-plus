@@ -1400,7 +1400,11 @@ function settleReadyCopy(tr) {
 function abandonRestart(op, { current, upcoming, q }, message, now) {
   restartOp = null;
   const copyId = op.copyQueueId;
-  const originalLive = q.some(item => String(item.queueId) === String(op.originalQueueId));
+  // Le titre relancé continue s'il est encore dans la file, ou sur scène même
+  // absent de la file reçue (KaraFun envoie sa file et son état séparément) :
+  // sinon le bar le croyait remplacé par un autre.
+  const originalLive = (current?.queueId != null && String(current.queueId) === String(op.originalQueueId)) ||
+    q.some(item => String(item.queueId) === String(op.originalQueueId));
   if (copyId && !originalLive && !current && String(upcoming[0]?.queueId) === copyId) {
     const tr = tracked.find(item => String(item.queueId) === copyId);
     // Vidage demandé pendant la relance, ou auteur du titre parti entre-temps
@@ -2180,12 +2184,16 @@ function sync() {
   if (freshLoad && blind) untrackedResetDue = loadedId;
   const untrackedDue = !blind && untrackedResetDue != null && untrackedResetDue === loadedId &&
     String(current?.queueId) !== loadedId;
+  // Titre sur le lecteur de KaraFun (annoncé, chargé ou lancé), d'après son état.
+  const statusId = bridge.status && (bridge.status.current || bridge.status.songPlaying || {}).queueId;
   for (const tr of tracked.slice()) {
     const onStage = isOnStage(tr, current);
     // Copie prête d'une relance ⏮ face aux gestes faits pendant la relance, ou
     // après un arrêt brutal (settleReadyCopy) ; pas pendant l'alerte d'un
-    // message illisible, où la scène vue peut être figée.
-    if (!blind && !onStage && tr.awaitingPlay && !tr.cancelled && notYetPlayed(tr)) settleReadyCopy(tr);
+    // message illisible, où la scène vue peut être figée, ni déjà sortie de
+    // KaraFun (son passage se clôt plus bas, sans rien à annoncer).
+    if (!blind && !onStage && tr.awaitingPlay && !tr.cancelled && notYetPlayed(tr) &&
+      (qids.has(tr.queueId) || statusId === tr.queueId)) settleReadyCopy(tr);
     // Titre annulé mais sur scène : KaraFun l'a lancé avant son retrait, ou
     // malgré lui (retrait jamais envoyé, pendant l'alerte d'un message
     // illisible ou sans KaraFun, ou arrivé trop tard). Ne jamais interrompre la
@@ -2276,7 +2284,6 @@ function sync() {
     // (`goneAt`) : le délai d'un retrait annulé qui aboutit quand même
     // (PULL_LATE_MS) se compte depuis elle, comme sans alerte, et non depuis la
     // fin de l'alerte, qui ferait perdre son titre au chanteur.
-    const statusId = bridge.status && (bridge.status.current || bridge.status.songPlaying || {}).queueId;
     const gone = !qids.has(tr.queueId) && !onStage && statusId !== tr.queueId;
     if (!gone) delete tr.goneAt;
     else if (blind && (!tr.startedAt || restartCopyPending(tr))) tr.goneAt ??= now;
@@ -4758,7 +4765,10 @@ function keepSentDuosOfLeavers(ids) {
   let keptAsSolo = 0;
   for (const tr of asGuest) {
     if (tr.cancelled) continue;
-    const leaving = !!(tr.pulled || tr.absent);
+    // Un passage déjà chanté (copie prête, `startedAt`) n'est jamais « en train
+    // de sortir » : son repère `absent` ou `pulled` vient du titre relancé,
+    // lancé quand même (les deux sont refusés à un titre commencé).
+    const leaving = !tr.startedAt && !!(tr.pulled || tr.absent);
     // La copie prête d'une relance ⏮ (notYetPlayed) perd aussi l'invité parti :
     // elle rejouera le titre au nom de son auteur seul. Monté sur scène avec le
     // titre relancé (`startedAt`), l'invité garde ce passage, comme son auteur.

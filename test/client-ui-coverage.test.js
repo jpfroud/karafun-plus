@@ -2434,6 +2434,20 @@ test('réglages de titre : fiche fermée avant la réponse « pas encore envoyé
   assert.equal(page.node('tuneStatus').textContent, 'Chaque changement s’enregistre tout seul.', 'fiche rouverte : pas d’ancien avis');
 });
 
+// Relecture de la branche, passe 2 (machines à états, essais) — l'avis part aussi quand une autre fiche
+// remplace celle des réglages (openSheet), pas seulement à sa fermeture.
+test('réglages de titre : l’avis « pas encore envoyé » part quand une autre fiche remplace celle des réglages', async () => {
+  const page = await open({ state: tuneState(), respond: (url, body, self) => url === '/api/table/song/settings'
+    ? { ...keepSettings(self, body), applied: 'unreadable' } : undefined });
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  await page.tap('songSettingsBody', '[data-tune="tempo"][data-step="5"]');
+  await page.runTimers(600);
+  assert.equal(page.node('tuneStatus').textContent, 'Enregistré ✓ · pas encore envoyé à KaraFun : demande au bar');
+  await page.tap('peopleList', '[data-song-settings="e1"]'); // une autre fiche remplace celle de k1
+  await page.tap('peopleList', '[data-song-settings="k1"]');
+  assert.equal(page.node('tuneStatus').textContent, 'Chaque changement s’enregistre tout seul.', 'fiche de k1 rouverte : plus l’avis');
+});
+
 test('réglages de titre : le rafraîchissement n’écrase pas un réglage en cours d’envoi ; fermer la fiche l’envoie', async () => {
   const waiting = [];
   const page = await open({ state: tuneState(), respond: (url, body, self) => url === '/api/table/song/settings'

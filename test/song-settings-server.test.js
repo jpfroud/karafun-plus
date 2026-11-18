@@ -6800,3 +6800,144 @@ test('cases d’état : copie d’un duo annulée par le vidage (relance ⏮ rat
   assert.equal(f.tracked().length, 0, 'passage clos');
   assert.deepEqual([...f.sched.slotSamples], [], 'sans durée mesurée');
 });
+
+// ---------------------------------------------------------------- suite 7 : relecture de la branche, passe 2
+// Relecture, passe 2 (design, mainteneur, machines à états, adversaire) — l'abandon de la relance disait si
+// « le titre continue » d'après la file reçue seule : le titre relancé, sur scène mais absent de cette file
+// (pendant l'ajout, après le délai ajouté plus haut ; ou « Suivant » ignoré), passait pour « un autre
+// titre », et le bar allait chercher dans KaraFun un titre qui n'existait pas.
+test('relance ⏮ abandonnée, titre relancé sur scène mais absent de la file reçue : « Le titre en cours continue. »', async t => {
+  for (const phase of ['ajout', 'après « Suivant »']) {
+    const { clock, f, frames, A, add } = await restartRequested(t);
+    const C = isoItem('C-id', 101, add.payload.options);
+    if (phase === 'ajout') {
+      frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(C), isoStatus(4, A)); // A joue hors de la file
+      clock.now += 16000;
+    } else {
+      frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C)); // « Suivant » envoyé, ignoré
+      frames(queueEvent(C), isoStatus(4, A)); // A joue encore, absent de la file reçue
+      clock.now += 21000;
+    }
+    assert.deepEqual(removals(frames()), ['C-id'], `${phase} : copie retirée`);
+    const note = phase === 'ajout' ? 'KaraFun n’a pas confirmé la relance du titre : rien n’a été passé. Le titre en cours continue.'
+      : 'La relance n’a pas démarré. Le titre en cours continue.';
+    assert.ok(notes(f).includes(note), `${phase} : le bar apprend que le titre continue`);
+    assert.equal(notes(f).some(line => line.includes('Un autre titre joue maintenant')), false, `${phase} : pas « un autre titre »`);
+    assert.deepEqual(plain(f.tracked().map(tr => [tr.queueId, tr.awaitingPlay ?? null])), [['A-id', null]], `${phase} : le titre garde son suivi`);
+  }
+});
+
+// Relecture, passe 2 (adversaire) — la copie prête reprise après un arrêt brutal était réglée avant de savoir
+// si elle était encore dans KaraFun : retirée entre-temps (dans KaraFun, ou KaraFun relancé), elle valait
+// encore au bar « La copie prête … est retirée de KaraFun » et à l'invité l'annulation d'un duo qui n'était
+// plus là. Sortie de KaraFun, elle est seulement close, comme une copie prête retirée.
+test('relance ⏮ d’un duo, autrice partie pendant elle, arrêt brutal, copie déjà sortie de KaraFun : passage clos, sans avis', async t => {
+  const { clock, f: before, tom } = await duoRestartSkipping(t);
+  await before.call('POST /api/staff/table-left', { id: '1' });
+  const { f, frames } = hardStop(t, { clock, f: before });
+  assert.deepEqual(removals(frames(queueEvent(), isoStatus(1, null))), [], 'rien à retirer');
+  assert.equal(f.tracked().length, 0, 'passage clos');
+  assert.equal(notes(f).some(line => line.startsWith('La copie prête')), false, 'pas de note pour une copie disparue');
+  assert.deepEqual(f.sched.inboxOf(f.sched.people.get(tom.person.id)).filter(n => n.kind === 'duoCancelled'), [], 'l’invité n’est pas prévenu');
+});
+
+// Relecture, passe 2 (équipe rouge) — un titre marqué absent à l'appel puis lancé quand même garde son repère
+// `absent`, et sa copie prête d'une relance ⏮ aussi (même suivi) : le départ de l'invité la traitait comme un
+// titre en train de sortir de KaraFun, sans `started` : son passage chanté lui était repris, et un départ de
+// duo noté aux statistiques. Un passage déjà chanté n'est jamais « en train de sortir ».
+test('relance ⏮ d’un duo ratée, copie prête portant le repère « absent » de son titre : l’invité parti garde son passage', async t => {
+  const { clock, f, frames, a, lea, tom } = await duoRestartSkipping(t);
+  clock.now += 3000; frames(); clock.now += 18000; frames();
+  assert.equal(a.awaitingPlay, true, 'copie prête');
+  a.absent = true; // repère du titre relancé, marqué absent puis lancé quand même
+  const appearances = () => (tom.person.sung || 0) + (tom.person.duetGuestCount || 0);
+  assert.equal(appearances(), 1, 'Tom compté dans le duo');
+  const answer = await f.call('POST /api/staff/person/leave', { personId: tom.person.id });
+  assert.equal(answer.keptAsSolo, 1, 'copie gardée en solo, comptée comme telle');
+  assert.deepEqual(plain(a.sel.ids), [lea.person.id], 'Tom quitte la copie');
+  assert.equal(appearances(), 1, 'son passage chanté lui reste compté');
+  assert.deepEqual(f.events('duo.left'), [], 'pas un départ de duo');
+});
+
+// Relecture, passe 2 (essais) — la garde des titres d'avant n'était essayée qu'avec un titre que KaraFun ne
+// liste jamais. KaraFun liste ensuite le titre relancé avec sa copie : le titre ne passe pas pour sa propre
+// copie, « Suivant » part.
+test('relance ⏮ d’un titre ajouté dans KaraFun, absent de la file reçue au ⏮, puis listé avec sa copie : « Suivant »', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  const X = isoItem('X-id', 555, { singer: 'Quelqu’un' });
+  frames(queueEvent(), isoStatus(4, X)); // KaraFun joue X sans le lister dans sa file
+  await f.call('POST /api/staff/kf', { action: 'restart' });
+  const add = frames().find(m => m.type === 'remote.AddToQueueRequest');
+  const C = isoItem('C-id', 555, add.payload.options);
+  const sent = frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(X, C), isoStatus(4, X));
+  assert.deepEqual(sent.map(m => m.type), ['remote.NextRequest'], '« Suivant » : la copie est C');
+  assert.equal(notes(f).includes('« Titre 555 » repart du début.'), false, 'X n’est pas sa propre copie');
+});
+
+// Relecture, passe 2 (machines à états, essais) — branche du duo de settleReadyCopy sans essai : autrice partie
+// pendant la relance, arrêt brutal ; à la première vue lisible, la copie part et l'invité apprend l'annulation.
+test('relance ⏮ d’un duo après « Suivant », autrice partie pendant elle, arrêt brutal : copie retirée, l’invité apprend l’annulation', async t => {
+  for (const gesture of ['« Parti »', '« Table partie »']) {
+    const { clock, f: before, lea, tom } = await duoRestartSkipping(t, `${gesture} : `);
+    if (gesture === '« Parti »') await before.call('POST /api/staff/person/leave', { personId: lea.person.id });
+    else await before.call('POST /api/staff/table-left', { id: '1' });
+    const { f, frames } = hardStop(t, { clock, f: before });
+    const C = isoItem('C-id', 101, { singer: 'Léa & Tom' });
+    assert.deepEqual(removals(frames(queueEvent(C), isoStatus(1, C))), ['C-id'], `${gesture} : retrait de la copie envoyé`);
+    assert.equal(f.tracked()[0]?.cancelled, true, `${gesture} : annulée comme un titre à venir`);
+    assert.ok(notes(f).includes('La copie prête de « Titre 101 » est retirée de KaraFun : Léa n’est plus là, le duo est annulé.'),
+      `${gesture} : le bar l’apprend`);
+    assert.deepEqual(f.sched.inboxOf(f.sched.people.get(tom.person.id)).filter(n => n.kind === 'duoCancelled').map(n => [n.params.name, n.params.title]),
+      [['Léa', 'Titre 101']], `${gesture} : l’invité apprend l’annulation du duo`);
+  }
+});
+
+// Relecture, passe 2 (machines à états) — cases sans essai.
+test('cases d’état : copie d’un duo annulée par le vidage (relance ⏮ ratée), « Parti » ou « Table partie » de son invité : rien de plus', async t => {
+  for (const gesture of ['« Parti »', '« Table partie »']) {
+    const { clock, f, frames, a, lea, tom } = await duoRestartSkipping(t, `${gesture} : `);
+    await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+    clock.now += 3000; frames(); clock.now += 18000; frames();
+    assert.deepEqual([a.cancelled, a.awaitingPlay], [true, true], `${gesture} : copie annulée, pas encore jouée`);
+    clock.now += 2000;
+    const answer = gesture === '« Parti »' ? await f.call('POST /api/staff/person/leave', { personId: tom.person.id })
+      : await f.call('POST /api/staff/table-left', { id: '2' });
+    assert.deepEqual([answer.removedFromKaraFun, answer.keptAsSolo], [0, undefined], `${gesture} : rien de plus à retirer, pas gardée en solo`);
+    assert.equal(a.cancelled, true, `${gesture} : reste annulée`);
+    assert.deepEqual(removals(frames()), [], `${gesture} : aucun second retrait avant son délai`);
+    assert.deepEqual(f.sched.inboxOf(lea.person).filter(n => n.kind === 'duoLeft'), [], `${gesture} : pas de « duo quitté » pour un titre qui part`);
+  }
+});
+
+test('cases d’état : copie prête d’un duo (relance ⏮ ratée), « Je ne chante plus ce duo » de l’invité ou « Chanter seul » de l’autrice : refusés', async t => {
+  for (const gesture of ['« Je ne chante plus ce duo »', '« Chanter seul »']) {
+    const { clock, f, frames, a, lea, tom } = await duoRestartSkipping(t, `${gesture} : `);
+    clock.now += 3000; frames(); clock.now += 18000; frames();
+    assert.equal(a.awaitingPlay, true, `${gesture} : copie prête`);
+    if (gesture === '« Je ne chante plus ce duo »') {
+      const row = f.publicState(tom.person, '2', new Set([tom.person.id])).me.inKaraFun.find(item => item.queueId === 'C-id');
+      assert.equal(row.canLeave, false, `${gesture} : le téléphone ne le propose pas`);
+      await rejects(f.call('POST /api/table/duet/leave', { ...tom.body, ownerId: lea.person.id, entryId: a.sel.song.entryId }), null,
+        /^Trop tard : ce duo est déjà sur scène\.$/);
+    } else {
+      await rejects(f.call('POST /api/table/duet/solo', { ...lea.body, entryId: a.sel.song.entryId }), null, /^Trop tard : ce duo est déjà sur scène\.$/);
+    }
+    assert.deepEqual(plain(a.sel.ids), [lea.person.id, tom.person.id], `${gesture} : le duo reste entier`);
+    assert.equal(a.awaitingPlay, true, `${gesture} : copie toujours prête`);
+    assert.equal(f.sched.inboxOf(tom.person).filter(n => n.kind === 'duoCancelled').length, 0, `${gesture} : l’invité n’apprend rien`);
+  }
+});
+
+// Même suite : une copie que KaraFun annonce sur son lecteur sans la lister dans sa file (file et état arrivent
+// séparément) est encore dans KaraFun : réglée à la première vue lisible.
+test('relance ⏮ d’un duo, autrice partie pendant elle, arrêt brutal, copie sur le lecteur de KaraFun mais absente de sa file : réglée', async t => {
+  const { clock, f: before, tom } = await duoRestartSkipping(t);
+  await before.call('POST /api/staff/table-left', { id: '1' });
+  const { f, frames } = hardStop(t, { clock, f: before });
+  frames(queueEvent(), isoStatus(1, isoItem('C-id', 101, { singer: 'Léa & Tom' })));
+  assert.equal(f.tracked()[0]?.cancelled, true, 'annulée comme un titre à venir');
+  assert.deepEqual(f.sched.inboxOf(f.sched.people.get(tom.person.id)).filter(n => n.kind === 'duoCancelled').map(n => n.params.name), ['Léa'],
+    'l’invité apprend l’annulation du duo');
+});
