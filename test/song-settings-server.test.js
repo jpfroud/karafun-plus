@@ -28,8 +28,10 @@ const fromServer = createRequire(path.join(root, 'server.js'));
 function harness({ setTimeout: later = () => ({ unref() {} }), Date: clock = null, persistent = false } = {}) {
   const entry = source.lastIndexOf('main().catch(');
   assert.ok(entry > 0, 'point d’entrée du serveur introuvable');
-  const quietFs = { ...fs, mkdirSync() {}, appendFileSync() {}, writeFileSync() {}, renameSync() {},
-    readdirSync() { return []; }, unlinkSync() {} };
+  // Lignes ajoutées aux fichiers (journal/serveur-<date>.log d'appLog), gardées pour les essais.
+  const appended = [];
+  const quietFs = { ...fs, mkdirSync() {}, appendFileSync(file, data) { appended.push({ file: String(file), data: String(data) }); },
+    writeFileSync() {}, renameSync() {}, readdirSync() { return []; }, unlinkSync() {} };
   const saves = [];
   const overrides = persistent ? {
     './night-state': { ...fromServer('./night-state'), NightStateStore: class {
@@ -63,6 +65,7 @@ function harness({ setTimeout: later = () => ({ unref() {} }), Date: clock = nul
   `, context, { filename: 'server.js' });
   const f = context.fixture;
   f.logs = logs;
+  f.appended = appended;
   f.saves = saves;
   f.settings.auto = false;
   f.settings.autoPlay = false;
@@ -5038,7 +5041,10 @@ test('relance ⏮ en cours puis ratée, « Vider toutes les chansons » entre-te
   assert.equal(notes(f).some(line => line.includes('La copie du titre est prête')), false, 'pas « prête à lancer »');
   assert.equal(tr.cancelled, true, 'copie annulée');
   assert.deepEqual(removals(failed), ['C-id'], 'son retrait part');
-  assert.equal(f.tracked()[0]?.awaitingPlay, undefined, 'pas de copie prête');
+  // Pas une copie prête à lancer : annulée, elle garde seulement son repère de copie pas encore
+  // jouée (`awaitingPlay`), pour compter depuis son lancement si KaraFun la joue quand même
+  // (suite 3 de la PR 64, plus bas).
+  assert.deepEqual([f.tracked()[0]?.cancelled, f.tracked()[0]?.awaitingPlay], [true, true], 'pas de copie prête : annulée, pas encore jouée');
   assert.equal(f.settings.queueClearPending, true, 'le vidage attend que KaraFun la retire');
   // KaraFun retire la copie : sa file est vide.
   assert.deepEqual(frames(queueEvent(), isoStatus(1, null)), [], 'rien d’autre n’est envoyé');
@@ -5746,7 +5752,10 @@ test('relance ⏮ en cours puis ratée après « Parti », « Table partie » ou
     assert.ok(notes(f).includes('La relance n’a pas démarré. La copie du titre est retirée de KaraFun : ses chanteurs sont partis.'),
       `${gesture} : échec annoncé avec le sort de la copie`);
     assert.equal(tr.cancelled, true, `${gesture} : copie annulée à l’échec`);
-    assert.equal(tr.awaitingPlay ?? false, false, `${gesture} : pas laissée prête à jouer`);
+    // Annulée, elle garde son repère de copie pas encore jouée (suite 3 de la PR 64), sans être
+    // annoncée prête à lancer.
+    assert.ok(!notes(f).some(line => line.endsWith('lance la lecture dans KaraFun.')), `${gesture} : pas laissée prête à jouer`);
+    assert.equal(tr.awaitingPlay, true, `${gesture} : pas encore jouée`);
     assert.deepEqual(atFailure, ['C-id'], `${gesture} : retrait de la copie envoyé`);
   }
 });
@@ -5796,7 +5805,8 @@ test('relance ⏮ d’un duo ratée après le départ de son autrice : la copie 
       `${gesture} : échec annoncé avec le sort de la copie`);
     assert.deepEqual(f.sched.inboxOf(tom.person).filter(n => n.kind === 'duoCancelled').map(n => [n.params.name, n.params.title]),
       [['Léa', 'Titre 101']], `${gesture} : l’invité apprend l’annulation du duo`);
-    assert.equal(a.awaitingPlay ?? false, false, `${gesture} : pas laissée prête à jouer`);
+    assert.ok(!notes(f).some(line => line.endsWith('lance la lecture dans KaraFun.')), `${gesture} : pas laissée prête à jouer`);
+    assert.deepEqual([a.cancelled, a.awaitingPlay], [true, true], `${gesture} : annulée, pas encore jouée`);
     // Départ ensuite de l'invité : rien de plus à retirer.
     const answer = gesture === '« Parti »' ? await f.call('POST /api/staff/person/leave', { personId: tom.person.id })
       : await f.call('POST /api/staff/table-left', { id: '2' });
@@ -5962,4 +5972,972 @@ test('valeurs imprévues : seule synchronisation de l’alerte en échec en rout
   f.safeSync();
   assert.equal(armed, false, 'la synchronisation de l’alerte a échoué en route');
   assert.deepEqual(bare(frames(queueEvent(B), isoStatus(4, B))), [], 'B, en pleine chanson à la fin de l’alerte : rien rattrapé');
+});
+
+// ---------------------------------------------------------------- suites de la PR 64
+// Suite 1 de la PR 64 (alerte CodeQL 248, js/log-injection) — appLog écrivait le texte reçu
+// (prénom, titre de KaraFun, message d'erreur) avec ses retours à la ligne, sur la console et
+// dans journal/serveur-<date>.log : un texte reçu pouvait y forger une ligne, datée comme les
+// vraies. \r, \n, U+2028 et U+2029 sont retirés avant l'écriture : un appel, une ligne.
+test('journal du serveur : un texte reçu avec des retours à la ligne ne forge aucune ligne', async () => {
+  const clock = clockAt('2026-11-18T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { bridge } = kcsBridge(f);
+  singer(f, openTable(f, '1'), 'Léa', 101);
+  // Message d'erreur reçu de KaraFun à l'envoi d'un titre (« ERREUR envoi »), avec chaque retour à la ligne.
+  const forged = '2026-11-18T21:00:00.000Z Arrêt de la file karaoké demandé par le bar.';
+  bridge.add = () => { throw new Error(`refusé\n${forged}\r\n\u2028${forged}\u2029fin`); };
+  f.settings.auto = true;
+  f.sync();
+  const line = `ERREUR envoi : refusé${forged}${forged}fin`;
+  assert.deepEqual(f.logs.filter(text => text.includes('ERREUR envoi')), [line], 'console : une seule ligne');
+  assert.deepEqual(f.appended.filter(write => write.data.includes('ERREUR envoi')).map(write => [path.basename(write.file), write.data]),
+    [['serveur-2026-11-18.log', `2026-11-18T21:00:00.000Z ${line}\n`]], 'journal : une seule ligne, datée une fois');
+});
+
+// Relecture (sécurité, adversaire, essais) — un retour chariot seul (qui réécrit la ligne d'une console),
+// et les autres caractères de contrôle (Échap des séquences de curseur, tabulation verticale, saut de page,
+// retour arrière, NEL et CSI de C1) passaient : lus dans une console ou par `tail -f`, ils pouvaient encore
+// faire croire à une autre ligne. Seule la tabulation reste.
+test('journal du serveur : retour chariot seul et autres caractères de contrôle retirés, tabulation gardée', async () => {
+  const clock = clockAt('2026-11-18T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { bridge } = kcsBridge(f);
+  singer(f, openTable(f, '1'), 'Léa', 101);
+  bridge.add = () => { throw new Error('a\rb\u001b[2Kc\u000bd\u000ce\u0008f\u0085g\u009bh\u0000i\u007fj\tk'); };
+  f.settings.auto = true;
+  f.sync();
+  const line = 'ERREUR envoi : ab[2Kcdefghij\tk';
+  assert.deepEqual(f.logs.filter(text => text.includes('ERREUR envoi')), [line], 'console');
+  assert.deepEqual(f.appended.filter(write => write.data.includes('ERREUR envoi')).map(write => write.data),
+    [`2026-11-18T21:00:00.000Z ${line}\n`], 'journal');
+});
+
+// Suite 2 de la PR 64 (relecture finale, machines à états) — keepSentDuosOfLeavers sautait tout
+// titre déjà commencé (`startedAt`) : la copie prête d'une relance ⏮ ratée d'un duo, qui garde
+// le début du titre relancé sans avoir rejoué (notYetPlayed), gardait l'invité marqué parti. Elle
+// se relançait au nom des deux, et le départ n'était ni noté ni compté parmi les duos gardés en
+// solo. L'invité quitte la copie comme un duo chargé : aucune commande à KaraFun, qui affiche
+// encore les deux noms ; monté sur scène avec le titre relancé, il garde ce passage, comme son
+// autrice.
+test('relance ⏮ d’un duo ratée, copie prête : l’invité marqué parti la quitte, elle reste à son autrice en solo', async t => {
+  for (const gesture of ['« Parti »', '« Table partie »']) {
+    const { clock, f, frames, a, lea, tom } = await duoRestartSkipping(t, `${gesture} : `);
+    clock.now += 3000;
+    frames(); // KaraFun reste à l'arrêt : « Lecture »
+    clock.now += 18000;
+    frames();
+    assert.equal(a.awaitingPlay, true, `${gesture} : copie prête à jouer`);
+    // Passages comptés à Tom (comme staffState : chantés et duos en invité), lus sur sa fiche,
+    // gardée même une fois parti.
+    const appearances = () => (tom.person.sung || 0) + (tom.person.duetGuestCount || 0);
+    assert.equal(appearances(), 1, `${gesture} : Tom compté dans le duo`);
+    const answer = gesture === '« Parti »' ? await f.call('POST /api/staff/person/leave', { personId: tom.person.id })
+      : await f.call('POST /api/staff/table-left', { id: '2' });
+    assert.deepEqual([answer.removedFromKaraFun, answer.keptAsSolo], [0, 1], `${gesture} : copie gardée en solo, comptée comme telle`);
+    assert.deepEqual(frames().map(m => m.type), [], `${gesture} : aucune commande à KaraFun`);
+    assert.deepEqual(a.sel.ids, [lea.person.id], `${gesture} : Tom quitte la copie`);
+    assert.equal(a.sel.label, f.sched.passageLabel([lea.person.id]), `${gesture} : nom de Léa seule, KaraFun garde les deux`);
+    assert.ok(notes(f).includes('Tom est parti : Léa chantera « Titre 101 » en solo. KaraFun affiche encore les deux noms'),
+      `${gesture} : le bar l’apprend`);
+    assert.deepEqual(f.sched.inboxOf(lea.person).filter(n => n.kind === 'duoLeft').map(n => [n.params.name, n.params.sent]),
+      [['Tom', true]], `${gesture} : Léa l’apprend`);
+    assert.equal(appearances(), 1, `${gesture} : monté sur scène avec le titre relancé, son passage lui reste compté`);
+    assert.equal(a.awaitingPlay, true, `${gesture} : copie toujours prête`);
+    // Le bar lance la copie : Léa la chante seule.
+    clock.now += 5000;
+    frames(isoStatus(4, isoItem('C-id', 101, { singer: 'Léa & Tom' })));
+    assert.ok(notes(f).includes('« Titre 101 » repart du début.'), `${gesture} : relance comptée`);
+    assert.deepEqual(a.sel.ids, [lea.person.id], `${gesture} : chantée par Léa seule`);
+  }
+});
+
+// Suite 3 de la PR 64 (relecture finale, cases « relance ⏮ en cours quand un geste du bar arrive »)
+// — « Vider toutes les chansons », « Parti », « Table partie » ou « Supprimer toutes les tables »
+// pendant une relance ⏮, puis son échec : la copie, annulée, gardait le début du titre relancé
+// (`startedAt`) sans repère de copie pas encore jouée. Lancée quand même par KaraFun (retrait
+// arrivé trop tard, ou lancée par le bar), elle continuait, mais sa durée mesurée (recordSlot)
+// comptait depuis le début du titre relancé, attente comprise, et sa relance n'était pas
+// annoncée. Elle est marquée comme une copie prête : lancée, sa durée repart de son lancement
+// (« … repart du début. »), une relance au journal, pas un nouveau passage.
+test('relance ⏮ ratée après un geste du bar, copie annulée lancée quand même : durée depuis son lancement', async t => {
+  for (const gesture of ['« Vider toutes les chansons »', '« Parti »', '« Table partie »', '« Supprimer toutes les tables »']) {
+    const { clock, f, frames, A, add } = await restartRequested(t);
+    const C = isoItem('C-id', 101, add.payload.options);
+    frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C));
+    frames(queueEvent(C), isoStatus(1, C)); // « Suivant » fait, KaraFun à l'arrêt sur la copie
+    const tr = f.tracked()[0];
+    if (gesture === '« Vider toutes les chansons »') await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+    else if (gesture === '« Parti »') await f.call('POST /api/staff/person/leave', { personId: tr.sel.ids[0] });
+    else if (gesture === '« Table partie »') await f.call('POST /api/staff/table-left', { id: '1' });
+    else await f.call('POST /api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
+    clock.now += 3000;
+    frames(); // KaraFun reste à l'arrêt : « Lecture »
+    clock.now += 18000;
+    assert.deepEqual(removals(frames()), ['C-id'], `${gesture} : relance ratée, retrait de la copie envoyé`);
+    assert.equal(tr.cancelled, true, `${gesture} : copie annulée`);
+    assert.ok(!notes(f).some(line => line.endsWith('lance la lecture dans KaraFun.')), `${gesture} : pas laissée prête à jouer`);
+    // KaraFun lance la copie avant son retrait.
+    clock.now += 2000;
+    const launchedAt = clock.now;
+    frames(queueEvent(C), isoStatus(4, C));
+    assert.equal(tr.cancelled, false, `${gesture} : sur scène, elle continue`);
+    assert.equal(tr.startedAt, launchedAt, `${gesture} : durée mesurée depuis son lancement`);
+    // Journal du bar recréé par la remise à zéro dans le bac à sable : comparé en données simples.
+    assert.deepEqual(plain(notes(f).filter(line => line === '« Titre 101 » repart du début.')), ['« Titre 101 » repart du début.'],
+      `${gesture} : relance annoncée`);
+    assert.deepEqual(f.events('stage.restarted').map(e => e.queueId), ['C-id'], `${gesture} : une relance au journal`);
+    assert.deepEqual(f.events('stage.started').filter(e => e.queueId === 'C-id'), [], `${gesture} : pas un nouveau passage`);
+    // Chantée jusqu'au bout.
+    clock.now += 200000;
+    frames(queueEvent(), isoStatus(1, null));
+    assert.equal(f.tracked().length, 0, `${gesture} : passage clos`);
+    assert.deepEqual([...f.sched.slotSamples], [200], `${gesture} : durée de la copie seule`);
+    if (gesture === '« Vider toutes les chansons »') assert.equal(f.settings.queueClearPending, false, 'vidage fini');
+  }
+});
+
+// ---------------------------------------------------------------- suite 4 de la PR 64 : cases d'état sans essai
+// Cases relevées par la matrice d'états de la relecture finale de la PR 64 sur d166fee
+// (gstack-state-matrix) : comportement lu juste, mais sans essai. Celles des gestes du bar
+// pendant une relance (« Vider », « Parti », « Supprimer toutes les tables », copie ratée jouée
+// quand même) sont dans la suite 3, plus haut.
+
+// Relance ⏮ pendant l'ajout de sa copie : KaraFun l'ajoute, mais sa file arrive illisible, et la
+// relance se met en pause pendant l'alerte, une minute.
+async function addPausedByAlert(t) {
+  const run = await restartRequested(t);
+  const C = isoItem('C-id', 101, run.add.payload.options);
+  const tr = run.f.tracked()[0];
+  assert.deepEqual(run.frames({ id: run.add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(run.A, C, ODD_ITEM)), [],
+    'copie ajoutée, file illisible : relance en pause');
+  run.clock.now += 60000;
+  return { ...run, C, tr };
+}
+
+test('cases d’état : relance ⏮ pendant l’ajout, alerte de la file, copie lancée et dans la file à la première vue lisible : relance conclue, rien rattrapé', async t => {
+  const { clock, f, frames, C, tr } = await addPausedByAlert(t);
+  // Réglage du titre, que la copie lancée pendant l'alerte n'a pas : rien n'est rattrapé en pleine chanson.
+  f.sched.setSongSettings(tr.sel.song, { pitch: 2 });
+  assert.deepEqual(bare(frames(queueEvent(C), isoStatus(4, C))), [], 'aucune commande, aucun réglage en pleine chanson');
+  assert.equal(f.staffState().restarting, false, 'relance conclue');
+  assert.deepEqual([tr.queueId, tr.startedAt, tr.liveChecked], ['C-id', clock.now, 'C-id'],
+    'suivi passé à la copie, durée depuis cette vue, rien à rattraper');
+  assert.ok(notes(f).includes('« Titre 101 » repart du début.'));
+  assert.deepEqual(f.events('stage.restarted').map(e => e.queueId), ['C-id'], 'une relance au journal');
+  assert.deepEqual(bare(frames(isoStatus(4, C))), [], 'ni ensuite');
+});
+
+test('cases d’état : relance ⏮ pendant l’ajout, alerte de la file, copie lancée mais hors de la file de KaraFun à la première vue lisible : relance conclue', async t => {
+  const { clock, f, frames, C, tr } = await addPausedByAlert(t);
+  // La dernière file reçue peut ne pas lister la copie qui joue : KaraFun envoie sa file et son état séparément.
+  assert.deepEqual(removals(frames(queueEvent(), isoStatus(4, C))), [], 'copie gardée');
+  assert.equal(f.staffState().restarting, false, 'relance conclue dès que la copie se voit sur scène');
+  assert.deepEqual([tr.queueId, tr.startedAt], ['C-id', clock.now], 'suivi passé à la copie, durée depuis cette vue');
+  assert.ok(notes(f).includes('« Titre 101 » repart du début.'));
+  clock.now += 20000;
+  frames();
+  assert.deepEqual(restartNotConfirmed(f), [], 'pas « rien n’a été passé »');
+  assert.deepEqual(plain(f.tracked().map(item => item.queueId)), ['C-id'], 'passage toujours suivi');
+});
+
+// Relance ⏮ après « Suivant » : la copie est juste après le titre, son suivi lui est passé ;
+// puis une alerte de la file la met en pause, `alertMs`.
+async function skippingPausedByAlert(t, alertMs = 60000) {
+  const run = await restartRequested(t);
+  const C = isoItem('C-id', 101, run.add.payload.options);
+  assert.deepEqual(run.frames({ id: run.add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(run.A, C)).map(m => m.type),
+    ['remote.NextRequest'], '« Suivant »');
+  const tr = run.f.tracked()[0];
+  assert.equal(tr.queueId, 'C-id', 'suivi passé à la copie');
+  // Repère de copie pas encore jouée posé dès maintenant (arrêt brutal du serveur), mais la
+  // relance en cours ne l'annonce pas comme une copie prête que la remise à zéro retirerait.
+  assert.equal(tr.awaitingPlay, true, 'copie pas encore jouée');
+  assert.equal('awaitingPlay' in run.f.staffState().tracked[0], false, 'relance en cours : pas une copie prête pour la page du bar');
+  assert.deepEqual(run.frames(queueEvent(run.A, C, ODD_ITEM)), [], 'alerte de la file : relance en pause');
+  run.clock.now += alertMs;
+  return { ...run, C, tr };
+}
+
+test('cases d’état : relance ⏮ après « Suivant », alerte, titre encore sur scène à sa fin : délai repris sans l’alerte, puis relance annulée', async t => {
+  const { clock, f, frames, A, C, tr } = await skippingPausedByAlert(t);
+  assert.deepEqual(frames(queueEvent(A, C), isoStatus(4, A)), [], 'première vue lisible : aucune commande');
+  clock.now += 18000;
+  assert.deepEqual(frames(), [], '18 s de relance hors alerte : rien encore');
+  assert.equal(f.staffState().restarting, true, 'relance toujours en cours');
+  clock.now += 3000;
+  assert.deepEqual(removals(frames()), ['C-id'], '20 s dépassées : copie retirée');
+  assert.ok(notes(f).includes('La relance n’a pas démarré. Le titre en cours continue.'));
+  assert.equal(tr.queueId, 'A-id', 'suivi rendu au titre en cours');
+  assert.equal(tr.awaitingPlay, undefined, 'le titre relancé, déjà commencé, n’est plus une copie à jouer');
+  // Le titre en cours finit : sa durée est mesurée, comme sans relance.
+  clock.now += 60000;
+  frames(queueEvent(), isoStatus(1, null));
+  assert.equal(f.tracked().length, 0, 'passage clos');
+  assert.equal(f.sched.slotSamples.length, 1, 'durée du titre mesurée');
+});
+
+test('cases d’état : relance ⏮ après « Suivant », alerte, « Reconnecter » puis scène libre : « Lecture » de la copie, la coupure compte dans le délai, pas l’alerte', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const rb = replayBridge(t, f);
+  singer(f, openTable(f, '1'), 'Léa', 101);
+  const a = sendNext(f, 'A-id');
+  const A = isoItem('A-id', 101, { singer: a.sel.label });
+  rb.frames(queueEvent(A), isoStatus(4, A));
+  a.liveChecked = 'A-id';
+  await f.call('POST /api/staff/kf', { action: 'restart' });
+  const add = rb.frames().find(m => m.type === 'remote.AddToQueueRequest');
+  const C = isoItem('C-id', 101, add.payload.options);
+  assert.deepEqual(rb.frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C)).map(m => m.type),
+    ['remote.NextRequest']);
+  rb.frames(queueEvent(A, C, ODD_ITEM));
+  clock.now += 60000; // l'alerte ne compte pas dans le délai de la relance
+  rb.bridge.disconnect(); // « Reconnecter » : la connexion se coupe…
+  f.sync();
+  clock.now += 15000; // … et la coupure, elle, compte
+  rb.reconnect();
+  const first = rb.frames(queueEvent(C), isoStatus(1, C));
+  assert.deepEqual(first.map(m => m.type), ['remote.PlayRequest'], 'scène libre, copie en tête : « Lecture »');
+  assert.equal(f.staffState().restarting, true, 'copie gardée, relance en cours');
+  clock.now += 6000;
+  assert.deepEqual(removals(rb.frames()), [], 'copie gardée');
+  assert.ok(notes(f).includes('La relance n’a pas démarré. La copie du titre est prête : lance la lecture dans KaraFun.'),
+    '20 s de relance, coupure comprise : la copie reste prête');
+});
+
+test('cases d’état : relance ⏮ après « Suivant », alerte, copie retirée dans KaraFun pendant elle : passage clos sans durée, relance abandonnée à son délai, rien envoyé', async t => {
+  const { clock, f, frames } = await skippingPausedByAlert(t);
+  const entry = f.sched.stageHistory.at(-1);
+  // Première vue lisible : ni le titre ni sa copie, KaraFun à l'arrêt.
+  const sent = frames(queueEvent(), isoStatus(1, null));
+  assert.equal(f.tracked().length, 0, 'passage clos');
+  assert.equal(typeof entry.endedAt, 'number', 'entrée de scène close');
+  assert.deepEqual([...f.sched.slotSamples], [], 'sans durée mesurée');
+  assert.equal(f.staffState().restarting, true, 'relance encore ouverte');
+  clock.now += 21000;
+  sent.push(...frames());
+  assert.ok(notes(f).includes('La relance n’a pas démarré. Vérifie la file de KaraFun.'), 'abandonnée à son délai');
+  assert.deepEqual(sent.map(m => m.type), [], 'rien envoyé');
+});
+
+// Relance ⏮ d'un titre ajouté directement dans KaraFun (X, non suivi), ratée : sa copie C, non
+// suivie, reste prête en tête de KaraFun (restartAwaitingPlay). Léa attend son tour dans la file.
+async function untrackedCopyReady(t) {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  const lea = singer(f, openTable(f, '1'), 'Léa', 101);
+  const X = isoItem('X-id', 555, { singer: 'Quelqu’un' });
+  frames(queueEvent(X), isoStatus(4, X));
+  await f.call('POST /api/staff/kf', { action: 'restart' });
+  const add = frames().find(m => m.type === 'remote.AddToQueueRequest');
+  const C = isoItem('C-id', 555, add.payload.options);
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(X, C));
+  frames(queueEvent(C), isoStatus(1, C));
+  clock.now += 3000;
+  frames(); // KaraFun reste à l'arrêt : « Lecture »
+  clock.now += 18000;
+  frames();
+  assert.ok(notes(f).includes('La relance n’a pas démarré. La copie du titre est prête : lance la lecture dans KaraFun.'), 'copie prête');
+  assert.equal(f.tracked().length, 0, 'copie non suivie');
+  return { clock, f, frames, lea, C };
+}
+
+test('cases d’état : copie prête non suivie d’une relance ⏮ ratée, « Vider toutes les chansons » : retirée avec les titres ajoutés dans KaraFun, vidage fini', async t => {
+  const { f, frames } = await untrackedCopyReady(t);
+  const answer = await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(answer.otherKaraFunSongs, 1, 'comptée parmi les titres ajoutés dans KaraFun');
+  assert.deepEqual(removals(frames()), ['C-id'], 'retirée avec eux');
+  assert.deepEqual(frames(queueEvent(), isoStatus(1, null)), [], 'KaraFun l’a retirée');
+  assert.equal(f.settings.queueClearPending, false, 'vidage fini');
+});
+
+test('cases d’état : copie prête non suivie d’une relance ⏮ ratée, « Parti » ou « Table partie » : gardée, rien retiré', async t => {
+  for (const gesture of ['« Parti »', '« Table partie »']) {
+    const { f, frames, lea } = await untrackedCopyReady(t);
+    const answer = gesture === '« Parti »' ? await f.call('POST /api/staff/person/leave', { personId: lea.person.id })
+      : await f.call('POST /api/staff/table-left', { id: '1' });
+    assert.equal(answer.removedFromKaraFun, 0, `${gesture} : aucun chanteur de la file`);
+    assert.deepEqual(removals(frames()), [], `${gesture} : copie gardée`);
+  }
+});
+
+test('cases d’état : copie prête non suivie d’une relance ⏮ ratée, « Supprimer toutes les tables » : gardée comme un titre ajouté dans KaraFun, repère oublié', async t => {
+  const { clock, f, frames, C } = await untrackedCopyReady(t);
+  const reset = await f.call('POST /api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
+  assert.deepEqual([reset.removalRequests, reset.removalPending, reset.otherKaraFunSongs], [0, 0, 1],
+    'gardée, comptée parmi les titres ajoutés dans KaraFun');
+  assert.deepEqual(removals(frames()), [], 'rien retiré');
+  // Lancée plus tard par le bar : le repère de la soirée close est oublié.
+  clock.now += 5000;
+  frames(isoStatus(4, C));
+  assert.equal(notes(f).includes('« Titre 555 » repart du début.'), false, 'pas annoncée comme une relance');
+});
+
+// Relance ⏮ après « Suivant », KaraFun à l'arrêt sur la copie (suivi passé à elle), puis arrêt
+// brutal du serveur (la mise à jour, elle, est refusée pendant une relance) : la soirée reprend de
+// sa sauvegarde (p5gARestarted) ; la relance, gardée en mémoire seulement, est perdue.
+async function skippingRestarted(t) {
+  const run = await restartRequested(t);
+  const C = isoItem('C-id', 101, run.add.payload.options);
+  assert.deepEqual(run.frames({ id: run.add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(run.A, C)).map(m => m.type),
+    ['remote.NextRequest']);
+  run.frames(queueEvent(C), isoStatus(1, C));
+  return { ...p5gARestarted(t, { clock: run.clock, f: run.f, C }), clock: run.clock, C };
+}
+
+test('cases d’état : relance ⏮ après « Suivant », redémarrage du serveur, copie lancée : une relance, durée depuis son lancement', async t => {
+  const { clock, f, frames, tr, C } = await skippingRestarted(t);
+  clock.now += 4000;
+  frames(isoStatus(4, C));
+  assert.ok(notes(f).includes('« Titre 101 » repart du début.'), 'comptée comme relance');
+  assert.equal(tr.startedAt, clock.now, 'durée depuis son lancement');
+  assert.deepEqual(f.events('stage.started').map(e => e.queueId), [], 'pas un nouveau passage au journal');
+  assert.deepEqual(f.events('stage.restarted').map(e => e.queueId), ['C-id'], 'une relance');
+});
+
+test('cases d’état : relance ⏮ après « Suivant », redémarrage du serveur, puis un geste du bar : la copie part comme un titre à venir', async t => {
+  for (const gesture of ['« Vider toutes les chansons »', '« Parti »', '« Supprimer toutes les tables »']) {
+    const { f, frames, tr } = await skippingRestarted(t);
+    if (gesture === '« Vider toutes les chansons »') {
+      const answer = await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+      assert.equal(answer.ok, true, gesture);
+    } else if (gesture === '« Parti »') {
+      const answer = await f.call('POST /api/staff/person/leave', { personId: tr.sel.ids[0] });
+      assert.equal(answer.removedFromKaraFun, 1, `${gesture} : la copie compte parmi les titres retirés`);
+    } else {
+      const reset = await f.call('POST /api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
+      assert.equal(reset.removalPending, 1, `${gesture} : la copie compte parmi les titres à retirer`);
+    }
+    assert.equal(tr.cancelled, true, `${gesture} : copie annulée comme un titre à venir`);
+    assert.deepEqual(removals(frames()), ['C-id'], `${gesture} : son retrait part`);
+    assert.deepEqual(frames(queueEvent(), isoStatus(1, null)), [], `${gesture} : KaraFun l’a retirée`);
+    assert.equal(f.tracked().length, 0, `${gesture} : copie plus suivie`);
+    assert.equal(f.settings.queueClearPending, false, `${gesture} : aucun vidage en attente`);
+  }
+});
+
+// Alice chante A ; le titre de Bruno, B, est chargé derrière lui dans KaraFun ; puis une alerte
+// d'un message illisible (`alert` : 'file' ou 'état').
+function aBDuringAlert(t, alert) {
+  const clock = clockAt('2026-11-16T22:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  f.sched.opts.requirePresence = false;
+  const [alice, bruno] = ['Alice', 'Bruno'].map((name, i) => singer(f, openTable(f, String(i + 1), 2), name, 801 + i).person);
+  const a = sendNext(f, 'A-id'), b = sendNext(f, 'B-id');
+  assert.deepEqual([a.sel.ids[0], b.sel.ids[0]], [alice.id, bruno.id]);
+  const A = isoItem('A-id', 801, { singer: a.sel.label }), B = isoItem('B-id', 802, { singer: b.sel.label });
+  frames(queueEvent(A, B), isoStatus(4, A));
+  frames(alert === 'file' ? queueEvent(A, B, ODD_ITEM) : unreadableStatus(A));
+  assert.equal(f.karaokeOutlook(), 'blind', `alerte de ${alert === 'file' ? 'la file' : 'l’état'}`);
+  return { clock, f, frames, a, b, A, B, bruno };
+}
+
+test('cases d’état : « Vider toutes les chansons » pendant l’alerte, titre encore dans la file à sa fin : retrait à la première vue lisible, vidage fini', async t => {
+  const { f, frames, b, A, B } = aBDuringAlert(t, 'file');
+  await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(b.cancelled, true, 'B annulé');
+  assert.deepEqual(removals(frames()), [], 'rien pendant l’alerte');
+  assert.deepEqual(removals(frames(queueEvent(A, B))), ['B-id'], 'retrait à la première vue lisible');
+  assert.equal(f.settings.queueClearPending, true, 'le vidage attend KaraFun');
+  frames(queueEvent(A));
+  assert.equal(f.settings.queueClearPending, false, 'vidage fini quand KaraFun l’a retiré');
+});
+
+test('cases d’état : « Vider toutes les chansons » pendant l’alerte, titre lancé avant sa fin : plus annulé, il compte, vidage fini avec lui sur scène', async t => {
+  const { clock, f, frames, b, B } = aBDuringAlert(t, 'état');
+  await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(b.cancelled, true, 'B annulé');
+  // A finit, KaraFun lance B et le sort de sa file ; l'état reçu reste illisible.
+  clock.now += 60000;
+  assert.deepEqual(frames(queueEvent(), unreadableStatus(B)), [], 'rien pendant l’alerte');
+  assert.deepEqual(f.events('turn.unsent'), [], 'aucun verdict pendant l’alerte');
+  // Première vue lisible : B sur scène.
+  assert.deepEqual(removals(frames(isoStatus(4, B))), [], 'rien coupé');
+  assert.equal(b.cancelled, false, 'plus annulé');
+  assert.equal(b.sel.turnCredit.rolledBack, false, 'il compte');
+  assert.equal(typeof b.startedAt, 'number', 'sur scène');
+  assert.equal(f.settings.queueClearPending, false, 'vidage fini avec lui sur scène');
+});
+
+test('cases d’état : « Vider toutes les chansons » pendant l’alerte, titre sorti de la file avant sa fin : verdict annulé à la vue lisible, crédit rendu, vidage fini', async t => {
+  const { f, frames, b, A, bruno } = aBDuringAlert(t, 'état');
+  await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  // Le bar retire B dans KaraFun pendant l'alerte.
+  assert.deepEqual(frames(queueEvent(A)), [], 'rien pendant l’alerte');
+  assert.deepEqual(plain(f.tracked().map(tr => tr.queueId)), ['A-id', 'B-id'], 'B toujours suivi, sans verdict');
+  assert.deepEqual(f.events('turn.unsent'), []);
+  frames(isoStatus(4, A));
+  assert.deepEqual(f.events('turn.unsent').map(e => [e.queueId, e.reason]), [['B-id', 'cancelled']], 'verdict à la vue lisible');
+  assert.equal(b.sel.turnCredit.rolledBack, true, 'crédit rendu');
+  assert.equal(bruno.sung, 0, 'son passage retiré n’a pas compté');
+  assert.equal(f.settings.queueClearPending, false, 'vidage fini');
+});
+
+test('cases d’état : titre retiré pour une priorité, lancé par KaraFun pendant une alerte de l’état, sur scène à la vue lisible : il continue, la priorité passe juste après', async t => {
+  const clock = clockAt('2026-11-16T22:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  f.sched.opts.requirePresence = false;
+  const [, , , driss] = ['Alice', 'Bruno', 'Chloé', 'Driss']
+    .map((name, i) => singer(f, openTable(f, String(i + 1), 2), name, 801 + i).person);
+  const a = sendNext(f, 'A-id'), b = sendNext(f, 'B-id');
+  const A = isoItem('A-id', 801, { singer: a.sel.label }), B = isoItem('B-id', 802, { singer: b.sel.label });
+  frames(queueEvent(A, B), isoStatus(4, A));
+  f.settings.auto = true;
+  await f.call('POST /api/staff/move', { personId: driss.id, toIndex: 0, priority: true, pullLoaded: true, queueId: 'B-id' });
+  assert.deepEqual(removals(frames()), ['B-id'], 'retrait envoyé');
+  // Alerte de l'état ; KaraFun lance B avant d'appliquer le retrait, et le sort de sa file.
+  frames(unreadableStatus(A));
+  clock.now += 60000;
+  assert.deepEqual(frames(queueEvent(), unreadableStatus(B)), [], 'rien pendant l’alerte');
+  assert.deepEqual(f.events('turn.unsent'), [], 'aucun verdict pendant l’alerte');
+  frames(isoStatus(4, B));
+  assert.ok(notes(f).includes('« Titre 802 » a commencé avant son retrait de KaraFun ; il continue, Driss passe juste après.'),
+    'vu sur scène à la vue lisible : il continue');
+  assert.equal(b.pulled, null, 'retrait oublié');
+  assert.equal(typeof b.startedAt, 'number', 'B sur scène');
+  assert.deepEqual(f.events('turn.unsent'), [], 'aucun verdict : il est chanté');
+});
+
+// Suite 4 de la PR 64, gardes sans essai.
+// syncRestart, moitié « état » du titre fini pendant l'alerte (`endedDuringAlert`) : à la première
+// vue lisible, le titre relancé n'est plus dans la file ni en lecture, mais l'état de KaraFun
+// l'annonce encore (chargé, état 3). Il n'est pas fini : la relance n'est pas annulée comme celle
+// d'un titre fini pendant l'alerte.
+test('gardes : relance ⏮ pendant l’ajout, titre encore annoncé par l’état de KaraFun à la fin de l’alerte : pas « fini pendant l’alerte »', async t => {
+  const { f, frames, A, C } = await addPausedByAlert(t);
+  const after = frames(queueEvent(C), isoStatus(3, A));
+  assert.equal(endedNote(f), false, 'pas « fini pendant l’alerte »');
+  assert.deepEqual(removals(after), [], 'copie gardée');
+});
+
+// connectKaraFun pose `alertReconnect` pour « Reconnecter » depuis l'alerte ; sync l'efface quand
+// la connexion rouverte est perdue. Sinon le nouvel essai automatique de la télécommande, en cours
+// d'ouverture, repassait pour cette reconnexion (« blind ») : l'automate de Spotify ne touchait
+// plus à rien, alors que KaraFun était déconnecté.
+test('gardes : « Reconnecter » de l’alerte, connexion rouverte perdue, puis nouvel essai : KaraFun déconnecté, plus l’alerte', async t => {
+  const f = harness();
+  const { bridge, frames } = replayBridge(t, f);
+  bridge.code = '123456';
+  bridge._kcs = { code: '123456', url: 'wss://kcs.exemple.invalid/remote' };
+  assert.equal(f.connectKaraFun('123456'), 'kept');
+  frames(queueEvent(), isoStatus(1, null));
+  frames(queueEvent(ODD_ITEM));
+  assert.equal(f.karaokeOutlook(), 'blind');
+  assert.deepEqual(plain(await f.call('POST /api/staff/kf', { action: 'reconnect' })), { ok: true, kept: false });
+  assert.equal(f.karaokeOutlook(), 'blind', 'reconnexion demandée depuis l’alerte');
+  FakeWS.last.emit('close', { code: 1006 });
+  assert.equal(bridge.connectionState().phase, 'retry');
+  f.sync();
+  // Nouvel essai automatique de la télécommande : connexion en cours d'ouverture.
+  bridge._openKcs('wss://kcs.exemple.invalid/remote', () => true);
+  assert.equal(bridge.connectionState().phase, 'opening');
+  assert.equal(f.karaokeOutlook(), 'unknown', 'nouvel essai : KaraFun déconnecté, plus l’alerte');
+});
+
+// Boucle de fermeture (sync) : pendant l'alerte (`blind`), aucun retrait de fermeture n'est décidé
+// d'après une file peut-être figée. L'heure passée pendant l'alerte, le titre chargé n'est retiré
+// qu'à la première vue lisible, et ses chanteurs ne sont prévenus qu'alors.
+test('gardes : heure de fermeture passée pendant l’alerte : retrait de fermeture seulement à la première vue lisible', async t => {
+  const { f, frames, a, A, owner } = (() => {
+    const clock = clockAt('2026-11-16T23:30:00.000Z');
+    const g = harness({ Date: clock.Date });
+    const { frames: replay } = replayBridge(t, g);
+    g.sched.opts.requirePresence = false;
+    const tb = openTable(g, '1');
+    const people = [singer(g, tb, 'Léa', 101), singer(g, tb, 'Tom', 201)];
+    const loaded = sendNext(g, 'A-id');
+    const item = isoItem('A-id', loaded.sel.song.songId, { singer: loaded.sel.label });
+    replay(queueEvent(item), isoStatus(4, isoItem('C-id', 555, { singer: 'Autre' })));
+    replay(queueEvent(item, ODD_ITEM));
+    g.settings.closingAt = clock.now - 60000;
+    return { f: g, frames: replay, a: loaded, A: item, owner: people.find(s => s.person.id === loaded.sel.ids[0]).person };
+  })();
+  assert.equal(f.karaokeOutlook(), 'blind', 'alerte de la file');
+  assert.deepEqual(removals(frames()), [], 'pendant l’alerte : rien retiré');
+  assert.equal(a.pulled ?? null, null, 'aucun retrait de fermeture noté');
+  assert.deepEqual(f.sched.inboxOf(owner).filter(n => n.kind === 'closingPulled'), [], 'personne n’est prévenu');
+  assert.deepEqual(removals(frames(queueEvent(A))), ['A-id'], 'première vue lisible : A sort de KaraFun');
+  assert.equal(a.pulled?.reason, 'closing');
+  assert.equal(f.sched.inboxOf(owner).filter(n => n.kind === 'closingPulled').length, 1, 'son chanteur est prévenu');
+});
+
+// ---------------------------------------------------------------- suite 6 de la PR 64 : relecture de la branche
+// Arrêt brutal du serveur : la soirée sauvegardée (lignes de saveNight) est relue dans un nouveau bac à
+// sable (lignes de main()), comme p5gARestarted, mais sans rien supposer de la première vue de KaraFun :
+// la télécommande revient (replayBridge), aucune synchronisation n'a encore eu lieu.
+function hardStop(t, { clock, f }) {
+  const lines = (from, to) => {
+    const start = source.indexOf(from), end = source.indexOf(to, start);
+    assert.ok(start > 0 && end > start, `server.js : lignes « ${from} » introuvables`);
+    return source.slice(start, end);
+  };
+  const saved = plain(f.sync.constructor(`${lines('const snapshot = snapshotNight(', 'nightStore.save(snapshot);')}
+    return snapshot;`)());
+  const g = harness({ Date: clock.Date });
+  g.sync.constructor('previousNight', `${lines('const recovered = restoreNight(previousNight', 'appLog(`Soirée restaurée')}
+    ensureSoloGroup();`)(saved);
+  return { f: g, ...replayBridge(t, g) };
+}
+
+// Relecture (adversaire) — le ⏮ d'un titre ajouté dans KaraFun, que la file reçue ne listait pas au moment
+// du ⏮ : vu sur scène hors de la file pendant l'ajout, il passait pour sa propre copie (même titre, même
+// nom, absent des titres d'avant la relance). La relance concluait à tort, sans « Suivant », et la vraie
+// copie restait derrière lui, prête à rejouer le titre.
+test('relance ⏮ d’un titre ajouté dans KaraFun, absent de la file reçue au moment du ⏮ : pas pris pour sa propre copie', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  const X = isoItem('X-id', 555, { singer: 'Quelqu’un' });
+  frames(queueEvent(), isoStatus(4, X)); // KaraFun joue X sans le lister dans sa file
+  await f.call('POST /api/staff/kf', { action: 'restart' });
+  const add = frames().find(m => m.type === 'remote.AddToQueueRequest');
+  const C = isoItem('C-id', 555, add.payload.options);
+  const after = frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(C), isoStatus(4, X));
+  assert.equal(notes(f).includes('« Titre 555 » repart du début.'), false, 'X n’est pas sa propre copie');
+  assert.equal(f.staffState().restarting, true, 'relance toujours en cours');
+  assert.deepEqual(removals(after), [], 'rien retiré');
+});
+
+// Relecture (équipe rouge) — pendant l'ajout de la copie, un titre en cours absent de la file reçue faisait
+// attendre l'état suivant de KaraFun, sans délai : si la file ne le listait jamais, la relance restait
+// ouverte tout le titre (envoi, « Je suis là » et mise à jour retenus), puis concluait sur la copie lancée
+// après lui, le titre chanté deux fois. L'attente a le délai de l'ajout.
+test('relance ⏮ pendant l’ajout, titre en cours jamais listé dans la file de KaraFun : relance abandonnée après son délai', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
+  const C = isoItem('C-id', 101, add.payload.options);
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(C), isoStatus(4, A)); // A joue hors de la file
+  clock.now += 10000;
+  assert.deepEqual(frames(), [], 'attente de l’état suivant de KaraFun');
+  assert.equal(f.staffState().restarting, true);
+  clock.now += 6000;
+  const after = frames();
+  assert.equal(restartNotConfirmed(f).length, 1, 'abandonnée au bout du délai de l’ajout');
+  assert.deepEqual(removals(after), ['C-id'], 'copie retirée');
+  assert.equal(f.staffState().restarting, false);
+});
+
+// Relecture (machines à états, mainteneur) — l'invité d'un duo marqué parti PENDANT la relance (la copie
+// reste alors : c'est le titre en cours qui continue) restait sur la copie prête quand la relance échouait :
+// elle se relançait au nom des deux, sans note au bar ni avis à l'autrice. Il la quitte, comme après l'échec.
+test('relance ⏮ d’un duo ratée, invité parti pendant la relance : la copie prête reste à son autrice seule', async t => {
+  for (const gesture of ['« Parti »', '« Table partie »']) {
+    const { clock, f, frames, a, lea, tom } = await duoRestartSkipping(t, `${gesture} : `);
+    if (gesture === '« Parti »') await f.call('POST /api/staff/person/leave', { personId: tom.person.id });
+    else await f.call('POST /api/staff/table-left', { id: '2' });
+    clock.now += 3000;
+    frames(); // KaraFun reste à l'arrêt : « Lecture »
+    clock.now += 18000;
+    assert.deepEqual(removals(frames()), [], `${gesture} : copie gardée pour l’autrice`);
+    assert.equal(a.awaitingPlay, true, `${gesture} : prête`);
+    assert.deepEqual(plain(a.sel.ids), [lea.person.id], `${gesture} : Tom quitte la copie`);
+    assert.equal(a.sel.label, f.sched.passageLabel([lea.person.id]), `${gesture} : au nom de Léa seule`);
+    assert.deepEqual(f.sched.inboxOf(lea.person).filter(n => n.kind === 'duoLeft').map(n => n.params.name), ['Tom'], `${gesture} : Léa l’apprend`);
+    assert.equal((tom.person.sung || 0) + (tom.person.duetGuestCount || 0), 1, `${gesture} : son passage chanté lui reste compté`);
+  }
+});
+
+// Relecture (machines à états) — après un arrêt brutal pendant la relance, la copie reprise comme copie
+// prête ignorait les gestes du bar faits pendant la relance, qui la laissaient : vidage en attente (il
+// attendait sans fin, et tout envoi avec lui), départ de son chanteur, invité parti, remise à zéro (la
+// nouvelle soirée n'envoyait rien). À la première vue lisible, elle est réglée comme à l'échec de la relance.
+test('relance ⏮ après « Suivant », geste du bar pendant elle, arrêt brutal : la copie reprise suit ce geste', async t => {
+  for (const gesture of ['« Vider toutes les chansons »', '« Parti »', '« Table partie »', '« Supprimer toutes les tables »']) {
+    const run = await restartRequested(t);
+    const C = isoItem('C-id', 101, run.add.payload.options);
+    run.frames({ id: run.add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(run.A, C));
+    run.frames(queueEvent(C), isoStatus(1, C));
+    const owner = run.f.tracked()[0].sel.ids[0];
+    if (gesture === '« Vider toutes les chansons »') await run.f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+    else if (gesture === '« Parti »') await run.f.call('POST /api/staff/person/leave', { personId: owner });
+    else if (gesture === '« Table partie »') await run.f.call('POST /api/staff/table-left', { id: '1' });
+    else await run.f.call('POST /api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
+    assert.equal(run.f.tracked()[0].cancelled ?? false, false, `${gesture} : relance en cours, copie laissée`);
+    const { f, frames } = hardStop(t, run);
+    assert.deepEqual(removals(frames(queueEvent(C), isoStatus(1, C))), ['C-id'], `${gesture} : retrait de la copie envoyé`);
+    assert.equal(f.tracked()[0]?.cancelled, true, `${gesture} : annulée comme un titre à venir`);
+    frames(queueEvent(), isoStatus(1, null)); // KaraFun l'a retirée
+    assert.equal(f.tracked().length, 0, `${gesture} : copie plus suivie`);
+    assert.equal(f.settings.queueClearPending, false, `${gesture} : aucun vidage en attente`);
+    if (gesture === '« Supprimer toutes les tables »') {
+      singer(f, openTable(f, '2'), 'Nina', 202);
+      f.settings.auto = true;
+      run.clock.now += 1000;
+      assert.deepEqual(frames().filter(m => m.type === 'remote.AddToQueueRequest').map(m => m.payload.song.id), [202],
+        'premier titre de la nouvelle soirée envoyé');
+    }
+  }
+});
+
+// Même règlement, mais la reprise tombe pendant l'alerte d'un message illisible : la scène vue peut être
+// figée, rien n'est décidé d'après elle ; la copie est réglée à la première vue lisible.
+test('relance ⏮ après « Suivant », vidage pendant elle, arrêt brutal, reprise pendant une alerte : copie réglée à la vue lisible', async t => {
+  const run = await restartRequested(t);
+  const C = isoItem('C-id', 101, run.add.payload.options);
+  run.frames({ id: run.add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(run.A, C));
+  run.frames(queueEvent(C), isoStatus(1, C));
+  await run.f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  const { f, frames } = hardStop(t, run);
+  assert.deepEqual(removals(frames(queueEvent(C, ODD_ITEM), isoStatus(1, C))), [], 'alerte : rien retiré');
+  assert.equal(f.tracked()[0].cancelled ?? false, false, 'alerte : copie pas encore réglée');
+  assert.deepEqual(removals(frames(queueEvent(C), isoStatus(1, C))), ['C-id'], 'vue lisible : elle part avec le vidage');
+});
+
+test('relance ⏮ d’un duo après « Suivant », invité parti pendant elle, arrêt brutal : la copie reprise reste à son autrice seule', async t => {
+  const { clock, f: before, lea, tom } = await duoRestartSkipping(t);
+  await before.call('POST /api/staff/person/leave', { personId: tom.person.id });
+  const { f, frames } = hardStop(t, { clock, f: before });
+  assert.deepEqual(removals(frames(queueEvent(isoItem('C-id', 101, { singer: 'Léa & Tom' })), isoStatus(1, isoItem('C-id', 101, { singer: 'Léa & Tom' })))), [],
+    'copie gardée pour l’autrice');
+  const tr = f.tracked()[0];
+  assert.equal(tr.awaitingPlay, true, 'copie prête');
+  assert.deepEqual(plain(tr.sel.ids), [lea.person.id], 'Tom quitte la copie');
+  assert.equal(tr.sel.label, f.sched.passageLabel([lea.person.id]), 'au nom de Léa seule');
+});
+
+// Relecture (adversaire) — copie reprise d'un arrêt brutal dont l'autrice était partie avec sa table pendant
+// la relance : « Parti » de l'invité, fait avant toute synchronisation, échouait à chaque essai (« Duo
+// introuvable ») : la copie passait par leaveSentDuet, qui ne trouve plus l'autrice. Elle part comme le
+// titre d'une autrice partie.
+test('relance ⏮ d’un duo, table de l’autrice partie pendant elle, arrêt brutal : « Parti » de l’invité n’échoue pas', async t => {
+  const { clock, f: before, tom } = await duoRestartSkipping(t);
+  await before.call('POST /api/staff/table-left', { id: '1' });
+  const { f } = hardStop(t, { clock, f: before });
+  const answer = await f.call('POST /api/staff/person/leave', { personId: tom.person.id });
+  assert.equal(answer.ok, true, 'pas de « Duo introuvable »');
+  assert.equal(answer.removedFromKaraFun, 1, 'la copie d’une autrice partie part');
+});
+
+// Relecture (lecture principale) — l'invitée d'un duo marquée partie d'une copie prête, présence confirmée
+// par elle seule : « La présence confirmée par l'invitée seule ne vaut plus pour l'auteur » redemandait
+// « Je suis là » à l'autrice, qui sortait de scène avec le titre relancé, et la lecture automatique
+// attendait sa réponse. Passage déjà monté sur scène (`started`) : la présence reste.
+test('relance ⏮ d’un duo ratée, présence confirmée par l’invité seul, puis invité parti : pas de « Je suis là » de plus à l’autrice', async t => {
+  const { clock, f, frames, a, lea, tom } = await duoRestartSkipping(t);
+  f.sched.opts.requirePresence = true;
+  a.sel.presenceConfirmed = true; // confirmée par Tom seul
+  lea.person.confirmedAt = null;
+  clock.now += 3000;
+  frames();
+  clock.now += 18000;
+  frames();
+  assert.equal(a.awaitingPlay, true, 'copie prête');
+  await f.call('POST /api/staff/person/leave', { personId: tom.person.id });
+  assert.equal(a.sel.presenceConfirmed, true, 'présence gardée');
+  frames();
+  assert.deepEqual(f.events('presence.asked').filter(e => e.personIds.includes(lea.person.id)), [], 'aucune demande à Léa');
+});
+
+// Relecture (adversaire) — un invité qui quitte un passage déjà chanté (`started`) était noté au journal
+// comme un départ de duo (duo.left) : les statistiques de la soirée retiraient son temps d'attente du duo
+// qu'il a chanté et comptaient un duo quitté ; reprise après un arrêt brutal, elles l'effaçaient même du
+// passage. Rien n'est noté : son départ de la soirée l'est déjà (person.left, table.left).
+test('relance ⏮ d’un duo ratée, invité parti : le duo chanté reste entier dans les statistiques', async t => {
+  const { computeStats } = require('../evening-stats');
+  const { clock, f, frames, tom } = await duoRestartSkipping(t);
+  clock.now += 3000;
+  frames();
+  clock.now += 18000;
+  frames();
+  await f.call('POST /api/staff/person/leave', { personId: tom.person.id });
+  assert.deepEqual(f.events('duo.left'), [], 'pas un départ de duo');
+  const stats = computeStats({ meta: f.journal.current.meta, events: plain(f.journal.current.events), now: clock.now });
+  assert.equal(stats.global.duos.left, 0, 'aucun duo quitté compté');
+  assert.ok(stats.timeline.stages[0].ids.includes(tom.person.id), 'Tom reste sur le passage qu’il a chanté');
+});
+
+// ---------------------------------------------------------------- suite 6 : cases d'état relevées par la relecture de la branche
+test('cases d’état : copie ⏮ annulée à l’échec de la relance, nouveau « Vider toutes les chansons » : reste annulée, vidage fini à son retrait, sans durée', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
+  const C = isoItem('C-id', 101, add.payload.options);
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C));
+  frames(queueEvent(C), isoStatus(1, C));
+  await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  clock.now += 3000; frames(); clock.now += 18000; frames();
+  const tr = f.tracked()[0];
+  assert.deepEqual([tr.cancelled, tr.awaitingPlay], [true, true], 'copie annulée, pas encore jouée');
+  const answer = await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  assert.equal(answer.ok, true);
+  assert.equal(tr.cancelled, true);
+  frames(queueEvent(), isoStatus(1, null));
+  assert.equal(f.tracked().length, 0, 'passage clos');
+  assert.deepEqual([...f.sched.slotSamples], [], 'sans durée mesurée');
+  assert.equal(f.settings.queueClearPending, false, 'vidage fini');
+});
+
+test('cases d’état : copie ⏮ annulée à l’échec de la relance, « Parti » de son chanteur : reste annulée et retirée, sans durée', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
+  const C = isoItem('C-id', 101, add.payload.options);
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C));
+  frames(queueEvent(C), isoStatus(1, C));
+  await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  clock.now += 3000; frames(); clock.now += 18000; frames();
+  const tr = f.tracked()[0];
+  assert.deepEqual([tr.cancelled, tr.awaitingPlay], [true, true], 'copie annulée, pas encore jouée');
+  clock.now += 2000;
+  const answer = await f.call('POST /api/staff/person/leave', { personId: tr.sel.ids[0] });
+  assert.equal(answer.removedFromKaraFun, 1, 'comptée parmi les titres retirés');
+  assert.equal(tr.cancelled, true);
+  assert.deepEqual(removals(frames()), ['C-id'], 'retrait renvoyé');
+  frames(queueEvent(), isoStatus(1, null));
+  assert.equal(f.tracked().length, 0, 'passage clos');
+  assert.deepEqual([...f.sched.slotSamples], [], 'sans durée mesurée');
+});
+
+test('cases d’état : copie ⏮ annulée à l’échec de la relance, « Supprimer toutes les tables » : retirée, l’envoi automatique attend le bar', async t => {
+  const { clock, f, frames, A, add } = await restartRequested(t);
+  const C = isoItem('C-id', 101, add.payload.options);
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C));
+  frames(queueEvent(C), isoStatus(1, C));
+  await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  clock.now += 3000; frames(); clock.now += 18000; frames();
+  const tr = f.tracked()[0];
+  assert.deepEqual([tr.cancelled, tr.awaitingPlay], [true, true], 'copie annulée, pas encore jouée');
+  clock.now += 2000;
+  f.settings.auto = true;
+  const reset = await f.call('POST /api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
+  assert.deepEqual([reset.removalPending, reset.autoStopped], [1, true], 'encore à retirer : l’envoi automatique attend le bar');
+  assert.equal(tr.cancelled, true);
+  assert.deepEqual(removals(frames()), ['C-id'], 'retrait renvoyé');
+  frames(queueEvent(), isoStatus(1, null));
+  assert.equal(f.tracked().length, 0, 'passage clos');
+  assert.deepEqual([...f.sched.slotSamples], [], 'rien de mesuré dans la nouvelle soirée');
+});
+
+test('cases d’état : copie prête non suivie d’une relance ⏮ ratée, retirée dans KaraFun : rien envoyé, repère oublié', async t => {
+  const { clock, f, frames, C } = await untrackedCopyReady(t);
+  assert.deepEqual(frames(queueEvent(), isoStatus(1, null)), [], 'rien envoyé');
+  clock.now += 5000;
+  frames(queueEvent(C), isoStatus(4, C));
+  assert.equal(notes(f).includes('« Titre 555 » repart du début.'), false, 'repère oublié : pas annoncée comme une relance');
+});
+
+test('cases d’état : relance ⏮, geste du bar pendant elle, « Suivant » ignoré : copie retirée, le titre continue et compte', async t => {
+  for (const gesture of ['« Vider toutes les chansons »', '« Parti »', '« Supprimer toutes les tables »']) {
+    const { clock, f, frames, A, add } = await restartRequested(t);
+    const C = isoItem('C-id', 101, add.payload.options);
+    frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C)); // « Suivant » envoyé, ignoré
+    const tr = f.tracked()[0];
+    if (gesture === '« Vider toutes les chansons »') await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+    else if (gesture === '« Parti »') await f.call('POST /api/staff/person/leave', { personId: tr.sel.ids[0] });
+    else await f.call('POST /api/staff/tables-clear', { confirmation: 'SUPPRIMER TOUTES LES TABLES' });
+    frames(queueEvent(A, C), isoStatus(4, A));
+    clock.now += 21000;
+    assert.ok(removals(frames(queueEvent(A, C), isoStatus(4, A))).includes('C-id'), `${gesture} : copie retirée`);
+    assert.ok(plain(notes(f)).includes('La relance n’a pas démarré. Le titre en cours continue.'), gesture);
+    assert.deepEqual([tr.queueId, tr.awaitingPlay, tr.cancelled ?? false], ['A-id', undefined, false], `${gesture} : suivi rendu au titre en cours`);
+    frames(queueEvent(A), isoStatus(4, A));
+    if (gesture === '« Vider toutes les chansons »') assert.equal(f.settings.queueClearPending, false, 'vidage fini, le titre sur scène');
+    clock.now += 100000;
+    frames(queueEvent(), isoStatus(1, null));
+    assert.equal(f.tracked().length, 0, `${gesture} : passage clos à sa fin`);
+    assert.equal(f.sched.slotSamples.length, 1, `${gesture} : durée du titre mesurée`);
+  }
+});
+
+test('cases d’état : relance ⏮ d’un duo, invité parti pendant elle, la copie joue : relance conclue, le passage garde l’invité', async t => {
+  const { clock, f, frames, a, tom } = await duoRestartSkipping(t);
+  await f.call('POST /api/staff/person/leave', { personId: tom.person.id });
+  const appearances = () => (tom.person.sung || 0) + (tom.person.duetGuestCount || 0);
+  assert.equal(appearances(), 1, 'Tom compté dans le duo');
+  clock.now += 1000;
+  assert.deepEqual(removals(frames(isoStatus(4, isoItem('C-id', 101, { singer: a.sel.label })))), [], 'rien retiré');
+  assert.equal(f.staffState().restarting, false, 'relance conclue');
+  assert.deepEqual([a.startedAt, a.awaitingPlay], [clock.now, undefined], 'durée depuis la relance, copie jouée');
+  assert.ok(a.sel.ids.includes(tom.person.id), 'Tom reste sur le passage qu’il a chanté');
+  assert.equal(appearances(), 1, 'son passage lui reste compté');
+});
+
+test('cases d’état : relance ⏮ d’un duo, invité parti pendant elle, « Suivant » ignoré : copie retirée, le titre continue avec lui', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  const lea = singer(f, openTable(f, '1'), 'Léa');
+  const tom = singer(f, openTable(f, '2'), 'Tom');
+  const invite = f.sched.inviteDuet(lea.person, tom.person.id, { songId: 101, title: 'Titre 101', artist: 'Artiste' });
+  if (invite?.duet?.state !== 'accepted') f.sched.answerDuet(tom.person, true, lea.person.song.entryId);
+  const a = sendNext(f, 'A-id');
+  const A = isoItem('A-id', 101, { singer: a.sel.label });
+  frames(queueEvent(A), isoStatus(4, A));
+  a.liveChecked = 'A-id';
+  await f.call('POST /api/staff/kf', { action: 'restart' });
+  const add = frames().find(m => m.type === 'remote.AddToQueueRequest');
+  const C = isoItem('C-id', 101, add.payload.options);
+  frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C)); // « Suivant » envoyé, ignoré
+  await f.call('POST /api/staff/person/leave', { personId: tom.person.id });
+  clock.now += 21000;
+  assert.ok(removals(frames(queueEvent(A, C), isoStatus(4, A))).includes('C-id'), 'copie retirée');
+  assert.deepEqual([a.queueId, a.awaitingPlay], ['A-id', undefined], 'suivi rendu au titre en cours');
+  assert.deepEqual(plain(a.sel.ids), [lea.person.id, tom.person.id], 'Tom reste sur le passage qu’il chante');
+});
+
+test('cases d’état : copie prête d’un duo (relance ⏮ ratée), « Parti » de son autrice : retirée, l’invité apprend l’annulation du duo', async t => {
+  const { clock, f, frames, a, lea, tom } = await duoRestartSkipping(t);
+  clock.now += 3000; frames(); clock.now += 18000; frames();
+  assert.equal(a.awaitingPlay, true, 'copie prête');
+  const answer = await f.call('POST /api/staff/person/leave', { personId: lea.person.id });
+  assert.equal(answer.removedFromKaraFun, 1, 'comptée parmi les titres retirés');
+  assert.equal(a.cancelled, true, 'annulée comme un titre à venir');
+  assert.deepEqual(removals(frames()), ['C-id'], 'retrait envoyé');
+  assert.deepEqual(f.sched.inboxOf(tom.person).filter(n => n.kind === 'duoCancelled').map(n => n.params.name), ['Léa'],
+    'l’invité apprend l’annulation');
+});
+
+test('cases d’état : copie d’un duo annulée par le vidage (relance ⏮ ratée), « Parti » de son autrice : reste annulée, retirée, sans durée', async t => {
+  const { clock, f, frames, a, lea } = await duoRestartSkipping(t);
+  await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+  clock.now += 3000; frames(); clock.now += 18000; frames();
+  assert.deepEqual([a.cancelled, a.awaitingPlay], [true, true], 'copie annulée, pas encore jouée');
+  clock.now += 2000;
+  const answer = await f.call('POST /api/staff/person/leave', { personId: lea.person.id });
+  assert.equal(answer.removedFromKaraFun, 1);
+  assert.equal(a.cancelled, true, 'reste annulée');
+  assert.deepEqual(removals(frames()), ['C-id'], 'retrait renvoyé');
+  frames(queueEvent(), isoStatus(1, null));
+  assert.equal(f.tracked().length, 0, 'passage clos');
+  assert.deepEqual([...f.sched.slotSamples], [], 'sans durée mesurée');
+});
+
+// ---------------------------------------------------------------- suite 7 : relecture de la branche, passe 2
+// Relecture, passe 2 (design, mainteneur, machines à états, adversaire) — l'abandon de la relance disait si
+// « le titre continue » d'après la file reçue seule : le titre relancé, sur scène mais absent de cette file
+// (pendant l'ajout, après le délai ajouté plus haut ; ou « Suivant » ignoré), passait pour « un autre
+// titre », et le bar allait chercher dans KaraFun un titre qui n'existait pas.
+test('relance ⏮ abandonnée, titre relancé sur scène mais absent de la file reçue : « Le titre en cours continue. »', async t => {
+  for (const phase of ['ajout', 'après « Suivant »']) {
+    const { clock, f, frames, A, add } = await restartRequested(t);
+    const C = isoItem('C-id', 101, add.payload.options);
+    if (phase === 'ajout') {
+      frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(C), isoStatus(4, A)); // A joue hors de la file
+      clock.now += 16000;
+    } else {
+      frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(A, C)); // « Suivant » envoyé, ignoré
+      frames(queueEvent(C), isoStatus(4, A)); // A joue encore, absent de la file reçue
+      clock.now += 21000;
+    }
+    assert.deepEqual(removals(frames()), ['C-id'], `${phase} : copie retirée`);
+    const note = phase === 'ajout' ? 'KaraFun n’a pas confirmé la relance du titre : rien n’a été passé. Le titre en cours continue.'
+      : 'La relance n’a pas démarré. Le titre en cours continue.';
+    assert.ok(notes(f).includes(note), `${phase} : le bar apprend que le titre continue`);
+    assert.equal(notes(f).some(line => line.includes('Un autre titre joue maintenant')), false, `${phase} : pas « un autre titre »`);
+    assert.deepEqual(plain(f.tracked().map(tr => [tr.queueId, tr.awaitingPlay ?? null])), [['A-id', null]], `${phase} : le titre garde son suivi`);
+  }
+});
+
+// Relecture, passe 2 (adversaire) — la copie prête reprise après un arrêt brutal était réglée avant de savoir
+// si elle était encore dans KaraFun : retirée entre-temps (dans KaraFun, ou KaraFun relancé), elle valait
+// encore au bar « La copie prête … est retirée de KaraFun » et à l'invité l'annulation d'un duo qui n'était
+// plus là. Sortie de KaraFun, elle est seulement close, comme une copie prête retirée.
+test('relance ⏮ d’un duo, autrice partie pendant elle, arrêt brutal, copie déjà sortie de KaraFun : passage clos, sans avis', async t => {
+  const { clock, f: before, tom } = await duoRestartSkipping(t);
+  await before.call('POST /api/staff/table-left', { id: '1' });
+  const { f, frames } = hardStop(t, { clock, f: before });
+  assert.deepEqual(removals(frames(queueEvent(), isoStatus(1, null))), [], 'rien à retirer');
+  assert.equal(f.tracked().length, 0, 'passage clos');
+  assert.equal(notes(f).some(line => line.startsWith('La copie prête')), false, 'pas de note pour une copie disparue');
+  assert.deepEqual(f.sched.inboxOf(f.sched.people.get(tom.person.id)).filter(n => n.kind === 'duoCancelled'), [], 'l’invité n’est pas prévenu');
+});
+
+// Relecture, passe 2 (équipe rouge) — un titre marqué absent à l'appel puis lancé quand même garde son repère
+// `absent`, et sa copie prête d'une relance ⏮ aussi (même suivi) : le départ de l'invité la traitait comme un
+// titre en train de sortir de KaraFun, sans `started` : son passage chanté lui était repris, et un départ de
+// duo noté aux statistiques. Un passage déjà chanté n'est jamais « en train de sortir ».
+test('relance ⏮ d’un duo ratée, copie prête portant le repère « absent » de son titre : l’invité parti garde son passage', async t => {
+  const { clock, f, frames, a, lea, tom } = await duoRestartSkipping(t);
+  clock.now += 3000; frames(); clock.now += 18000; frames();
+  assert.equal(a.awaitingPlay, true, 'copie prête');
+  a.absent = true; // repère du titre relancé, marqué absent puis lancé quand même
+  const appearances = () => (tom.person.sung || 0) + (tom.person.duetGuestCount || 0);
+  assert.equal(appearances(), 1, 'Tom compté dans le duo');
+  const answer = await f.call('POST /api/staff/person/leave', { personId: tom.person.id });
+  assert.equal(answer.keptAsSolo, 1, 'copie gardée en solo, comptée comme telle');
+  assert.deepEqual(plain(a.sel.ids), [lea.person.id], 'Tom quitte la copie');
+  assert.equal(appearances(), 1, 'son passage chanté lui reste compté');
+  assert.deepEqual(f.events('duo.left'), [], 'pas un départ de duo');
+});
+
+// Relecture, passe 2 (essais) — la garde des titres d'avant n'était essayée qu'avec un titre que KaraFun ne
+// liste jamais. KaraFun liste ensuite le titre relancé avec sa copie : le titre ne passe pas pour sa propre
+// copie, « Suivant » part.
+test('relance ⏮ d’un titre ajouté dans KaraFun, absent de la file reçue au ⏮, puis listé avec sa copie : « Suivant »', async t => {
+  const clock = clockAt('2026-11-12T21:00:00.000Z');
+  const f = harness({ Date: clock.Date });
+  const { frames } = replayBridge(t, f);
+  const X = isoItem('X-id', 555, { singer: 'Quelqu’un' });
+  frames(queueEvent(), isoStatus(4, X)); // KaraFun joue X sans le lister dans sa file
+  await f.call('POST /api/staff/kf', { action: 'restart' });
+  const add = frames().find(m => m.type === 'remote.AddToQueueRequest');
+  const C = isoItem('C-id', 555, add.payload.options);
+  const sent = frames({ id: add.id, type: 'remote.AddToQueueResponse', payload: {} }, queueEvent(X, C), isoStatus(4, X));
+  assert.deepEqual(sent.map(m => m.type), ['remote.NextRequest'], '« Suivant » : la copie est C');
+  assert.equal(notes(f).includes('« Titre 555 » repart du début.'), false, 'X n’est pas sa propre copie');
+});
+
+// Relecture, passe 2 (machines à états, essais) — branche du duo de settleReadyCopy sans essai : autrice partie
+// pendant la relance, arrêt brutal ; à la première vue lisible, la copie part et l'invité apprend l'annulation.
+test('relance ⏮ d’un duo après « Suivant », autrice partie pendant elle, arrêt brutal : copie retirée, l’invité apprend l’annulation', async t => {
+  for (const gesture of ['« Parti »', '« Table partie »']) {
+    const { clock, f: before, lea, tom } = await duoRestartSkipping(t, `${gesture} : `);
+    if (gesture === '« Parti »') await before.call('POST /api/staff/person/leave', { personId: lea.person.id });
+    else await before.call('POST /api/staff/table-left', { id: '1' });
+    const { f, frames } = hardStop(t, { clock, f: before });
+    const C = isoItem('C-id', 101, { singer: 'Léa & Tom' });
+    assert.deepEqual(removals(frames(queueEvent(C), isoStatus(1, C))), ['C-id'], `${gesture} : retrait de la copie envoyé`);
+    assert.equal(f.tracked()[0]?.cancelled, true, `${gesture} : annulée comme un titre à venir`);
+    assert.ok(notes(f).includes('La copie prête de « Titre 101 » est retirée de KaraFun : Léa n’est plus là, le duo est annulé.'),
+      `${gesture} : le bar l’apprend`);
+    assert.deepEqual(f.sched.inboxOf(f.sched.people.get(tom.person.id)).filter(n => n.kind === 'duoCancelled').map(n => [n.params.name, n.params.title]),
+      [['Léa', 'Titre 101']], `${gesture} : l’invité apprend l’annulation du duo`);
+  }
+});
+
+// Relecture, passe 2 (machines à états) — cases sans essai.
+test('cases d’état : copie d’un duo annulée par le vidage (relance ⏮ ratée), « Parti » ou « Table partie » de son invité : rien de plus', async t => {
+  for (const gesture of ['« Parti »', '« Table partie »']) {
+    const { clock, f, frames, a, lea, tom } = await duoRestartSkipping(t, `${gesture} : `);
+    await f.call('POST /api/staff/queue-clear', { confirmation: 'VIDER TOUTES LES CHANSONS' });
+    clock.now += 3000; frames(); clock.now += 18000; frames();
+    assert.deepEqual([a.cancelled, a.awaitingPlay], [true, true], `${gesture} : copie annulée, pas encore jouée`);
+    clock.now += 2000;
+    const answer = gesture === '« Parti »' ? await f.call('POST /api/staff/person/leave', { personId: tom.person.id })
+      : await f.call('POST /api/staff/table-left', { id: '2' });
+    assert.deepEqual([answer.removedFromKaraFun, answer.keptAsSolo], [0, undefined], `${gesture} : rien de plus à retirer, pas gardée en solo`);
+    assert.equal(a.cancelled, true, `${gesture} : reste annulée`);
+    assert.deepEqual(removals(frames()), [], `${gesture} : aucun second retrait avant son délai`);
+    assert.deepEqual(f.sched.inboxOf(lea.person).filter(n => n.kind === 'duoLeft'), [], `${gesture} : pas de « duo quitté » pour un titre qui part`);
+  }
+});
+
+test('cases d’état : copie prête d’un duo (relance ⏮ ratée), « Je ne chante plus ce duo » de l’invité ou « Chanter seul » de l’autrice : refusés', async t => {
+  for (const gesture of ['« Je ne chante plus ce duo »', '« Chanter seul »']) {
+    const { clock, f, frames, a, lea, tom } = await duoRestartSkipping(t, `${gesture} : `);
+    clock.now += 3000; frames(); clock.now += 18000; frames();
+    assert.equal(a.awaitingPlay, true, `${gesture} : copie prête`);
+    if (gesture === '« Je ne chante plus ce duo »') {
+      const row = f.publicState(tom.person, '2', new Set([tom.person.id])).me.inKaraFun.find(item => item.queueId === 'C-id');
+      assert.equal(row.canLeave, false, `${gesture} : le téléphone ne le propose pas`);
+      await rejects(f.call('POST /api/table/duet/leave', { ...tom.body, ownerId: lea.person.id, entryId: a.sel.song.entryId }), null,
+        /^Trop tard : ce duo est déjà sur scène\.$/);
+    } else {
+      await rejects(f.call('POST /api/table/duet/solo', { ...lea.body, entryId: a.sel.song.entryId }), null, /^Trop tard : ce duo est déjà sur scène\.$/);
+    }
+    assert.deepEqual(plain(a.sel.ids), [lea.person.id, tom.person.id], `${gesture} : le duo reste entier`);
+    assert.equal(a.awaitingPlay, true, `${gesture} : copie toujours prête`);
+    assert.equal(f.sched.inboxOf(tom.person).filter(n => n.kind === 'duoCancelled').length, 0, `${gesture} : l’invité n’apprend rien`);
+  }
+});
+
+// Même suite : une copie que KaraFun annonce sur son lecteur sans la lister dans sa file (file et état arrivent
+// séparément) est encore dans KaraFun : réglée à la première vue lisible.
+test('relance ⏮ d’un duo, autrice partie pendant elle, arrêt brutal, copie sur le lecteur de KaraFun mais absente de sa file : réglée', async t => {
+  const { clock, f: before, tom } = await duoRestartSkipping(t);
+  await before.call('POST /api/staff/table-left', { id: '1' });
+  const { f, frames } = hardStop(t, { clock, f: before });
+  frames(queueEvent(), isoStatus(1, isoItem('C-id', 101, { singer: 'Léa & Tom' })));
+  assert.equal(f.tracked()[0]?.cancelled, true, 'annulée comme un titre à venir');
+  assert.deepEqual(f.sched.inboxOf(f.sched.people.get(tom.person.id)).filter(n => n.kind === 'duoCancelled').map(n => n.params.name), ['Léa'],
+    'l’invité apprend l’annulation du duo');
 });

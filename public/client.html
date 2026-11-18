@@ -2247,10 +2247,11 @@
     else if (draft?.state === 'saving') text = t('Enregistrement…');
     else if (draft?.state === 'editing') text = t('Modifié…');
     else if (saved) {
-      tone = 'ok';
+      // Message de KaraFun illisible : peut-être jamais appliqué, le bar le règle
+      // dans KaraFun. Un avertissement, qui reste (flushTune), pas un succès.
+      tone = saved.applied === 'unreadable' ? 'warn' : 'ok';
       text = saved.applied === 'karafun' ? t('Enregistré ✓ · envoyé à KaraFun') : saved.applied === 'start' ? t('Enregistré ✓ · appliqué au début du titre')
         : saved.applied === 'sending' ? t('Enregistré ✓ · appliqué dès que KaraFun reçoit le titre')
-        // Message de KaraFun illisible : peut-être jamais appliqué, le bar le règle dans KaraFun.
         : saved.applied === 'unreadable' ? t('Enregistré ✓ · pas encore envoyé à KaraFun : demande au bar') : t('Enregistré ✓');
     } else if (!lock) text = t('Chaque changement s’enregistre tout seul.');
     const status = `${esc(text)}${tone === 'bad' && !lock ? ` · <button type="button" class="link-btn" data-tune-retry>${esc(t('Réessayer'))}</button>` : ''}`;
@@ -2291,8 +2292,16 @@
         draft.state = 'saved';
         draft.afterLoad = stateRequest;
         const mark = { applied: result?.applied || null };
-        tuneSaved.set(key, mark);
-        setTimeout(() => { if (tuneSaved.get(key) === mark) tuneSaved.delete(key); renderTune(); }, TUNE_SAVED_MS);
+        if (mark.applied === 'unreadable' && !(tuneSheet?.entryId === key && !$('sheet').hidden)) {
+          // Fiche déjà fermée (changement envoyé à sa fermeture, ou encore en
+          // route) : un message le dit, et l'avis ne revient pas à sa réouverture.
+          toast(t('Réglages de « {title} » pas encore envoyés à KaraFun : demande au bar', { title: draft.title || t('cette chanson') }), false, { warn: true });
+        } else {
+          tuneSaved.set(key, mark);
+          // « Pas encore envoyé » reste jusqu'au changement suivant (editTune) ou à
+          // la fermeture de la fiche (dropUnsentTune) ; un succès s'efface seul.
+          if (mark.applied !== 'unreadable') setTimeout(() => { if (tuneSaved.get(key) === mark) tuneSaved.delete(key); renderTune(); }, TUNE_SAVED_MS);
+        }
       }
     } catch (error) {
       if (error.status === 403 && error.code === 'TABLE_ACCESS') { invalidAccess = true; showInvalidLink(); return; }
@@ -2309,6 +2318,9 @@
     refresh();
   }
   const flushTunes = () => { for (const [key, draft] of tuneDrafts) if (draft.state === 'editing') flushTune(key); };
+  // Fiche des réglages fermée : son avis « pas encore envoyé » ne revient pas à
+  // sa réouverture, peut-être après la fin de l'alerte, où le réglage est parti.
+  const dropUnsentTune = key => { if (tuneSaved.get(key)?.applied === 'unreadable') tuneSaved.delete(key); };
 
   $('sheetPanel').addEventListener('click', event => {
     if (!tuneSheet) return;
@@ -3541,7 +3553,7 @@
   function openSheet(html) {
     transferSheetFor = null;
     // Une autre fiche remplace celle des réglages : ce qui attend part tout de suite.
-    if (tuneSheet) { flushTune(tuneSheet.entryId); tuneSheet = null; }
+    if (tuneSheet) { dropUnsentTune(tuneSheet.entryId); flushTune(tuneSheet.entryId); tuneSheet = null; }
     const opening = $('sheet').hidden;
     if (opening) lastFocus = document.activeElement;
     $('sheetPanel').innerHTML = html;
@@ -3563,7 +3575,7 @@
     // Réglages : un changement encore en attente part à la fermeture.
     const tuned = tuneSheet;
     tuneSheet = null;
-    if (tuned) flushTune(tuned.entryId);
+    if (tuned) { dropUnsentTune(tuned.entryId); flushTune(tuned.entryId); }
     // Liste redessinée depuis l'ouverture : le focus revient au même bouton « Réglages ».
     if (tuned && lastFocus && !document.contains(lastFocus)) lastFocus = document.querySelector(`[data-song-settings="${tuned.entryId}"]`);
     if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
