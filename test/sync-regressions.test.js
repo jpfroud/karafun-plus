@@ -1528,6 +1528,165 @@ test('fermeture atteinte : plus de demande « Je suis là », personne n’est s
   assert.equal(f.adds.length, 0);
 });
 
+// Relecture 2, tour 2 (tests) : rien n'essayait que la Battle attende la fin
+// d'une alerte « message de KaraFun illisible » avant de partir.
+test('message de KaraFun illisible : la Battle attend un message lisible', () => {
+  const f = harness();
+  f.bridge.unreadable = 'remote.StatusEvent';
+  f.battleVote.staffLaunch({ song: song(5091, 'Battle collective') });
+  f.sync();
+  assert.deepEqual(f.battleAdds, []);
+  f.bridge.unreadable = null;
+  f.sync();
+  assert.deepEqual(f.battleAdds.map(add => add.songId), [5091]);
+});
+
+// Regression: relecture 2, tour 2 (passe adverse, machines à états) — pendant
+// l'alerte, la copie normale de la Battle était passée en mode Battle d'après
+// la file figée (la trame illisible pouvait justement porter ce mode), et
+// l'attente de 15 s concluait « n'a pas confirmé l'ajout Battle » alors que la
+// file de KaraFun ne se lisait plus. Le passage en mode Battle attend la fin
+// de l'alerte, et l'échec une file lisible.
+test('message de KaraFun illisible : copie normale passée en mode Battle, ou Battle en échec, seulement d’après une file lisible', () => {
+  const f = harness();
+  f.battleVote.staffLaunch({ song: SARA });
+  f.sync();
+  const copy = saraCopy('copie-normale');
+  f.bridge.queue = [copy];
+  f.sync();
+  f.battleVote.automation.plainSince -= 1600;
+  Object.assign(f.bridge, { unreadable: 'remote.QueueEvent', queueUnreadable: true });
+  f.sync();
+  assert.equal(f.battleModes.length, 1, 'pas de passage en mode Battle pendant l’alerte');
+  f.battleVote.automation.sentAt -= 16000;
+  f.battleVote.automation.plainSince -= 16000;
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'sending', 'pas d’échec pendant une file illisible');
+  // La trame illisible portait le mode Battle : la file lisible suivante le montre.
+  Object.assign(f.bridge, { unreadable: null, queueUnreadable: false, queue: [saraCopy(copy.queueId, { mod: SARA_MOD })] });
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'queued');
+  assert.equal(f.battleModes.length, 1, 'aucune commande de mode');
+});
+
+// Regression: relecture 2, tour 2 (passe adverse) — la reprise après une
+// Battle lançait le titre suivant d'après une vue figée pendant l'alerte.
+test('message de KaraFun illisible : la reprise après Battle ne lance rien avant un message lisible', () => {
+  const f = harness();
+  const choice = song(5091, 'Battle collective');
+  f.battleVote.staffLaunch({ song: choice });
+  f.sync();
+  const battle = battleItem('battle-uuid', choice);
+  f.bridge.queue = [battle];
+  f.sync();
+  f.bridge.status = { state: 'playing', current: battle };
+  f.sync();
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.battleVote.view().automation.status, 'after');
+  f.battleVote.updateAutomation('resuming'); // clic du bar
+  f.bridge.queue = [item('suivant', song(91), 'Alice')];
+  f.bridge.unreadable = 'remote.StatusEvent';
+  f.sync();
+  assert.deepEqual(f.plays, [], 'pas de « Lecture » d’après une vue figée');
+  f.bridge.unreadable = null;
+  f.sync();
+  assert.equal(f.plays.length, 1, 'message lisible : la reprise lance le titre');
+});
+
+// Regression: relecture du cycle 3 — duo en cours d'envoi dont l'autrice part
+// (« Parti »), accusé pendant l'alerte d'un message illisible, puis lancé par KaraFun
+// avant la fin de l'alerte. Il restait annulé : à sa fin, « Retrait KaraFun confirmé »,
+// sans passage compté ni clos. Il continue et compte, comme l'accusé arrivé directement
+// sur scène, et son passage se clôt à sa fin.
+test('duo en cours d’envoi, autrice partie, accusé pendant l’alerte puis lancé : il continue, compte et se clôt', async () => {
+  const f = harness();
+  f.settings.pushDelaySec = 0;
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 2 });
+  const bob = f.sched.join({ tableId: '1', name: 'Bob', headcount: 2 });
+  const s = song(613);
+  // Même table : duo direct, sans réponse demandée.
+  assert.equal(f.sched.inviteDuet(alice, bob.id, s).duet.state, 'accepted');
+  f.sync();
+  assert.equal(f.adds.length, 1, 'duo envoyé à KaraFun');
+  await f.handle('POST /api/staff/person/leave', { personId: alice.id });
+  assert.equal(f.pending()?.cancelled, true, 'envoi annulé par « Parti »');
+  const ack = item('duo-alerte', s, f.adds[0].singer);
+  f.bridge.unreadable = 'remote.StatusEvent';
+  f.bridge.queue = [ack];
+  f.sync();
+  assert.equal(f.tracked()[0]?.cancelled, true, 'accusé suivi, annulé');
+  assert.equal(f.tracked()[0].removeRequestedAt, 0, 'retrait retenu jusqu’à la fin de l’alerte');
+  assert.deepEqual(f.removes, [], 'rien retiré pendant l’alerte');
+  f.bridge.unreadable = null;
+  f.bridge.status = { state: 'playing', current: ack }; // KaraFun l'a lancé pendant l'alerte
+  f.sync();
+  assert.deepEqual(f.removes, [], 'rien retiré : il est sur scène');
+  assert.equal(f.tracked()[0].cancelled, false, 'il continue');
+  assert.equal(f.tracked()[0].sel.turnCredit?.rolledBack, false, 'le passage compte');
+  assert.ok(f.sched.stageHistory.at(-1)?.ids.includes(bob.id), 'l’invité resté est sur scène dans l’historique');
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.tracked().length, 0);
+  assert.ok(f.sched.stageHistory.at(-1)?.endedAt, 'le passage se termine dans l’historique');
+  assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de faux retrait confirmé');
+});
+
+
+// Regression: relecture 2, cycle 1 — même duo de la même table (Alice et Bob), autrice
+// partie pendant l'envoi (« Parti »), mais accusé lisible hors scène et hors alerte : le
+// retrait part aussitôt (removeRequestedAt posé). KaraFun le lance quand même. Seul un
+// retrait jamais envoyé levait l'annulation d'un titre vu sur scène : le duo restait
+// annulé, sans reçu, et Bob, resté dans la salle, chantait gratuitement (ni passage, ni
+// tour, ni duo comptés). Le passage compte pour l'invité resté, aucun second retrait ne
+// part, et le passage se clôt à sa fin.
+test('duo de la même table en cours d’envoi, autrice partie, accusé hors alerte (retrait envoyé), lancé quand même : le passage compte pour l’invité resté', async () => {
+  const f = harness();
+  f.settings.pushDelaySec = 0;
+  const alice = f.sched.join({ tableId: '1', name: 'Alice', headcount: 2 });
+  const bob = f.sched.join({ tableId: '1', name: 'Bob', headcount: 2 });
+  const s = song(614);
+  // Même table : duo direct, sans réponse demandée.
+  assert.equal(f.sched.inviteDuet(alice, bob.id, s).duet.state, 'accepted');
+  f.sync();
+  assert.equal(f.adds.length, 1, 'duo envoyé à KaraFun');
+  await f.handle('POST /api/staff/person/leave', { personId: alice.id });
+  assert.equal(f.pending()?.cancelled, true, 'envoi annulé par « Parti »');
+  const counted = () => ({ duetGuestCount: bob.duetGuestCount || 0, roundApps: f.sched.roundApps.get(bob.id) || 0,
+    lastAppearanceTurn: bob.lastAppearanceTurn || 0, appearanceSerial: f.sched.appearanceSerial });
+  const before = counted();
+  // Accusé lisible, hors scène : la scène est libre, aucune alerte.
+  const ack = item('duo-hors-alerte', s, f.adds[0].singer);
+  f.bridge.queue = [ack];
+  f.sync();
+  const sent = f.tracked()[0];
+  assert.equal(sent?.cancelled, true, 'accusé suivi, annulé');
+  assert.ok(sent.removeRequestedAt > 0, 'retrait envoyé à l’accusé');
+  assert.deepEqual(f.removes, ['duo-hors-alerte'], 'retrait envoyé aussitôt');
+  assert.equal(sent.sel.turnCredit, undefined, 'pas compté à l’accusé');
+  assert.deepEqual(counted(), before, 'Bob pas encore compté');
+  // KaraFun ignore le retrait et lance le duo : Bob chante.
+  f.bridge.status = { state: 'playing', current: ack };
+  f.sync();
+  assert.equal(sent.cancelled, false, 'il continue');
+  assert.equal(sent.sel.turnCredit?.rolledBack, false, 'le passage compte : reçu posé');
+  assert.deepEqual(counted(), { duetGuestCount: before.duetGuestCount + 1, roundApps: before.roundApps + 1,
+    lastAppearanceTurn: before.appearanceSerial + 1, appearanceSerial: before.appearanceSerial + 1 },
+  'l’apparition de Bob est comptée : duo, tour et dernier passage');
+  assert.ok(f.sched.stageHistory.at(-1)?.ids.includes(bob.id), 'l’invité resté est sur scène dans l’historique');
+  // Fin du duo.
+  f.bridge.queue = [];
+  f.bridge.status = { state: 'idle', current: null };
+  f.sync();
+  assert.equal(f.tracked().length, 0);
+  assert.ok(f.sched.stageHistory.at(-1)?.endedAt, 'le passage se termine dans l’historique');
+  assert.ok(!f.sched.log.some(line => /Retrait KaraFun confirmé/.test(line.msg)), 'pas de faux retrait confirmé');
+  assert.deepEqual(f.removes, ['duo-hors-alerte'], 'aucun second retrait');
+  assert.equal(bob.duetGuestCount, before.duetGuestCount + 1, 'toujours compté');
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {

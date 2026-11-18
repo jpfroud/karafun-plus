@@ -66,10 +66,10 @@ test('D1 Dockerfile et contrat', () => {
   const froms = dockerfile.filter(i => i.op === 'FROM').map(i => i.args);
   for (const from of froms) assert.match(from, /^(?:--platform=\$BUILDPLATFORM )?\S+:\S+@sha256:[0-9a-f]{64}(?: AS \w+)?$/, `base non épinglée : ${from}`);
   assert.deepEqual(froms.map(from => from.replace(/@sha256:[0-9a-f]{64}/, '')), [
-    '--platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-21 AS solveur',
-    'eclipse-temurin:21-jdk AS jre',
-    '--platform=$BUILDPLATFORM node:22-bookworm-slim AS deps',
-    'node:22-bookworm-slim',
+    '--platform=$BUILDPLATFORM maven:3.10-eclipse-temurin-25 AS solveur',
+    'eclipse-temurin:25-jdk AS jre',
+    '--platform=$BUILDPLATFORM node:26-trixie-slim AS deps',
+    'node:26-trixie-slim',
   ], 'bases et étapes');
   assert.equal(froms[2].split(' ')[1].split('@')[1], froms[3].split('@')[1], 'même Node pour les dépendances et l’exécution');
   // Dépendances installées sans leurs scripts ; ni npm ni yarn dans l'image d'exécution.
@@ -78,6 +78,20 @@ test('D1 Dockerfile et contrat', () => {
   const cleanup = inStage(Math.max(...dockerfile.map(i => i.stage)), 'RUN').map(i => i.args).join(' ');
   for (const removed of ['/usr/local/lib/node_modules', '/usr/local/bin/npm', '/usr/local/bin/npx', '/usr/local/bin/corepack', '/opt/yarn-v*']) {
     assert.ok(cleanup.includes(removed), `${removed} retiré de l’image d’exécution`);
+  }
+
+  // Mise à niveau de zlib1g (SECURITY.md) : construction refusée si l'image de base
+  // a déjà le correctif (retirer l'étape), et version vérifiée après coup (un miroir de
+  // Debian en retard laisserait sinon l'ancienne sans erreur).
+  const zlib = inStage(finalStage, 'RUN').map(i => i.args).find(args => /--only-upgrade zlib1g/.test(args));
+  if (zlib) {
+    const corrige = /\bcorrige=(\S+)/.exec(zlib)?.[1];
+    assert.ok(corrige, 'version corrigée de zlib1g nommée dans l’étape');
+    assert.match(zlib, /if dpkg --compare-versions [\s\S]*? ge "\$corrige"; then [\s\S]*?retirer cette étape[\s\S]*?exit 1/,
+      'base déjà corrigée : construction refusée');
+    assert.match(zlib, /--only-upgrade zlib1g[\s\S]*if ! dpkg --compare-versions [\s\S]*? ge "\$corrige"; then [\s\S]*?exit 1/,
+      'version vérifiée après la mise à niveau');
+    assert.ok(read('SECURITY.md').includes(corrige), 'SECURITY.md cite la même version de zlib1g');
   }
 
   // Environnement de l'image : exactement ces cinq variables, aucune URL ni clé.

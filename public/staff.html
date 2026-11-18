@@ -594,8 +594,8 @@
     return `${item.version}${role}${date}`;
   }
   // Tant qu'une soirée est en mémoire (jusqu'à « Nouvelle soirée »), une
-  // version antérieure à fullRestoreSince perdrait priorités, prochain annoncé
-  // et historique des passages : affichée, jamais choisie (le serveur la refuse aussi).
+  // version antérieure à fullRestoreSince ne reprendrait pas toute la file
+  // (night-state.js) : affichée, jamais choisie (le serveur la refuse aussi).
   const eveningOnlyLater = (update, version) => !!update.nightInMemory && !!update.fullRestoreSince &&
     compareVersions(version, update.fullRestoreSince) < 0;
   function renderVersionChoice(update) {
@@ -1405,6 +1405,7 @@
     const many = S.removalPending > 1;
     const alerts = [
       ['persistence', S.persistenceError ? `Sauvegarde impossible : ${S.persistenceError}. Envoi automatique suspendu.` : ''],
+      ['sync', S.syncFailing ? 'La mise à jour avec KaraFun échoue : la file ne pilote plus KaraFun et réessaie seule. Pilote dans KaraFun en attendant.' : ''],
       ['recovered', S.recoveredPending ? 'Envoi interrompu à vérifier dans KaraFun avant de reprendre la file.' : ''],
       ['clear', !S.queueClearPending ? '' : kfReady ? 'Vidage de la file en cours : vérifie KaraFun. Les nouveaux titres attendent la confirmation des retraits.' :
         'File vidée ici, mais KaraFun n’est pas connecté : ses titres en attente seront retirés dès sa connexion, avant tout nouvel envoi.',
@@ -1424,16 +1425,19 @@
     if (changed) saveDismissed();
     // KaraFun perdu : impossible à fermer, avec la reconnexion à portée de doigt.
     const kf = kfStatus();
-    // KaraFun qui limite les essais d'abord : inutile de cliquer, pas de
-    // bouton Reconnecter. Puis KaraFun fermé ou code changé, essais arrêtés :
-    // la file n'essaie plus seule, Reconnecter à l'ouverture ou nouveau code.
+    // KaraFun qui limite les essais, ou un message de KaraFun illisible
+    // (connecté), d'abord : alerte du pont seule. Limite : sans bouton
+    // Reconnecter, inutile de cliquer. Message illisible : avec son propre
+    // Reconnecter (canReconnect), qui rouvre la connexion pour que KaraFun
+    // renvoie sa file et son état. Puis KaraFun fermé ou code changé, essais
+    // arrêtés : la file n'essaie plus seule, Reconnecter à l'ouverture ou nouveau code.
     // Puis KaraFun perdu (Reconnecter), même pendant un conflit de nom :
     // KaraFun absent, le nom n'est pas redemandé. Enfin le nom encore tenu
     // par l'ancienne connexion (la file réessaie seule, ou prend un autre nom
     // tout de suite).
     const connection = S.kf?.connection;
     const kfAlert = !S.kf ? '<div class="staff-alert kf-alert"><span>KaraFun n’a pas de code : aucun titre ne part.</span><span class="alert-actions"><button type="button" class="btn small" data-alert-goto="kfPanel">Saisir le code</button></span></div>' :
-      connection?.alert && !connection.nameConflict && !connection.canRename ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span></div>` :
+      connection?.alert && !connection.nameConflict && !connection.canRename ? `<div class="staff-alert kf-alert${connection.canReconnect ? ' with-actions' : ''}"><span>${esc(connection.alert)}</span>${connection.canReconnect ? '<span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button></span>' : ''}</div>` :
       connection?.phase === 'stopped' ? '<div class="staff-alert kf-alert kf-stopped"><span>KaraFun fermé ou code changé : la file n’essaie plus seule, les titres ne partent plus. Une fois KaraFun ouvert (télécommande activée), clique sur « Reconnecter » ; si le code a changé, utilise « Saisir le code ».</span><span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button><button type="button" class="btn small" data-alert-goto="kfPanel">Saisir le code</button></span></div>' :
       kf.down ? `<div class="staff-alert kf-alert"><span>${esc(kf.text)} : les titres ne partent plus.</span><span class="alert-actions"><button type="button" class="btn small primary" data-alert-reconnect>Reconnecter</button></span></div>` :
       connection?.alert ? `<div class="staff-alert kf-alert"><span>${esc(connection.alert)}</span>${connection.canRename ? '<span class="alert-actions"><button type="button" class="btn small primary" data-alert-rename>Prendre un autre nom maintenant</button></span>' : ''}</div>` : '';
@@ -1835,7 +1839,9 @@
   }
   const LIVE_CONFIRM_MS = 8000; // sans écho de KaraFun passé ce délai, sa valeur revient
   const SAVED_TUNE = { karafun: 'Enregistré ✓ · envoyé à KaraFun', start: 'Enregistré ✓ · appliqué au début du titre',
-    sending: 'Enregistré ✓ · appliqué dès que KaraFun reçoit le titre' };
+    sending: 'Enregistré ✓ · appliqué dès que KaraFun reçoit le titre',
+    // Envoyé à la fin de l'alerte si le titre n'a pas commencé, sinon jamais (GUIDE-BAR.md).
+    unreadable: 'Enregistré ✓ · pas encore envoyé : message de KaraFun illisible, règle-le dans KaraFun' };
   const tuneRanges = () => ({ pitch: { min: -6, max: 6, step: 1, ...S?.songSettings?.ranges?.pitch },
     tempo: { min: -50, max: 50, step: 5, ...S?.songSettings?.ranges?.tempo } });
   const tuneDefaults = () => ({ pitch: 0, tempo: 0, guide: 0, backing: 100, ...S?.songSettings?.defaults });
@@ -2453,7 +2459,8 @@
     // Ce que la nouvelle soirée coupe aussi, annoncé avant la confirmation :
     // l'envoi automatique tant qu'un titre envoyé attend son retrait de
     // KaraFun (comme le serveur), la lecture automatique et l'heure de fermeture.
-    const sentLeft = !!S.pending || (S.tracked || []).some(tr => !tr.startedAt && String(tr.queueId) !== String(S.stage?.queueId ?? ''));
+    // Une copie prête d'une relance ⏮ (awaitingPlay) part comme un titre à venir.
+    const sentLeft = !!S.pending || (S.tracked || []).some(tr => (!tr.startedAt || tr.awaitingPlay) && String(tr.queueId) !== String(S.stage?.queueId ?? ''));
     const stops = [S.settings?.auto && sentLeft ? 'L’envoi automatique sera coupé : titres encore dans KaraFun à vérifier. Réactive-le dans « Plus » ensuite.' : '',
       S.settings?.autoPlay && S.closing ? 'La lecture automatique sera coupée et l’heure de fermeture retirée.' :
         S.settings?.autoPlay ? 'La lecture automatique sera coupée.' : S.closing ? 'L’heure de fermeture sera retirée.' : ''].filter(Boolean);

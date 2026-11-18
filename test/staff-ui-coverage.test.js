@@ -2048,6 +2048,18 @@ test('Battle : lancement par le bar depuis la recherche de titres', async () => 
   page.doc.activeElement = null;
 });
 
+// Relecture 3 de la PR #64, passe 3 (contradictoire, interface) : avant le filet de la
+// synchronisation, une erreur de sync() arrêtait le serveur ; avec lui, la file cesse de piloter
+// KaraFun, et le bar ne le voyait qu'à une ligne du journal. L'alerte reste en haut de la page tant
+// que la mise à jour échoue, et part avec le retour à la normale.
+test('alerte du bar : la mise à jour avec KaraFun échoue, la file ne pilote plus KaraFun', async () => {
+  const page = await openPage();
+  await page.update({ syncFailing: true });
+  assert.match(page.$('staffAlerts').textContent, /La mise à jour avec KaraFun échoue : la file ne pilote plus KaraFun et réessaie seule\. Pilote dans KaraFun en attendant\./);
+  await page.update({ syncFailing: false });
+  assert.doesNotMatch(page.$('staffAlerts').textContent, /La mise à jour avec KaraFun échoue/);
+});
+
 test('alertes et notifications du bar : sonnerie, personnes parties, avis KaraFun, mémoire', async () => {
   const page = await openPage({ secure: true, permission: 'default' });
   assert.equal(page.$('enableStaffAlerts').textContent, 'Activer les notifications');
@@ -2871,6 +2883,26 @@ test('barre du haut : état KaraFun du pont, alerte impossible à manquer, recon
   await page.click(page.$('reconnectBtn'));
   assert.deepEqual(page.toast(), { text: 'Action refusée', bad: true });
   delete page.replies['/api/staff/kf'];
+  // Message de KaraFun illisible, KaraFun connecté (pont prêt) : la même
+  // alerte à part, impossible à fermer, avec « Reconnecter » (relecture 2,
+  // tour 2) : le pont rouvre alors la connexion, KaraFun renvoie sa file et
+  // son état. Sans ce bouton, l'alerte restait tant que KaraFun était à l'arrêt.
+  const unreadable = 'Message de KaraFun illisible (remote.QueueEvent) : la file ne voit plus ces changements de KaraFun ' +
+    'et ne lui envoie plus rien d’elle-même ; Spotify, s’il est relié, n’est plus coupé ni relancé d’office. Pilote dans ' +
+    'KaraFun en attendant, ou clique sur « Reconnecter » pour qu’il les renvoie.';
+  const unreadableLabel = 'Message de KaraFun illisible (remote.QueueEvent)';
+  await page.update({ kf: { ...world.kf, connection: { phase: 'ready', level: 'error', label: unreadableLabel, since: Date.now(), attempt: 1,
+    canRename: false, nameConflict: null, alert: unreadable, canReconnect: true } } });
+  assert.equal(pill.className, 'pill bad');
+  assert.equal(pill.textContent, unreadableLabel, 'pastille courte, la phrase entière dans le bandeau');
+  assert.equal(page.in('staffAlerts', '.kf-alert span').textContent, unreadable);
+  // Relecture gstack-review de la branche finale (design) : texte et bouton passent à la
+  // ligne sur un téléphone, comme les autres alertes avec actions.
+  assert.match(page.in('staffAlerts', '.kf-alert').className, /\bwith-actions\b/);
+  assert.equal(page.in('staffAlerts', '.kf-alert [data-dismiss-alert]'), null, 'cette alerte ne se ferme pas');
+  await page.click(page.in('staffAlerts', '[data-alert-reconnect]'));
+  assert.deepEqual(page.lastPost('/api/staff/kf').body, { action: 'reconnect' });
+  assert.equal(page.toast().text, 'Reconnexion…');
   // Code vide : le refus du serveur s'affiche en erreur.
   page.replies['/api/staff/connect'] = { status: 400, error: 'Saisis le code affiché par KaraFun.' };
   page.$('code').value = '';
@@ -3558,6 +3590,15 @@ test('réglages de titre : une voix guide par curseur en direct et dans la fiche
   await page.flush();
   assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { guide: 50, guideVoices: { 6: 100 } });
   assert.equal(page.$('songSheetStatus').textContent, 'Enregistré ✓ · envoyé à KaraFun');
+  // Relecture 2, tour 4 : message de KaraFun illisible, le réglage n'est pas
+  // encore parti (réponse « unreadable ») : la fiche le dit.
+  page.replies['/api/staff/song/settings'] = { ok: true, applied: 'unreadable' };
+  await page.click(page.in('songSheetBody', '[data-tune="voice:6"][data-value="50"]'));
+  page.runTimers(700);
+  await page.flush();
+  assert.deepEqual(page.lastPost('/api/staff/song/settings').body.settings, { guide: 50, guideVoices: { 6: 50 } });
+  assert.equal(page.$('songSheetStatus').textContent,
+    'Enregistré ✓ · pas encore envoyé : message de KaraFun illisible, règle-le dans KaraFun');
 });
 
 test('réglages de titre : file au téléphone, nom du titre avant le badge des réglages', async () => {
@@ -4956,4 +4997,26 @@ test('page du bar en mode PC : textes inchangés au caractère près', async () 
   // Adresse publique en mode PC : le texte du PC, pas celui du serveur.
   await page.update({ phoneBase: 'https://chant.exemple.fr' });
   assert.equal(page.$('accessMode').textContent, 'Accès Internet actif si cette adresse redirige bien vers ce PC. Vérifie-la en données mobiles.');
+});
+
+// Regression: relecture 2, cycle 1 — la copie prête d'une relance ⏮ inachevée garde le début du titre
+// relancé (startedAt) sans avoir été jouée : « Supprimer toutes les tables » la retire comme un titre à
+// venir et coupe l'envoi automatique, mais la confirmation ne l'annonçait pas (seuls les titres sans
+// début comptaient). Marquée awaitingPlay par le serveur, elle est annoncée ; lancée puis chantée (plus
+// marquée, encore suivie dans une file figée), elle ne l'est plus, comme le serveur qui ne la retire pas.
+test('fin de soirée : la copie prête d’une relance ⏮ annonce la coupure de l’envoi automatique, plus une fois lancée', async () => {
+  const world = baseWorld();
+  world.settings.auto = true;
+  world.tracked = [{ queueId: 'C-id', startedAt: Date.now() - 200000, awaitingPlay: true }];
+  const page = await openPage({ world });
+  page.confirmAnswer = false;
+  await page.click(page.$('clearTables'));
+  assert.match(page.confirms.at(-1), /L’envoi automatique sera coupé : titres encore dans KaraFun à vérifier\./, 'copie prête');
+  // Lancée puis chantée : plus marquée.
+  world.tracked = [{ queueId: 'C-id', startedAt: Date.now() - 20000 }];
+  await page.poll();
+  await page.click(page.$('clearTables'));
+  assert.equal(page.confirms.length, 2);
+  assert.ok(!/envoi automatique sera coupé/.test(page.confirms.at(-1)), page.confirms.at(-1));
+  assert.equal(page.posts.some(post => post.path === '/api/staff/tables-clear'), false, 'confirmation refusée : rien envoyé');
 });

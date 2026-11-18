@@ -21,6 +21,12 @@
 // `defaults`. Ce module ne fait que des calculs, sans état.
 
 const TRACK = Object.freeze({ BACKING: 4, LEAD_A: 5, LEAD_B: 6 });
+// Nombre lu dans une trame KaraFun : un nombre, ou un texte (comme Number()).
+// Tout autre type (objet, liste, null) donne NaN, sans exception : Number()
+// échoue sur un objet dont `toString` n'est pas une fonction (`{ "toString": 1 }`).
+const kcsNumber = value => (typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN);
+// Type de piste d'une ligne de volumes KaraFun ({ track: { type }, volume }).
+const rowType = row => kcsNumber(row?.track?.type);
 const FIELDS = Object.freeze(['pitch', 'tempo', 'guide', 'backing']);
 const DEFAULTS = Object.freeze({ pitch: 0, tempo: 0, guide: 0, backing: 100 });
 const VOLUMES = new Set(['guide', 'backing']);
@@ -198,7 +204,7 @@ function addOptions({ singer, settings, ranges, tracksAvailable = null }) {
 }
 
 const volumeIn = (tracks, type) => {
-  const row = (Array.isArray(tracks) ? tracks : []).find(item => Number(item?.track?.type) === type);
+  const row = (Array.isArray(tracks) ? tracks : []).find(item => rowType(item) === type);
   return Number.isFinite(row?.volume) ? Number(row.volume) : null;
 };
 
@@ -224,7 +230,7 @@ function queueItemOptions({ singer, mod = null, settings, sent = null, current =
   const tracks = [];
   const backing = has(TRACK.BACKING) ? pick('backing', volumeIn(now.tracks, TRACK.BACKING)) : null;
   if (backing != null) { tracks.push(trackVolume(TRACK.BACKING, backing)); out.backing = backing; }
-  const listed = (Array.isArray(now.tracks) ? now.tracks : []).map(row => Number(row?.track?.type));
+  const listed = (Array.isArray(now.tracks) ? now.tracks : []).map(rowType);
   const voices = guideVoicesOf(tracksAvailable) || guideVoicesOf([TRACK.LEAD_A, ...voicesIn(s), ...voicesIn(previous), ...listed]);
   for (const type of voices) {
     const volume = pick('guide', volumeIn(now.tracks, type), values => voiceOf(values, type));
@@ -238,19 +244,19 @@ function queueItemOptions({ singer, mod = null, settings, sent = null, current =
 // Pistes vocales d'un titre : [{ type: 4 }, …] (trame KCS) ou [4, …] (normalisé).
 function songTracksOf(item) {
   if (!Array.isArray(item?.songTracks)) return null;
-  return item.songTracks.map(track => Number(track && typeof track === 'object' ? track.type : track))
+  return item.songTracks.map(track => kcsNumber(track && typeof track === 'object' ? track.type : track))
     .filter(type => Number.isInteger(type) && type > 0);
 }
 
 // État en direct du titre en cours (remote.StatusEvent) : tonalité, tempo,
 // volumes (`voices` : chaque voix guide, par type de piste) et pistes
-// vocales. Le faux KaraFun nomme le titre songPlaying.
+// vocales. L'ancien protocole nomme le titre songPlaying.
 function liveFromStatus(status) {
   if (!status || typeof status !== 'object') return null;
   const volumes = Array.isArray(status.tracks) ? status.tracks : [];
   const current = status.current || status.songPlaying || null;
   const listed = songTracksOf(current);
-  const reported = volumes.map(row => Number(row?.track?.type)).filter(Number.isInteger);
+  const reported = volumes.map(rowType).filter(Number.isInteger);
   const voices = {};
   for (const type of guideVoicesOf(reported)) if (volumeIn(volumes, type) != null) voices[type] = volumeIn(volumes, type);
   return { queueId: current?.queueId ?? null,
@@ -286,7 +292,7 @@ function neutralTarget({ backingDefault = null, previousBacking = null, options 
     if (Number.isInteger(options.tempo)) out.tempo = options.tempo;
     const backing = volumeIn(options.tracks, TRACK.BACKING);
     if (backing != null) out.backing = backing;
-    const listed = (Array.isArray(options.tracks) ? options.tracks : []).map(row => Number(row?.track?.type));
+    const listed = (Array.isArray(options.tracks) ? options.tracks : []).map(rowType);
     for (const type of guideVoicesOf(listed)) if (volumeIn(options.tracks, type) != null) setVoice(out, type, volumeIn(options.tracks, type));
   }
   return out;
@@ -326,6 +332,6 @@ function catchUpCommands({ settings, sent = null, live, tracksAvailable = null, 
   return out;
 }
 
-module.exports = { TRACK, FIELDS, DEFAULTS, VOLUME_STEP, rangesFrom, validateField, normalizeSettings, sanitizeSettings,
+module.exports = { TRACK, kcsNumber, FIELDS, DEFAULTS, VOLUME_STEP, rangesFrom, validateField, normalizeSettings, sanitizeSettings,
   clampSettings, addOptions, queueItemOptions, songTracksOf, guideVoicesOf, liveFromStatus, settingsFromLive, neutralTarget,
   catchUpCommands };

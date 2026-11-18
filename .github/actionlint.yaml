@@ -1,0 +1,7 @@
+# Étiquettes de runners GitHub qu'actionlint 1.7.12, sa dernière version, ne
+# connaît pas encore : sans cette liste, « Verifier les workflows » les refuse.
+# À retirer quand une version d'actionlint les connaîtra.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm

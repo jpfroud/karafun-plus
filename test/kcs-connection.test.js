@@ -556,7 +556,7 @@ test('découverte : WebSocket indisponible sur ce PC', async t => {
   const { bridge } = bridgeFor(t);
   bridge.connect(CODE);
   await flush();
-  assert.equal(bridge.lastError, 'WebSocket indisponible sur ce PC : le kit doit utiliser Node 22.');
+  assert.equal(bridge.lastError, 'WebSocket indisponible sur ce PC : le kit doit utiliser Node 26.');
   assert.equal(bridge.connectionState().label, 'WebSocket indisponible : nouvel essai dans 5 s');
   assert.equal(bridge.protocol, null);
 });
@@ -567,12 +567,12 @@ test('découverte : WebSocket indisponible sur ce PC', async t => {
 const SERVER_DISCOVERY_TEXTS = {
   refused: 'Le site KaraFun refuse le serveur de la file (HTTP 403) : KaraFun limite les essais depuis sa connexion, la file réessaiera seule.',
   network: 'Réseau coupé ou site KaraFun injoignable depuis le serveur de la file : vérifie sa connexion Internet.',
-  'no-websocket': 'WebSocket indisponible sur le serveur de la file : il faut Node 22.',
+  'no-websocket': 'WebSocket indisponible sur le serveur de la file : il faut Node 26.',
 };
 const PC_DISCOVERY_TEXTS = {
   refused: 'Le site KaraFun refuse ce PC (HTTP 403) : KaraFun limite les essais depuis cette connexion, la file réessaiera seule.',
   network: 'Réseau coupé ou site KaraFun injoignable depuis ce PC : vérifie la connexion Internet.',
-  'no-websocket': 'WebSocket indisponible sur ce PC : le kit doit utiliser Node 22.',
+  'no-websocket': 'WebSocket indisponible sur ce PC : le kit doit utiliser Node 26.',
 };
 // Échec de chaque nature : [réponse de la page, WebSocket absent, délai, libellé].
 const DISCOVERY_FAILURES = {

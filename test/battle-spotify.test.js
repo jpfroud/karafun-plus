@@ -408,3 +408,167 @@ test('hors Battle : file vide, Spotify reprend et la lecture automatique attend 
   await ticks(next.f, next.clock, 5);
   assert.deepEqual(next.order, []);
 });
+
+// Regression: relecture gstack-review de la branche finale (passe
+// contradictoire) — pendant l'alerte « Message de KaraFun illisible » (état
+// seul illisible, file lisible), une Battle lancée dans KaraFun quitte sa file
+// avant d'être annoncée : la file concluait d'après l'état figé que la Battle
+// était finie (« Battle terminée », délai entre deux Battles lancé dès son
+// départ). Rien n'est conclu pendant l'alerte ; la première vue lisible juge.
+test('Battle lancée pendant l’alerte d’un état illisible : rien de conclu d’après l’état figé', async () => {
+  const serverTime = serverClock();
+  const { f, order } = setup({ serverTime });
+  const bridge = fakeBridge(order, [battleItem(50)]);
+  f.setBridge(bridge);
+  f.sync();
+  assert.equal(f.battleVote.automation?.status, 'queued', 'Battle ajoutée dans KaraFun, suivie');
+  bridge.queue.length = 0; // lancée dans KaraFun : sortie de sa file avant d'être annoncée
+  bridge.unreadable = 'remote.StatusEvent';
+  f.sync();
+  await serverTime.advance(5000);
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'queued', 'rien de conclu pendant l’alerte');
+  // Passe 2 de la relecture (machines à états) : sa sortie de la file reste datée, le lien
+  // « Rejoindre la Battle » des téléphones reste donc (battleStarting).
+  assert.ok(f.battleVote.automation.missingSince, 'sortie de la file datée pendant l’alerte');
+  assert.ok(!f.sched.log.some(line => /Battle terminée/.test(line.msg)), 'pas de « Battle terminée »');
+  // Fin de l'alerte : l'état lisible montre la Battle sur scène.
+  bridge.unreadable = null;
+  bridge.status = { state: 'playing', songPlaying: { queueId: 50 } };
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'playing', 'Battle vue sur scène à la fin de l’alerte');
+});
+
+// Regression: relecture gstack-review de la branche finale, passe 2 (passe
+// contradictoire, équipe rouge) — pendant l'alerte, « ▶ Lancer le prochain titre » après
+// une Battle coupait Spotify, répondait OK et ne lançait rien avant la fin de l'alerte
+// (syncBattle attend une vue lisible), puis lançait seul. Refusé avant tout changement :
+// le bar lance le titre dans KaraFun.
+test('après une Battle, pendant l’alerte d’un message illisible : « Lancer le prochain titre » refusé sans couper Spotify', async () => {
+  const { f, order, player } = setup();
+  player.playing = true;
+  f.battleVote.observeExternalBattle({ queueId: 50, songId: 900, title: 'Tube collectif' });
+  f.battleVote.updateAutomation('playing');
+  f.battleVote.updateAutomation('after');
+  const bridge = fakeBridge(order, [plainItem(41)]);
+  f.setBridge(bridge);
+  bridge.unreadable = 'remote.StatusEvent';
+  await assert.rejects(f.handlers['POST /api/staff/kf'](null, null, { action: 'play' }),
+    /Un message de KaraFun est illisible : lance le titre suivant depuis KaraFun/);
+  assert.deepEqual(order, [], 'Spotify pas coupé, rien envoyé');
+  assert.equal(f.battleVote.automation.status, 'after');
+});
+
+// Relecture gstack-review de la branche finale, passe 2 (machines à états, case sans
+// essai) : Battle sur scène, finie pendant l'alerte d'une file de KaraFun illisible (file
+// figée, état lisible) : rien de conclu avant une vue lisible, puis la fin de l'alerte la
+// voit finie.
+test('Battle sur scène, finie pendant l’alerte d’une file illisible : rien de conclu avant une vue lisible', async () => {
+  const serverTime = serverClock();
+  const { f, order } = setup({ serverTime });
+  const bridge = fakeBridge(order, [battleItem(50)]);
+  f.setBridge(bridge);
+  f.sync();
+  bridge.queue.length = 0; // lancée : sortie de la file de KaraFun
+  bridge.status = { state: 'playing', songPlaying: { queueId: 50 } };
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'playing', 'Battle sur scène');
+  Object.assign(bridge, { unreadable: 'remote.QueueEvent', queueUnreadable: true, status: { state: 'idle' } });
+  f.sync();
+  await serverTime.advance(5000);
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'playing', 'rien de conclu pendant l’alerte');
+  assert.ok(!f.sched.log.some(line => /Battle terminée/.test(line.msg)), 'pas de « Battle terminée »');
+  Object.assign(bridge, { unreadable: null, queueUnreadable: false });
+  f.sync();
+  assert.equal(f.battleVote.automation.status, 'after', 'fin de l’alerte : Battle finie');
+  assert.ok(f.sched.log.some(line => /Battle terminée/.test(line.msg)));
+});
+
+// Regression: relecture du cycle 3 — « ▶ Lancer le prochain titre » après une Battle,
+// Spotify en lecture : la demande coupe Spotify, puis attend le court silence. Une alerte
+// « Message de KaraFun illisible » arrivée pendant ce temps passait inaperçue : la reprise
+// était notée (« resuming »), la réponse disait OK sans que rien parte, puis syncBattle
+// lançait seul le titre suivant à la fin de l'alerte, alors que le bar le lançait peut-être
+// déjà depuis KaraFun. Refusé comme si l'alerte était là dès l'appui, et rien ne demande
+// ensuite à KaraFun de jouer. Horloge du serveur réglée : l'alerte tombe dans le silence.
+test('après une Battle, alerte d’un message illisible pendant la coupure de Spotify : « Lancer le prochain titre » refusé, rien lancé à la fin de l’alerte', async () => {
+  const serverTime = serverClock();
+  const { f, clock, order, player } = setup({ spotify: { pauseLeadSec: 1 }, serverTime });
+  f.setBridge(fakeBridge(order, [battleItem(77), plainItem(78)])); f.sync();
+  f.setBridge(fakeBridge(order, [battleItem(77), plainItem(78)], 77)); f.sync();
+  const bridge = fakeBridge(order, [plainItem(78)]);
+  f.setBridge(bridge); f.sync();
+  assert.equal(f.battleVote.automation.status, 'after');
+  await ticks(f, clock, 2);
+  assert.deepEqual(order, ['spotify-play'], 'Spotify reprend après la Battle');
+  assert.equal(player.playing, true);
+  // Réponse gardée dès l'appui (acceptée ou motif du refus) : elle arrive pendant
+  // l'avance de l'horloge.
+  const answer = f.handlers['POST /api/staff/kf'](null, null, { action: 'play' })
+    .then(() => 'acceptée', error => error.message);
+  await settle();
+  assert.deepEqual(order, ['spotify-play', 'spotify-pause'], 'Spotify coupé, le court silence commence');
+  // L'alerte arrive pendant le silence.
+  bridge.unreadable = 'remote.StatusEvent';
+  await serverTime.advance(1000);
+  assert.equal(await answer, 'Un message de KaraFun est illisible : lance le titre suivant depuis KaraFun.', 'demande refusée');
+  assert.equal(f.battleVote.automation.status, 'after', 'pas de reprise notée (« resuming »)');
+  // Fin de l'alerte : le titre suivant attend toujours le bar.
+  bridge.unreadable = null;
+  f.sync();
+  await ticks(f, clock, 3);
+  await serverTime.advance(5000);
+  f.sync();
+  assert.ok(!order.includes('karafun-play'), `rien demandé à KaraFun : ${order.join(', ')}`);
+  assert.equal(f.battleVote.automation.status, 'after', 'le titre suivant attend toujours le bar');
+});
+
+// Regression: relecture 2, cycle 1 — « ▶ Lancer le prochain titre » touché deux fois après
+// une Battle, Spotify en lecture : le premier appui coupe Spotify puis attend le court
+// silence, le second attend le premier. Une alerte « Message de KaraFun illisible » arrivée
+// pendant ce silence faisait refuser le premier appui, mais le second répondait OK : le bar
+// croyait le titre suivant lancé alors que rien ne partait, ni pendant l'alerte ni à sa fin.
+// Les deux appuis sont refusés, que l'alerte arrive après le second ou entre les deux, et
+// rien n'est demandé à KaraFun à la fin de l'alerte : le bar lance le titre depuis KaraFun.
+// Horloge du serveur réglée : l'alerte tombe dans le silence d'une seconde.
+test('après une Battle, deux appuis sur « Lancer le prochain titre » et une alerte d’un message illisible pendant la coupure de Spotify : les deux refusés, rien lancé à la fin de l’alerte', async () => {
+  const refused = 'Un message de KaraFun est illisible : lance le titre suivant depuis KaraFun.';
+  for (const when of ['après le second appui', 'entre les deux appuis']) {
+    const serverTime = serverClock();
+    const { f, clock, order, player } = setup({ spotify: { pauseLeadSec: 1 }, serverTime });
+    f.setBridge(fakeBridge(order, [battleItem(77), plainItem(78)])); f.sync();
+    f.setBridge(fakeBridge(order, [battleItem(77), plainItem(78)], 77)); f.sync();
+    const bridge = fakeBridge(order, [plainItem(78)]);
+    f.setBridge(bridge); f.sync();
+    assert.equal(f.battleVote.automation.status, 'after', when);
+    await ticks(f, clock, 2);
+    assert.deepEqual(order, ['spotify-play'], `${when} : Spotify reprend après la Battle`);
+    assert.equal(player.playing, true, when);
+    // Réponses gardées dès l'appui (acceptée ou motif du refus) : elles arrivent pendant
+    // l'avance de l'horloge.
+    const tap = () => f.handlers['POST /api/staff/kf'](null, null, { action: 'play' })
+      .then(() => 'acceptée', error => error.message);
+    const first = tap();
+    await settle();
+    assert.deepEqual(order, ['spotify-play', 'spotify-pause'], `${when} : Spotify coupé, le court silence commence`);
+    await serverTime.advance(300);
+    if (when === 'entre les deux appuis') bridge.unreadable = 'remote.StatusEvent';
+    const second = tap();
+    await settle();
+    await serverTime.advance(200);
+    bridge.unreadable = 'remote.StatusEvent'; // au plus tard à 500 ms : toujours pendant le silence
+    await serverTime.advance(500);
+    assert.deepEqual(await Promise.all([first, second]), [refused, refused], `${when} : les deux appuis refusés`);
+    assert.deepEqual(order, ['spotify-play', 'spotify-pause'], `${when} : une seule coupure de Spotify, rien demandé à KaraFun`);
+    assert.equal(f.battleVote.automation.status, 'after', `${when} : pas de reprise notée (« resuming »)`);
+    // Fin de l'alerte : le titre suivant attend toujours le bar.
+    bridge.unreadable = null;
+    f.sync();
+    await ticks(f, clock, 3);
+    await serverTime.advance(5000);
+    f.sync();
+    assert.ok(!order.includes('karafun-play'), `${when} : rien demandé à KaraFun : ${order.join(', ')}`);
+    assert.equal(f.battleVote.automation.status, 'after', `${when} : le titre suivant attend toujours le bar`);
+  }
+});

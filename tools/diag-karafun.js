@@ -19,10 +19,10 @@
 //      coupé, délai dépassé), usage incorrect ou erreur inattendue.
 //
 // Lancements :
-//   - sur le VPS, même avant le compose (entrypoint de node:22-bookworm-slim
+//   - sur le VPS, même avant le compose (entrypoint de node:26-trixie-slim
 //     gardé ; <propriétaire> : compte GitHub du dépôt, celui de l'image de #22) :
 //       docker run --rm ghcr.io/<propriétaire>/karafun-plus:<version> node tools/diag-karafun.js <code>
-//   - depuis un clone avec Node 22 :
+//   - depuis un clone avec Node 26 :
 //       npm ci --omit=dev
 //       node tools/diag-karafun.js <code>
 const { CHALLENGE, DISCOVERY_HEADERS, classifyDiscovery, retryAfterAt } = require('../karafun');

@@ -6,7 +6,6 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const net = require('node:net');
-const io = require('socket.io-client');
 
 const settingsModule = require('../song-settings');
 const { TRACK, DEFAULTS, VOLUME_STEP, rangesFrom, normalizeSettings, validateField, sanitizeSettings,
@@ -185,7 +184,7 @@ test('état en direct : tonalité, tempo, volumes et pistes du titre en cours', 
   // Chaque voix guide annoncée, sans supposer leur nombre ; volume illisible ignoré.
   assert.deepEqual(liveFromStatus({ state: 4, tracks: [{ volume: 25, track: { type: 6 } }, { volume: 50, track: { type: 5 } },
     { volume: 75, track: { type: 7 } }, { volume: 'x', track: { type: 8 } }, { volume: 60, track: { type: 4 } }] }).voices, { 5: 50, 6: 25, 7: 75 });
-  // Faux KaraFun (ancien protocole) : titre en cours dans songPlaying.
+  // Ancienne télécommande (socket.io) : titre en cours dans songPlaying.
   assert.equal(liveFromStatus({ state: 'playing', songPlaying: { queueId: 4, songTracks: [4, 5] } }).queueId, 4);
   assert.deepEqual(songTracksOf({ songTracks: [{ type: 4 }, { type: 5 }, { type: 'x' }] }), [4, 5], 'trame brute KCS');
   assert.deepEqual(songTracksOf({ songTracks: [5, 6] }), [5, 6]);
@@ -465,79 +464,125 @@ test('ordonnanceur : réglages posés ou retirés sur l’entrée du titre, la v
 const freePort = () => new Promise(resolve => {
   const probe = net.createServer().listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
 });
-const nextEvent = (socket, name, accept = () => true) => new Promise(resolve => {
-  const on = data => { if (accept(data)) { socket.off(name, on); resolve(data); } };
-  socket.on(name, on);
-});
+// Client KCS minimal sur le WebSocket de Node, comme kcs-transport.js : il
+// répond aux PingRequest et garde les autres messages, dans l'ordre (`received`).
+// `next` attend le prochain message de ce type qui convient, arrivé après
+// l'appel ; au bout de 8 s, il échoue en nommant ce type, au lieu de bloquer.
+async function kcsClient(base, code) {
+  const ws = new WebSocket(`${base.replace(/^http/, 'ws')}/kcs/${code}`, 'kcpj~v3+emuping');
+  const waiters = [], received = [];
+  let nextId = 0;
+  ws.addEventListener('message', event => {
+    const message = JSON.parse(String(event.data));
+    if (message.type === 'core.PingRequest') { ws.send(JSON.stringify({ id: message.id, type: 'core.PingResponse', payload: {} })); return; }
+    received.push(message);
+    for (const waiter of [...waiters]) {
+      if (message.type !== waiter.type || !waiter.accept(message.payload)) continue;
+      waiters.splice(waiters.indexOf(waiter), 1);
+      waiter.resolve(message);
+    }
+  });
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', resolve, { once: true });
+    ws.addEventListener('error', () => reject(new Error('WebSocket du faux KaraFun refusé')), { once: true });
+  });
+  return {
+    received,
+    next: (type, accept = () => true, ms = 8000) => new Promise((resolve, reject) => {
+      const waiter = { type, accept, resolve: message => { clearTimeout(timer); resolve(message); } };
+      const timer = setTimeout(() => {
+        if (waiters.includes(waiter)) waiters.splice(waiters.indexOf(waiter), 1);
+        reject(new Error(`délai dépassé : ${type}`));
+      }, ms);
+      timer.unref();
+      waiters.push(waiter);
+    }),
+    send: (type, payload = {}) => { const id = ++nextId; ws.send(JSON.stringify({ id, type, payload })); return id; },
+    close: () => ws.close(),
+  };
+}
 
-test('faux KaraFun : options d’ajout, options d’un titre de la file et réglages du titre en cours', async t => {
+// protects=les réglages de titre du faux KaraFun en KCS (options à l'ajout, options d'un titre de la file,
+// tonalité, tempo et voix du titre en cours) ; fails_when=une option perdue ou fusionnée au lieu d'être remplacée,
+// un titre joué sans être d'abord annoncé (état 1), un réglage non appliqué ; no_claim=que le vrai KaraFun
+// réponde ainsi aux réglages (jamais observé : commentaire de SETTING_REQUESTS, karafun.js) : seul le faux est essayé, par le vrai WebSocket.
+test('faux KaraFun : options d’ajout, options d’un titre de la file et réglages du titre en cours', { timeout: 30000 }, async t => {
   const port = await freePort();
   const fake = await startFakeKaraFun({ port, code: '123456', songSeconds: 60, autoplay: false });
   t.after(() => fake.close());
-  const socket = io(fake.base, { query: { remote: 'kf123456' }, transports: ['websocket'], forceNew: true, reconnection: false });
-  t.after(() => socket.close());
-  await new Promise(resolve => socket.on('connect', resolve));
-  const firstQueue = nextEvent(socket, 'queue');
-  socket.emit('authenticate', { channel: '123456' });
+  const kf = await kcsClient(fake.base, '123456');
+  t.after(() => kf.close());
+  const firstQueue = kf.next('remote.QueueEvent');
+  kf.send('remote.UpdateUsernameRequest', { username: 'FileKaraoke-0001' });
   await firstQueue;
+  const items = message => message.payload.queue.items;
   // Ajout avec réglages : KaraFun les garde dans les options du titre.
-  let queued = nextEvent(socket, 'queue', q => q.length === 1);
-  socket.emit('queueAdd', { songId: 70002, singer: 'Léa · T1', pos: 99999,
-    options: { pitch: -2, tracks: [{ track: { type: 5 }, volume: 30 }] } });
-  let queue = await queued;
-  const item = queue[0];
-  assert.deepEqual(item.options, { singer: 'Léa · T1', pitch: -2, tracks: [{ track: { type: 5 }, volume: 30 }] });
-  assert.ok(Array.isArray(item.songTracks) && item.songTracks.includes(5), 'chaque titre annonce ses pistes vocales');
-  // Options remplacées sur le titre de la file (comme SetQueueItemOptionsRequest).
-  queued = nextEvent(socket, 'queue', q => q[0]?.options?.tempo === 10);
-  socket.emit('queueItemOptions', { queueId: item.queueId, options: { singer: 'Léa · T1', pitch: 1, tempo: 10,
+  let queued = kf.next('remote.QueueEvent', p => p.queue.items.length === 1);
+  kf.send('remote.AddToQueueRequest', { song: { type: 1, id: 70002 }, position: 99999,
+    options: { singer: 'Léa · T1', pitch: -2, tracks: [{ track: { type: 5 }, volume: 30 }] } });
+  let [item] = items(await queued);
+  assert.deepEqual(item.song.options, { singer: 'Léa · T1', pitch: -2, tracks: [{ track: { type: 5 }, volume: 30 }] });
+  assert.ok(item.song.songTracks.some(track => track.type === 5), 'chaque titre annonce ses pistes vocales');
+  // Options remplacées sur le titre de la file (SetQueueItemOptionsRequest).
+  queued = kf.next('remote.QueueEvent', p => p.queue.items[0]?.song.options.tempo === 10);
+  kf.send('remote.SetQueueItemOptionsRequest', { queueItemId: item.id, options: { singer: 'Léa · T1', pitch: 1, tempo: 10,
     tracks: [{ track: { type: 5 }, volume: 50 }] } });
-  queue = await queued;
-  assert.deepEqual(queue[0].options, { singer: 'Léa · T1', pitch: 1, tempo: 10, tracks: [{ track: { type: 5 }, volume: 50 }] });
-  // Lecture : comme KaraFun (état 1 du KCS), le titre est d'abord annoncé sans
-  // être chargé (pistes vides, réglages d'origine), puis ses options
-  // deviennent l'état en direct.
-  const announced = nextEvent(socket, 'status', s => s.state === 'idle' && s.songPlaying);
-  let status = nextEvent(socket, 'status', s => s.state === 'playing');
-  socket.emit('play');
-  const early = await announced;
-  assert.deepEqual([early.songPlaying.queueId, early.pitch, early.tempo, early.tracks], [item.queueId, 0, 0, []]);
-  let live = await status;
+  [item] = items(await queued);
+  assert.deepEqual(item.song.options, { singer: 'Léa · T1', pitch: 1, tempo: 10, tracks: [{ track: { type: 5 }, volume: 50 }] });
+  // Lecture : comme KaraFun, le titre est d'abord annoncé sans être chargé
+  // (état 1, pistes vides, réglages d'origine), puis il se charge (2), est prêt
+  // (3) et joue (4) avec ses options. Ce sont les états qui suivent la réponse à
+  // PlayRequest, dans l'ordre : un état 1 diffusé avant la lecture ne compte pas.
+  const start = kf.received.length;
+  let playing = kf.next('remote.StatusEvent', p => p.status.state === 4 && p.status.current);
+  kf.send('remote.PlayRequest');
+  let live = (await playing).payload.status;
+  const afterPlay = kf.received.slice(start);
+  const replied = afterPlay.findIndex(m => m.type === 'remote.PlayResponse');
+  assert.notEqual(replied, -1, 'réponse à PlayRequest');
+  const states = afterPlay.slice(replied + 1).filter(m => m.type === 'remote.StatusEvent').map(m => m.payload.status);
+  assert.deepEqual(states.map(s => s.state), [1, 2, 3, 4], 'annoncé, chargement, prêt, lecture');
+  assert.deepEqual([states[0].current.id, states[0].pitch, states[0].tempo, states[0].tracks], [item.id, 0, 0, []]);
   assert.equal(live.pitch, 1);
   assert.equal(live.tempo, 10);
   assert.equal(live.tracks.find(row => row.track.type === 5).volume, 50, 'voix guide du titre appliquée au démarrage');
-  assert.deepEqual(live.songPlaying.songTracks, item.songTracks);
-  assert.ok(Array.isArray(live.tracks));
+  assert.deepEqual(live.current.song.songTracks, item.song.songTracks);
   // Réglages du titre en cours (PitchRequest, TempoRequest, TrackVolumeRequest).
-  status = nextEvent(socket, 'status', s => s.pitch === -3);
-  socket.emit('pitch', -3);
-  live = await status;
-  status = nextEvent(socket, 'status', s => s.tempo === -20);
-  socket.emit('tempo', -20);
-  live = await status;
-  status = nextEvent(socket, 'status', s => s.tracks.some(row => row.track.type === 5 && row.volume === 75));
-  socket.emit('trackVolume', { type: 5, volume: 75 });
-  live = await status;
+  const live4 = accept => kf.next('remote.StatusEvent', p => p.status.state === 4 && accept(p.status));
+  playing = live4(s => s.pitch === -3);
+  kf.send('remote.PitchRequest', { pitch: -3 });
+  live = (await playing).payload.status;
+  playing = live4(s => s.tempo === -20);
+  kf.send('remote.TempoRequest', { tempo: -20 });
+  live = (await playing).payload.status;
+  playing = live4(s => s.tracks.some(row => row.track.type === 5 && row.volume === 75));
+  kf.send('remote.TrackVolumeRequest', { type: 5, volume: 75 });
+  live = (await playing).payload.status;
   assert.equal(live.pitch, -3);
-  // Réglage d'une piste que le titre n'a pas, ou d'un titre inconnu : rien ne change.
-  socket.emit('trackVolume', { type: 9, volume: 10 });
-  socket.emit('queueItemOptions', { queueId: 999, options: { pitch: 4 } });
-  status = nextEvent(socket, 'status', s => s.tempo === 15);
-  socket.emit('tempo', 15);
-  live = await status;
+  // Piste que le titre n'a pas, titre inconnu : rien ne change, et le faux répond
+  // quand même, sans inventer d'erreur que le vrai KaraFun n'a jamais montrée.
+  kf.send('remote.TrackVolumeRequest', { type: 9, volume: 10 });
+  const answered = kf.next('remote.SetQueueItemOptionsResponse');
+  const unknown = kf.send('remote.SetQueueItemOptionsRequest', { queueItemId: '999', options: { pitch: 4 } });
+  assert.equal((await answered).id, unknown);
+  playing = live4(s => s.tempo === 15);
+  kf.send('remote.TempoRequest', { tempo: 15 });
+  live = (await playing).payload.status;
   assert.equal(live.tracks.some(row => row.track.type === 9), false);
+  assert.equal(live.pitch, -3, 'le titre inconnu n’a rien changé');
   // Options du titre en cours changées : appliquées en direct aussi.
-  status = nextEvent(socket, 'status', s => s.pitch === 2);
-  socket.emit('queueItemOptions', { queueId: item.queueId, options: { singer: 'Léa · T1', pitch: 2 } });
-  live = await status;
+  playing = live4(s => s.pitch === 2);
+  kf.send('remote.SetQueueItemOptionsRequest', { queueItemId: item.id, options: { singer: 'Léa · T1', pitch: 2 } });
+  live = (await playing).payload.status;
   assert.equal(live.tempo, 0, 'options remplacées : tempo par défaut');
   assert.deepEqual(fake.state().queue[0].options, { singer: 'Léa · T1', pitch: 2 });
 });
 
 test('module : rien d’autre n’est exporté par inadvertance', () => {
+  // kcsNumber : lecture typée des nombres de KaraFun, partagée avec karafun.js.
   assert.deepEqual(Object.keys(settingsModule).sort(), ['DEFAULTS', 'FIELDS', 'TRACK', 'VOLUME_STEP', 'addOptions', 'catchUpCommands',
-    'clampSettings', 'guideVoicesOf', 'liveFromStatus', 'neutralTarget', 'normalizeSettings', 'queueItemOptions', 'rangesFrom', 'sanitizeSettings',
-    'settingsFromLive', 'songTracksOf', 'validateField'].sort());
+    'clampSettings', 'guideVoicesOf', 'kcsNumber', 'liveFromStatus', 'neutralTarget', 'normalizeSettings', 'queueItemOptions', 'rangesFrom',
+    'sanitizeSettings', 'settingsFromLive', 'songTracksOf', 'validateField'].sort());
 });
 
 // Regression: relecture PR #11, revue au lot G2 (D6) — la voix 2 posée par
@@ -563,4 +608,22 @@ test('voix guide 2 posée par la file : notée à l’envoi, remise à 0 si son 
   assert.deepEqual(sanitizeSettings({ guideB: 50, guideVoices: { 7: 0 } }, { keepDefaults: true }), { guideVoices: { 6: 50, 7: 0 } });
   assert.deepEqual(sanitizeSettings({ guide: 30, guideB: 50 }), { guide: 30 }, 'réglages d’un titre : pas de piste B');
   assert.deepEqual(sanitizeSettings({ guideB: 150 }, { keepDefaults: true }), null);
+});
+
+// Regression: valeurs imprévues de KaraFun (suite de la relecture de l'étape 1
+// Socket.IO, issue #59) — une piste dont le type est un objet que Number() ne
+// sait pas convertir (`{ "toString": 1 }`) levait une exception dans les
+// lectures de l'état et des options de KaraFun, jusqu'à arrêter le serveur du
+// bar. Elle compte pour absente ; les autres pistes servent.
+test('valeurs imprévues de KaraFun : piste d’un type imprévu ignorée, sans exception', () => {
+  const trap = () => JSON.parse('{"toString":1}');
+  assert.deepEqual(songTracksOf({ songTracks: [{ type: trap() }, trap(), null, [6], { type: 4 }, '5', 6] }), [4, 5, 6]);
+  const rows = [{ track: { type: trap() }, volume: 80 }, { track: trap(), volume: 70 }, null,
+    { track: { type: 4 }, volume: 53 }, { track: { type: 5 }, volume: 25 }];
+  assert.deepEqual(liveFromStatus({ state: 'playing', pitch: trap(), tempo: 0, tracks: rows }),
+    { queueId: null, pitch: null, tempo: 0, guide: 25, backing: 53, voices: { 5: 25 }, tracks: [4, 5] });
+  assert.deepEqual(neutralTarget({ options: { pitch: trap(), tracks: rows } }), { pitch: 0, tempo: 0, guide: 25, backing: 53 });
+  const { options } = queueItemOptions({ singer: 'Léa', current: { pitch: trap(), tracks: rows }, ranges: rangesFrom(null) });
+  assert.deepEqual(options, { singer: 'Léa', pitch: 0, tempo: 0,
+    tracks: [{ track: { type: 4 }, volume: 53 }, { track: { type: 5 }, volume: 25 }] });
 });

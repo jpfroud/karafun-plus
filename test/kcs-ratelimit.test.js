@@ -950,7 +950,7 @@ test('URL gardée mais WebSocket indisponible : URL oubliée, panne signalée, p
   env.sockets[0].receive({ type: 'remote.AppLeftEvent', payload: {} });
   t.mock.timers.tick(3000);
   await flush();
-  assert.equal(bridge.lastError, 'WebSocket indisponible sur ce PC : le kit doit utiliser Node 22.');
+  assert.equal(bridge.lastError, 'WebSocket indisponible sur ce PC : le kit doit utiliser Node 26.');
   assert.ok(bridge.events.some(e => e.name === 'url-kcs-oubliee'));
   assert.equal(bridge.retryAt - Date.now(), 5000);
   assert.equal(env.calls.length, 1);

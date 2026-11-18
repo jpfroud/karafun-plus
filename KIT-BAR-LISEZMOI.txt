@@ -1,7 +1,7 @@
 FILE KARAOKÉ — KIT POUR LE PC DU BAR (WINDOWS 64 BITS)
 =======================================================
 
-Ce dossier contient déjà Node.js, Java 21 et toutes les dépendances de la file.
+Ce dossier contient déjà Node.js, Java 25 et toutes les dépendances de la file.
 Il n'y a rien à installer pour cette application, ni npm ni Java à lancer.
 KaraFun doit être installé séparément sur le PC du bar. Les licences du
 solveur Java et de ses dépendances sont dans LICENCES-JAVA/ ; celles du

@@ -1,6 +1,7 @@
 # Images de base épinglées par empreinte (index multi-architecture) : même
-# construction partout ; Dependabot propose chaque nouvelle empreinte en PR.
-FROM --platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-21@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320 AS solveur
+# construction partout, sauf la mise à niveau de zlib1g de l'étape finale (version
+# du jour de Debian, SECURITY.md) ; Dependabot propose chaque nouvelle empreinte en PR.
+FROM --platform=$BUILDPLATFORM maven:3.10-eclipse-temurin-25@sha256:047a82fc82c613266cfb1b66fd920be9c8ba51fd67edc68245e4542768f45e36 AS solveur
 WORKDIR /build
 COPY solver/pom.xml solver/pom.xml
 COPY solver/src solver/src
@@ -13,13 +14,13 @@ RUN mvn -B -ntp -f solver/pom.xml verify \
  && cp solver/target/generated-resources/licenses/* LICENCES-JAVA/textes/ \
  && test -s solver/target/karafun-solver.jar
 
-FROM eclipse-temurin:21-jdk@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a AS jre
+FROM eclipse-temurin:25-jdk@sha256:83f4a7fc27df94dcc7b8de04d14cbbba8da14406f921e966969c3b09000aa507 AS jre
 RUN jlink --add-modules java.base,java.xml,java.logging,java.management,jdk.management,jdk.unsupported \
       --strip-debug --no-header-files --no-man-pages --compress=zip-6 \
       --output /solver-runtime \
  && /solver-runtime/bin/java --version
 
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS deps
+FROM --platform=$BUILDPLATFORM node:26-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS deps
 ARG VERSION
 ARG COMMIT
 ARG BUILT_AT
@@ -32,7 +33,7 @@ COPY . .
 RUN node scripts/preparer-livrable.js /livrable \
  && cp -R node_modules /livrable/node_modules
 
-FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
+FROM node:26-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072
 ARG VERSION
 ARG COMMIT
 ARG BUILT_AT
@@ -52,6 +53,24 @@ COPY --from=deps /livrable/ ./
 COPY --from=solveur /build/solver/target/karafun-solver.jar solver/karafun-solver.jar
 COPY --from=solveur /build/LICENCES-JAVA/ LICENCES-JAVA/
 COPY --from=jre /solver-runtime/ solver-runtime/
+# Correctif de zlib publié par Debian (CVE-2026-76844, CVE-2026-85091) que
+# l'image node:26-trixie-slim n'embarque pas encore (zlib1g +b1 au 16 novembre
+# 2026). Mise à niveau de ce seul paquet, puis version vérifiée : un miroir de
+# Debian en retard (une architecture à la traîne) laisserait sinon l'ancienne,
+# sans erreur. À retirer dès que l'empreinte de l'image de base contient le
+# correctif : la construction échoue alors en le disant. Le retrait se fait dans
+# la PR d'empreinte de Dependabot elle-même, qui se fusionne ensuite à la main :
+# sans l'étape, l'ancienne empreinte, gardée, serait refusée par Trivy (SECURITY.md).
+RUN corrige=1:1.3.dfsg+really1.3.1-1+deb13u1 \
+ && if dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge "$corrige"; then \
+      echo "zlib1g de l'image de base déjà corrigé : retirer cette étape dans cette même PR (SECURITY.md)." >&2; exit 1; \
+    fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
+ && rm -rf /var/lib/apt/lists/* \
+ && if ! dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge "$corrige"; then \
+      echo "zlib1g sans le correctif de Debian ($corrige) après la mise à niveau : construction arrêtée." >&2; exit 1; \
+    fi
 # L'application n'utilise que node : npm, npx, corepack et yarn de l'image de
 # base (et leurs propres dépendances, souvent signalées vulnérables) sont retirés.
 RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \

@@ -36,7 +36,7 @@ PC du bar (Windows) : KaraFun et sa Télécommande, comme avant.
 
 Le serveur fait tourner deux conteneurs, décrits par `deploy/compose.yaml`. `caddy` reçoit tout le trafic d'Internet et obtient les certificats de Let's Encrypt. `app` est la file elle-même, en mode serveur.
 
-Les deux conteneurs tournent sans aucune capacité Linux ni élévation de privilèges ; `caddy` garde seulement le droit d'écouter les ports 80 et 443 et celui de lire son `Caddyfile`, quels que soient les droits de ce fichier sur l'hôte. Sa version est fixée par `deploy/compose.yaml`, avec l'empreinte de son image : chaque correctif de Caddy arrive avec une release de l'application, puis par la mise à jour de la section 17. L'image de l'application ne contient ni npm ni yarn.
+Les deux conteneurs tournent sans aucune capacité Linux ni élévation de privilèges ; `caddy` garde seulement le droit d'écouter les ports 80 et 443 et celui de lire son `Caddyfile`, quels que soient les droits de ce fichier sur l'hôte. Sa version est fixée par `deploy/compose.yaml`, avec l'empreinte de son image : chaque correctif de Caddy arrive avec une release de l'application, puis par la mise à jour de la section 17. L'image de l'application embarque Node 26 LTS sur Debian 13 et Java 25 LTS : rien de cela à installer sur le serveur, et un retour à une version précédente ramène les siens. Elle ne contient ni npm ni yarn. Un correctif de Debian que l'image de base n'a pas encore (zlib en novembre 2026) est appliqué à la construction de l'image, jamais sur le serveur.
 
 Le nom des clients (`clients.exemple.fr` dans ce guide) mène au port clients 3001. Le nom de la page du bar (`bar.exemple.fr`) mène au port 3000, derrière un mot de passe demandé par Caddy en plus de la clé du bar. Le port 3000 est aussi publié sur `127.0.0.1:3000` de l'hôte, pour le tunnel SSH de l'administrateur. Le port 3001 n'est jamais publié. Le pare-feu n'ouvre que 22, 80 et 443 (443 aussi en UDP).
 
@@ -596,10 +596,13 @@ réussie depuis 3 heures, la liste disparaît de la page.
 
 Les tables, les chansons et l'ordre de passage sont conservés. Une fonction apparue après
 la version choisie n'y existe pas. Tant que la soirée n'est pas remplacée par « Nouvelle
-soirée », même quand plus personne n'est inscrit, les versions antérieures à la v3.2.0 sont
-grisées (« après la soirée seulement ») et refusées : elles reprendraient la soirée sans les
-priorités, le prochain annoncé ni l'historique des passages, perdus aussi au retour à une
-version récente. Après « Nouvelle soirée », elles restent possibles. Les réglages de `.env`
+soirée », même quand plus personne n'est inscrit, les versions antérieures à la v3.4.0 sont
+grisées (« après la soirée seulement ») et refusées : elles ne reprendraient pas toute la
+soirée. Une version antérieure à la v3.2.0 la reprendrait sans les priorités, le prochain
+annoncé ni l'historique des passages ; une v3.2 ou une v3.3 prendrait la copie prête d'une
+relance ⏮ pour un titre déjà joué et ignorerait les derniers départs de table et la sortie
+de file notée pendant une alerte de KaraFun. Ce qui est perdu l'est aussi au retour à une version récente. Après
+« Nouvelle soirée », elles restent possibles. Les réglages de `.env`
 ajoutés depuis restent en place pour la mise à jour suivante ; une version qui demande un
 réglage absent est refusée avant remplacement.
 

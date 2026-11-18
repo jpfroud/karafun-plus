@@ -20,12 +20,19 @@ const FORMAT = 1;
 // contient. v3.2.0 y a ajouté, sans changer FORMAT, l'historique des passages
 // (premiers passages, départs de tables, fins de passage), les priorités à
 // zéro report et la chaîne du prochain annoncé : une version plus ancienne
-// reprend la soirée sans eux et les efface à sa première sauvegarde. Tant
-// qu'une soirée est en mémoire (jusqu'à « Nouvelle soirée »), le retour à une
+// reprend la soirée sans eux et les efface à sa première sauvegarde. v3.4.0 y
+// ajoute des repères des titres suivis dans KaraFun : la copie prête d'une
+// relance ⏮ (`tracked[].awaitingPlay`, qu'une version plus ancienne prendrait
+// pour un titre déjà joué) et la sortie de la file vue pendant l'alerte d'un
+// message illisible (`goneAt`) ; et le dernier départ de table noté au choix
+// d'un passage (`departures` d'une sélection).
+// Tant qu'une soirée est en mémoire (jusqu'à « Nouvelle soirée »), le retour à une
 // version précédente s'arrête donc à celle-ci (server.js, page du bar). Un champ, une valeur ou une règle de reprise de
-// plus : mettre ici la version qui le publiera (test/night-state-versions.test.js
-// le rappelle pour les champs de premier niveau et de l'ordonnanceur).
-const FULL_RESTORE_SINCE = 'v3.2.0';
+// plus : mettre ici la version qui le publiera. test/night-state-versions.test.js
+// le rappelle pour les champs de premier niveau, de l'ordonnanceur et des
+// sélections gardées avec l'envoi en cours et les titres suivis ; les autres
+// champs de ces deux-là, que pose server.js, se vérifient à la main.
+const FULL_RESTORE_SINCE = 'v3.4.0';
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const clone = value => JSON.parse(JSON.stringify(value));
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');

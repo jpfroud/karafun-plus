@@ -349,3 +349,54 @@ test('J11 le guide cite la limite des retours en soirée de night-state.js', () 
   assert.ok(flat(read(GUIDE)).includes(`versions antérieures à la ${FULL_RESTORE_SINCE}`),
     `${GUIDE} §17 : citer FULL_RESTORE_SINCE (${FULL_RESTORE_SINCE}), la version sous laquelle un retour est refusé pendant une soirée`);
 });
+
+test('J15 une ligne de code citée dans un document montre toujours ce qu’il en dit', () => {
+  // `fichier.js:ligne` dans un document : le code attendu à cette ligne, déclaré ici.
+  const CITATIONS = { 'kcs-transport.js': /new WebSocket\(/ };
+  for (const file of DOCS) {
+    for (const [, cite, numero] of read(file).matchAll(/`([\w./-]+\.js):(\d+)`/g)) {
+      assert.ok(CITATIONS[cite], `${file} : ${cite}:${numero} cité sans code attendu (le déclarer dans J15)`);
+      assert.match(read(cite).split('\n')[Number(numero) - 1] || '', CITATIONS[cite], `${file} : ${cite}:${numero} ne montre plus ${CITATIONS[cite]}`);
+    }
+  }
+});
+
+test('J16 ce qu’aucun essai automatique n’ouvre, c’est le WebSocket de Node vers le vrai KaraFun', () => {
+  // Un essai peut ouvrir le WebSocket de Node vers un faux KaraFun local (issue #59) : un document
+  // qui dit qu'aucun essai ne l'ouvre précise « vers le vrai KaraFun ».
+  for (const file of DOCS) {
+    for (const [phrase] of flat(read(file)).matchAll(/aucun (?:test|essai) automatique n['’]ouvre[^.;]*/g)) {
+      assert.match(phrase, /vers le vrai KaraFun/, `${file} : « ${phrase} » : un essai peut ouvrir ce WebSocket vers un faux KaraFun local`);
+    }
+  }
+});
+
+test('J17 la sonde de la télécommande ne promet pas un journal que le conteneur de l’essai efface', () => {
+  // test/comparer-images.js fait lancer la sonde dans l'image par docker run --rm : rien n'étant
+  // monté sur /app/journal (volume anonyme du Dockerfile, retiré avec le conteneur),
+  // journal/kcs-probe.json part avec le conteneur, et l'en-tête de la sonde le dit.
+  const essai = read('test/comparer-images.js').match(/const essaiKaraFun = [^;]+;/);
+  assert.ok(essai, 'test/comparer-images.js : commande de l’essai de la télécommande (essaiKaraFun)');
+  assert.match(essai[0], /docker run --rm /);
+  const entete = flat(read('test/probe-kcs.js').split('\n').filter(ligne => ligne.startsWith('//')).map(ligne => ligne.slice(2)).join(' '));
+  if (!/:\/app\/journal\b/.test(essai[0])) {
+    assert.match(entete, /dans le conteneur de l'essai de \.github\/RELEASE\.md .*les messages ne restent qu'à l'écran/,
+      'test/probe-kcs.js : dire que, dans le conteneur de l’essai, journal/kcs-probe.json part avec lui');
+  }
+});
+
+test('J18 CONTEXTE-REPRISE.md cite les appels de l’automate Spotify tels que le code les fait', () => {
+  // Relecture contradictoire du tour 5 (tour 2) : le document disait encore
+  // `handled('battle')`, sans la scène vue, et ne parlait ni de « blind » ni
+  // de la période propre à chaque scène. Un mainteneur qui le suivait
+  // rouvrait l'attente de la Battle, relancée malgré le choix (mutation M16,
+  // vue par test/battle-spotify.test.js).
+  const code = read('server.js') + read('spotify.js');
+  const doc = read('CONTEXTE-REPRISE.md');
+  const cited = [...doc.matchAll(/`([^`\n]*\bhandled\([^`\n]*\))`/g)].map(match => match[1]);
+  assert.ok(cited.length, 'CONTEXTE-REPRISE.md : appels de SpotifyAutomation#handled');
+  for (const call of cited) assert.ok(code.includes(call), `CONTEXTE-REPRISE.md : appel absent du code : ${call}`);
+  assert.ok(cited.includes("handled('battle', spotifyStage())"), 'CONTEXTE-REPRISE.md : attente de la Battle close avec la scène vue');
+  assert.ok(cited.includes('handled(karaoke = this.phase, stage = undefined)'), 'CONTEXTE-REPRISE.md : période propre à une scène');
+  assert.match(flat(doc), /`karaokeOutlook\(\)` rend « blind »/, 'CONTEXTE-REPRISE.md : alerte « Message de KaraFun illisible »');
+});

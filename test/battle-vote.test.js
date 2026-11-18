@@ -184,6 +184,19 @@ function fixture(extra = {}) {
 }
 
 {
+  // Regression: relecture gstack-review de la branche finale (Red Team) — une
+  // Battle de KaraFun au numéro de titre imprévu (négatif) était gardée telle
+  // quelle : le suivi enregistré était refusé au démarrage (« Suivi Battle
+  // invalide. ») et la file ne redémarrait plus. Titre inconnu : numéro 0.
+  const bad = fixture(), odd = new BattleVote(bad.opts);
+  for (const songId of [-7, 1.5, 'abc', null]) {
+    odd.observeExternalBattle({ queueId: `native-${songId}`, songId, title: 'Battle' });
+    assert.equal(odd.serialize().automation.songId, 0, `numéro ${songId} : titre inconnu`);
+    assert.doesNotThrow(() => new BattleVote({ ...bad.opts, saved: odd.serialize() }), `numéro ${songId} : repris au démarrage`);
+  }
+}
+
+{
   const f = fixture(), vote = new BattleVote(f.opts);
   vote.observeExternalBattle({ queueId: 'native-1', songId: 5091,
     title: 'Battle organisée dans KaraFun', artist: 'Artiste' });
