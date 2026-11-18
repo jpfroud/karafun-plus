@@ -667,6 +667,7 @@ window.CLIENT_TRANSLATIONS = {
       'Seul l’auteur de ce duo peut régler ce titre.': 'Only the person who picked this duet can adjust it.',
       'Réglages non enregistrés': 'Settings not saved',
       'Réglages de « {title} » non enregistrés : {error}': 'Settings for “{title}” not saved: {error}',
+      'Réglages de « {title} » pas encore envoyés à KaraFun : demande au bar': 'Settings for “{title}” not sent to KaraFun yet: ask the bar',
       // Durée maximale des titres (lot J)
       'trop long': 'too long',
       'Ce titre dure {length} : le bar limite les chansons à {limit}.': 'This song lasts {length}: the bar limits songs to {limit}.',

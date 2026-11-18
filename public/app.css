@@ -644,6 +644,7 @@ body.staff { padding: clamp(12px, 2vw, 28px); max-width: 1800px; margin: 0 auto;
 .tune-lock { margin: 8px 0 0; }
 .tune-status { min-height: 1.4em; margin: 12px 0 0; font-size: 13px; color: var(--muted); }
 .tune-status.ok { color: var(--ok); font-weight: 700; }
+.tune-status.warn { color: var(--warn); font-weight: 700; }
 .tune-status.bad { color: var(--bad); font-weight: 700; }
 .live-tune { margin-top: 12px; padding: 6px 12px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
 .live-tune > summary { cursor: pointer; font-weight: 750; padding: 6px 0; min-height: 32px; }
