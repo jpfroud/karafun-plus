@@ -37,11 +37,12 @@ for (const skill of ['verify', 'review', 'qa', 'retro', 'learn', 'gstack-upgrade
   fs.mkdirSync(path.join(gstack, skill), { recursive: true });
   fs.writeFileSync(path.join(gstack, skill, 'SKILL.md'), `---\nname: ${skill}\n---\n`);
 }
-// Compétence retirée par gstack 1.98 (GST-1698) : son dossier reste dans les
-// sources, mais la liste de gstack la dit retirée.
-fs.mkdirSync(path.join(gstack, 'plan-eng-review'), { recursive: true });
-fs.writeFileSync(path.join(gstack, 'plan-eng-review', 'SKILL.md'), '---\nname: plan-eng-review\n---\n');
-fs.writeFileSync(path.join(gstack, 'bin', 'gstack-install-registry.sh'), '#!/usr/bin/env bash\nGSTACK_RETIRED_SKILLS="plan-eng-review investigate"\n');
+// Faux registre : ce gstack retire cso, compétence de la table, tout en gardant
+// son dossier dans les sources (cas de plan-eng-review en 1.98, revenu en
+// 1.99.5) ; seule la liste GSTACK_RETIRED_SKILLS de gstack la dit retirée.
+fs.mkdirSync(path.join(gstack, 'cso'), { recursive: true });
+fs.writeFileSync(path.join(gstack, 'cso', 'SKILL.md'), '---\nname: cso\n---\n');
+fs.writeFileSync(path.join(gstack, 'bin', 'gstack-install-registry.sh'), '#!/usr/bin/env bash\nGSTACK_RETIRED_SKILLS="investigate cso"\n');
 fs.writeFileSync(path.join(gstack, 'bin', 'gstack-review-read'),
   '#!/usr/bin/env bash\ncat "$FAUX_JOURNAL"\nexit "${FAUX_JOURNAL_CODE:-0}"\n');
 fs.mkdirSync(empty, { recursive: true });
@@ -93,8 +94,10 @@ assert.strictEqual(decision(reply), 'deny', 'modification sans compétence gstac
 assert.match(reason(reply), /server\.js/);
 assert.match(reason(reply), /défaut signalé → verify/);
 // Regression: gstack 1.98 (GST-1717) a retiré investigate : la porte ne doit plus l'annoncer.
-assert.doesNotMatch(reason(reply), /investigate|plan-eng-review/);
-assert.match(reason(reply), /plan à challenger → autoplan/);
+assert.doesNotMatch(reason(reply), /investigate/);
+// Regression: gstack 1.99.5 a rendu plan-eng-review (GST-2726), retiré en 1.98
+// (GST-1698) : la porte l'annonce de nouveau pour un plan à challenger.
+assert.match(reason(reply), /plan à challenger → plan-eng-review/);
 assert.match(reason(reply), /outil Skill/);
 // Copie d'un autre agent seule : Claude Code n'a aucune compétence à lancer, le refus nomme l'installateur.
 assert.match(reason(reply), /Si Claude Code ne trouve aucune compétence gstack : lancer bash \.claude\/hooks\/install-gstack\.sh claude/);
@@ -126,10 +129,11 @@ assert.strictEqual(decision(edit('s1', path.join(project, 'server.js'))), 'deny'
 // automatique) n'ouvre pas la porte.
 skill('s1', 'investigate');
 assert.strictEqual(decision(edit('s1', path.join(project, 'server.js'))), 'deny', 'compétence absente de gstack acceptée');
-// Regression: gstack 1.98 (GST-1698) — plan-eng-review garde son dossier dans
-// les sources, mais GSTACK_RETIRED_SKILLS le dit retiré : il n'ouvre pas la porte.
-skill('s1', 'plan-eng-review');
-gate('prompt', { session_id: 's1', prompt: '/plan-eng-review mon plan' });
+// Regression: gstack 1.98 (GST-1698) — une compétence de la table que la liste
+// GSTACK_RETIRED_SKILLS dit retirée garde son dossier dans les sources, mais
+// n'ouvre pas la porte (ici cso, retiré par le faux registre).
+skill('s1', 'cso');
+gate('prompt', { session_id: 's1', prompt: '/cso audit' });
 assert.strictEqual(decision(edit('s1', path.join(project, 'server.js'))), 'deny', 'compétence retirée par gstack acceptée');
 
 // 2. Une compétence gstack lancée : la session (sous-agents compris) peut modifier.

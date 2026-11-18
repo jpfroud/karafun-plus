@@ -61,7 +61,7 @@ fi
 # Table de routage : courte, elle est ajoutée à chaque demande.
 # Défaut : gstack 1.98 a retiré investigate (GST-1717) ; sa règle « Failures »
 # (contrôle de la cause, sinon test ciblé qui échoue d'abord) puis verify.
-ROUTING="Avant d'agir, choisir la commande gstack adaptée à cette demande, l'annoncer en une ligne et la lancer avec l'outil Skill : défaut signalé ou « pourquoi X » → verify (un contrôle en lecture de la cause ; si elle reste floue, un test ciblé qui échoue avant toute modification ; puis la correction de la cause et verify jusqu'au vert) ; fonctionnalité à préciser → spec (plan à challenger → autoplan) ; parcours dans l'application → qa (qa-only pour un simple constat) ; modification écrite, avant commit, push ou PR → review ; sécurité → cso ; état du code → health ; documentation après un changement → document-release. Si aucune ne convient (simple question), écrire « aucune commande gstack : <raison> » ; ne jamais passer ce choix sous silence. Les hooks refusent toute modification du dépôt tant qu'aucune compétence gstack n'a été lancée dans la session, et le hook git pre-push exige que le dernier commit envoyé sur chaque branche ait exactement le contenu d'une relecture review terminée (les commits intermédiaires ne sont pas comparés)."
+ROUTING="Avant d'agir, choisir la commande gstack adaptée à cette demande, l'annoncer en une ligne et la lancer avec l'outil Skill : défaut signalé ou « pourquoi X » → verify (un contrôle en lecture de la cause ; si elle reste floue, un test ciblé qui échoue avant toute modification ; puis la correction de la cause et verify jusqu'au vert) ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; parcours dans l'application → qa (qa-only pour un simple constat) ; modification écrite, avant commit, push ou PR → review ; sécurité → cso ; état du code → health ; documentation après un changement → document-release. Si aucune ne convient (simple question), écrire « aucune commande gstack : <raison> » ; ne jamais passer ce choix sous silence. Les hooks refusent toute modification du dépôt tant qu'aucune compétence gstack n'a été lancée dans la session, et le hook git pre-push exige que le dernier commit envoyé sur chaque branche ait exactement le contenu d'une relecture review terminée (les commits intermédiaires ne sont pas comparés)."
 # Hook git pre-push de la porte gstack : contrôle des envois lancés par Claude
 # Code. Installé seulement dans le dépôt du projet (CLAUDE_PROJECT_DIR), jamais
 # par-dessus un hook pre-push étranger ni quand core.hooksPath est réglé.
@@ -111,8 +111,9 @@ fi
 # comme investigate en 1.98, alors que la session la liste encore. Même test
 # que la porte (gstack-gate.js) : <gstack>/<compétence>/SKILL.md, et la
 # compétence absente de la liste GSTACK_RETIRED_SKILLS de gstack (une
-# compétence retirée peut garder son dossier, comme plan-eng-review).
-ROUTED_SKILLS="verify spec autoplan qa qa-only review cso health document-release"
+# compétence retirée peut garder son dossier, comme plan-eng-review en 1.98,
+# revenu en 1.99.5).
+ROUTED_SKILLS="verify spec plan-eng-review qa qa-only review cso health document-release"
 MISSING_SKILLS=""
 if [ -n "$GSTACK_DIR" ]; then
   RETIRED_SKILLS="$(sed -n 's/^GSTACK_RETIRED_SKILLS="\(.*\)"$/\1/p' "$GSTACK_DIR/bin/gstack-install-registry.sh" 2>/dev/null | head -n 1)"

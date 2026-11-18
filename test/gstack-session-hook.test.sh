@@ -183,11 +183,14 @@ done
 # plus l'imposer, et un défaut suit la règle de gstack (test ciblé d'abord).
 printf '%s' "$out" | field additionalContext | grep -q 'investigate' && fail "investigate (retiré par gstack 1.98) encore imposé"
 printf '%s' "$out" | field additionalContext | grep -qF "test ciblé qui échoue" || fail "règle de gstack pour un défaut absente"
+# Regression: gstack 1.99.5 a rendu plan-eng-review (GST-2726), retiré en 1.98
+# (GST-1698) : un plan à challenger y passe de nouveau.
+printf '%s' "$out" | field additionalContext | grep -qF "plan à challenger → plan-eng-review" || fail "plan-eng-review (revenu en gstack 1.99.5) absent de la table"
 # Regression: gstack 1.98 (GST-1717) — une compétence de la table absente de
 # gstack (retirée par une mise à jour automatique) est signalée à chaque
 # demande, sans bloquer ; ce faux gstack n'a encore aucune compétence.
 printf '%s' "$out" | field additionalContext | grep -q 'GSTACK_INCOMPLET : .*verify' || fail "compétences de la table absentes non signalées"
-for skill in verify spec autoplan qa qa-only review cso health document-release; do
+for skill in verify spec plan-eng-review qa qa-only review cso health document-release; do
   mkdir -p "$home/.claude/skills/gstack/$skill" && echo ok >"$home/.claude/skills/gstack/$skill/SKILL.md"
 done
 out="$(printf '{}' | quiet_env HOME="$home" bash "$START" UserPromptSubmit)" || fail "rappel avec gstack complet"
@@ -197,14 +200,14 @@ out="$(printf '{}' | quiet_env HOME="$home" bash "$START" UserPromptSubmit)" || 
 printf '%s' "$out" | field additionalContext | grep -q 'GSTACK_INCOMPLET : [^.]*qa-only' || fail "compétence qa-only manquante non signalée"
 printf '%s' "$out" | field additionalContext | grep -q 'GSTACK_INCOMPLET : [^.]*verify' && fail "seule qa-only manque"
 mkdir -p "$home/.claude/skills/gstack/qa-only" && echo ok >"$home/.claude/skills/gstack/qa-only/SKILL.md"
-# Regression: gstack 1.98 (GST-1698) — une compétence retirée garde son dossier
-# dans les sources (plan-eng-review sert de méthode à autoplan) : seule la
-# liste GSTACK_RETIRED_SKILLS de gstack dit qu'elle n'est plus installée.
+# Regression: gstack 1.98 (GST-1698) — une compétence retirée peut garder son
+# dossier dans les sources (plan-eng-review jusqu'à son retour en 1.99.5) :
+# seule la liste GSTACK_RETIRED_SKILLS de gstack dit qu'elle n'est plus
+# installée. Ce faux registre retire cso, compétence de la table.
 mkdir -p "$home/.claude/skills/gstack/bin"
-printf '%s\n' '#!/usr/bin/env bash' 'GSTACK_RETIRED_SKILLS="plan-eng-review investigate autoplan"' >"$home/.claude/skills/gstack/bin/gstack-install-registry.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'GSTACK_RETIRED_SKILLS="investigate cso"' >"$home/.claude/skills/gstack/bin/gstack-install-registry.sh"
 out="$(printf '{}' | quiet_env HOME="$home" bash "$START" UserPromptSubmit)" || fail "rappel, une compétence retirée"
-printf '%s' "$out" | field additionalContext | grep -q 'GSTACK_INCOMPLET : [^.]*autoplan' || fail "compétence retirée par gstack non signalée"
-printf '%s' "$out" | field additionalContext | grep -q 'plan-eng-review' && fail "plan-eng-review (retiré par gstack 1.98) encore dans la table"
+printf '%s' "$out" | field additionalContext | grep -q 'GSTACK_INCOMPLET : [^.]*cso' || fail "compétence de la table retirée par gstack non signalée"
 rm -f "$home/.claude/skills/gstack/bin/gstack-install-registry.sh"
 # Regression: G1 (quatrième relecture finale, décision D3 du gérant) — le hook
 # pre-push ne compare que le dernier commit envoyé sur chaque branche ; le

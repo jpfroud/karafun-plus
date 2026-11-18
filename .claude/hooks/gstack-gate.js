@@ -55,7 +55,7 @@ const REVIEW_READ_MS = 45000;
 
 // gstack 1.98 a retiré investigate (GST-1717) : un défaut se corrige test
 // d'abord, puis verify jusqu'au vert.
-const ROUTES = 'défaut signalé → verify (test ciblé d\'abord) ; fonctionnalité à préciser → spec (plan à challenger → autoplan) ; ' +
+const ROUTES = 'défaut signalé → verify (test ciblé d\'abord) ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; ' +
   'parcours dans l\'application → qa ; sécurité → cso ; état du code → health ; documentation → document-release';
 
 function out(obj) { process.stdout.write(JSON.stringify(obj) + '\n'); }
@@ -121,7 +121,8 @@ function stateFile(event) {
 // Nom de compétence gstack (« verify », « gstack:qa », « /review »…) ou ''.
 // Une compétence retirée de gstack n'est plus reconnue : son SKILL.md n'existe
 // plus (investigate depuis la 1.98), ou gstack la nomme dans sa liste
-// GSTACK_RETIRED_SKILLS (plan-eng-review garde son dossier pour autoplan).
+// GSTACK_RETIRED_SKILLS alors que son dossier reste dans les sources (comme
+// plan-eng-review en 1.98, revenu en 1.99.5).
 function retiredSkills(dir) {
   try {
     const text = fs.readFileSync(path.join(dir, 'bin', 'gstack-install-registry.sh'), 'utf8');
