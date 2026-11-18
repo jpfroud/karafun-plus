@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TRIVY_VERSION: v0.76.1
+  TRIVY_VERSION: v0.76.2
 
 jobs:
   dependances:

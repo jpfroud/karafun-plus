@@ -102,7 +102,7 @@ jobs:
       # (second chemin de test/playwright-browser.js), version épinglée.
       - name: Installer Playwright et Chromium
         run: |
-          npm install --global playwright@1.64.1
+          npm install --global playwright@1.65.0
           playwright install --with-deps chromium
       - name: Verifier que les mesures en navigateur tourneront
         run: |
