@@ -54,8 +54,8 @@ const GITHUB_WRITES = new Set(['mcp__github__push_files', 'mcp__github__create_o
 const REVIEW_READ_MS = 45000;
 
 // gstack 1.98 a retiré investigate (GST-1717) : un défaut se corrige test
-// d'abord, puis verify jusqu'au vert.
-const ROUTES = 'défaut signalé → verify (test ciblé d\'abord) ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; ' +
+// d'abord, puis build-check jusqu'au vert (verify, renommé par gstack 1.103).
+const ROUTES = 'défaut signalé → build-check (test ciblé d\'abord) ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; ' +
   'parcours dans l\'application → qa ; sécurité → cso ; état du code → health ; documentation → document-release';
 
 function out(obj) { process.stdout.write(JSON.stringify(obj) + '\n'); }
@@ -118,7 +118,7 @@ function stateFile(event) {
   return path.join(projectDir(event), '.gstack', 'porte', `${id}.json`);
 }
 
-// Nom de compétence gstack (« verify », « gstack:qa », « /review »…) ou ''.
+// Nom de compétence gstack (« build-check », « gstack:qa », « /review »…) ou ''.
 // Une compétence retirée de gstack n'est plus reconnue : son SKILL.md n'existe
 // plus (investigate depuis la 1.98), ou gstack la nomme dans sa liste
 // GSTACK_RETIRED_SKILLS alors que son dossier reste dans les sources (comme

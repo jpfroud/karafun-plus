@@ -1,5 +1,5 @@
 'use strict';
-// Lanceur des fichiers de test choisis par gstack (pregate de verify et de
+// Lanceur des fichiers de test choisis par gstack (pregate de build-check et de
 // ship, .gstack/pregate.json « runner ») : chaque fichier part avec son
 // interpréteur, d'après son extension. node --test ne lance que du
 // JavaScript, alors que les hooks gstack se testent aussi en bash et en

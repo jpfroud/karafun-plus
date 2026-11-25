@@ -1,6 +1,6 @@
 # File karaoké — règles de travail
 
-gstack est obligatoire pour les changements de code : chaque demande commence par le choix d'une commande gstack annoncé en une ligne (table de routage dans `AGENTS.md`) — `verify` pour un défaut (gstack 1.98 a retiré `investigate` : un contrôle en lecture de la cause, sinon un test ciblé qui échoue avant toute modification, puis la correction de la cause et `verify` jusqu'au vert), `spec` pour une fonctionnalité à préciser, `qa` pour les parcours navigateur et `review` avant livraison. Le hook `gstack-gate.js` refuse toute modification du dépôt tant qu'aucune compétence gstack n'a été lancée dans la session, et le hook git `pre-push` (installé au démarrage) exige que le dernier commit envoyé sur chaque branche ait exactement le contenu d'une relecture `review` terminée (les commits intermédiaires ne sont pas comparés). L'utilisateur a demandé qu'il s'installe tout seul : au démarrage de chaque session, le hook `.claude/hooks/gstack-session-start.sh` lance `install-gstack.sh` si gstack manque (clonage officiel puis `./setup --team`), et le même hook rappelle le parcours à chaque demande (`UserPromptSubmit`). Si l'installation échoue (`GSTACK_MISSING`), donner la raison à l'utilisateur avant tout changement de code et réessayer avec `bash .claude/hooks/install-gstack.sh claude`. Le hook `check-gstack.sh`, sur le modèle officiel `gstack-team-init required`, refuse les compétences tant que gstack manque. Un sous-agent chargé d'un changement de code suit le même parcours. gstack se met à jour tout seul au démarrage de la session (mode équipe, en arrière-plan) : une compétence encore listée par la session peut avoir disparu ; le hook le signale (`GSTACK_INCOMPLET`), et la table de routage du projet suit alors la nouvelle version.
+gstack est obligatoire pour les changements de code : chaque demande commence par le choix d'une commande gstack annoncé en une ligne (table de routage dans `AGENTS.md`) — `build-check` pour un défaut (gstack 1.98 a retiré `investigate`, et gstack 1.103 a renommé `verify` en `build-check` : un contrôle en lecture de la cause, sinon un test ciblé qui échoue avant toute modification, puis la correction de la cause et `build-check` jusqu'au vert), `spec` pour une fonctionnalité à préciser, `qa` pour les parcours navigateur et `review` avant livraison. Le hook `gstack-gate.js` refuse toute modification du dépôt tant qu'aucune compétence gstack n'a été lancée dans la session, et le hook git `pre-push` (installé au démarrage) exige que le dernier commit envoyé sur chaque branche ait exactement le contenu d'une relecture `review` terminée (les commits intermédiaires ne sont pas comparés). L'utilisateur a demandé qu'il s'installe tout seul : au démarrage de chaque session, le hook `.claude/hooks/gstack-session-start.sh` lance `install-gstack.sh` si gstack manque (clonage officiel puis `./setup --team`), et le même hook rappelle le parcours à chaque demande (`UserPromptSubmit`). Si l'installation échoue (`GSTACK_MISSING`), donner la raison à l'utilisateur avant tout changement de code et réessayer avec `bash .claude/hooks/install-gstack.sh claude`. Le hook `check-gstack.sh`, sur le modèle officiel `gstack-team-init required`, refuse les compétences tant que gstack manque. Un sous-agent chargé d'un changement de code suit le même parcours. gstack se met à jour tout seul au démarrage de la session (mode équipe, en arrière-plan) : une compétence encore listée par la session peut avoir disparu ; le hook le signale (`GSTACK_INCOMPLET`), et la table de routage du projet suit alors la nouvelle version.
 
 Après toute modification de la file, des duos, des présences ou des tables, lancer `node test/run-offline.js` et consigner le résultat dans `RAPPORT-TEST.md`. Le vrai KaraFun ne doit pas servir aux essais destructifs si son code de télécommande actuel n'a pas été vérifié.
 
@@ -13,7 +13,7 @@ When the user's request matches an available skill, invoke it via the Skill tool
 Key routing rules:
 - Product ideas/brainstorming → invoke /office-hours
 - Strategy/scope → invoke /plan-ceo-review
-- Architecture → invoke /autoplan
+- Architecture → invoke /plan-eng-review
 - Design system/plan review → invoke /design-consultation or /plan-design-review
 - Full review pipeline → invoke /autoplan
 - Bugs/errors → fix them directly: one read-only check of the cause, or a focused failing test first when the cause is unclear; then fix it and run that test
@@ -28,7 +28,7 @@ Key routing rules:
 
 ## Health Stack
 
-Commandes lues par gstack (`verify`, `health`, `ship`) ; gstack ne lit que ce fichier, pas `AGENTS.md`.
+Commandes lues par gstack (`build-check`, `health`, `ship`) ; gstack ne lit que ce fichier, pas `AGENTS.md`. La ligne `gstack:verify:` garde ce nom : `build-check` la lit ainsi (gstack 1.103).
 
 <!-- gstack:verify: node test/run-offline.js -->
 

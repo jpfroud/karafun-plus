@@ -2,7 +2,7 @@
 /data/
 /journal/
 /.gstack/*
-# Politique de sélection des tests de gstack (verify, ship) : versionnée.
+# Politique de sélection des tests de gstack (build-check, ship) : versionnée.
 !/.gstack/pregate.json
 /RAPPORT-TEST.md
 /A-LIRE-AGENT.md
