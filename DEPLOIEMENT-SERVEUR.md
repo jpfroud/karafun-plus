@@ -673,7 +673,7 @@ docker compose pull
 docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/jpfroud/karafun-plus:vX.Y.Z
 ```
 
-`diff` compare les clés de `.env` et de `.env.example` et ne doit rien afficher. Sinon, ajoute à `.env` le réglage nouveau, décrit par les notes de la release. Ne modifie que `.env` : les autres fichiers de `deploy/` suivent la version. Si une autre commande de ce bloc affiche une erreur, ne démarre rien : les lignes suivantes ont tourné quand même. Remets alors la version actuelle, comme plus bas quand les empreintes diffèrent.
+`diff` compare les clés de `.env` et de `.env.example` et ne doit rien afficher. Seule exception, la ligne `KARAOKE_REPAIR` de « Couper la réparation » (section 18) : garde-la jusqu'au contrôle de la nouvelle version, à la fin de cette procédure. Sinon, ajoute à `.env` le réglage nouveau, décrit par les notes de la release. Ne modifie que `.env` : les autres fichiers de `deploy/` suivent la version. Si une autre commande de ce bloc affiche une erreur, ne démarre rien : les lignes suivantes ont tourné quand même. Remets alors la version actuelle, comme plus bas quand les empreintes diffèrent.
 
 Compare l'empreinte affichée par `docker image inspect` à la ligne « Empreinte » des notes de la release (`ghcr.io/jpfroud/karafun-plus@sha256:…`). Si elles sont identiques, démarre la nouvelle version. Caddy est recréé pour relire son `Caddyfile`, que `git checkout` a pu changer :
 
@@ -693,6 +693,8 @@ docker image rm ghcr.io/jpfroud/karafun-plus:vX.Y.Z
 Retour à la version précédente : les mêmes commandes, en échangeant `vX.Y.Z` et `vA.B.C` partout, bloc « si elles diffèrent » compris : `vA.B.C` devient la version à installer, et `vX.Y.Z` la version en service, à remettre par `sed` et `git checkout` ; l'empreinte se compare aux notes de la release `vA.B.C`. Si la file refuse ensuite de démarrer, restaure l'archive faite juste avant la mise à jour (section 16).
 
 **Contrôle** : `docker compose ps` montre `app` en `(healthy)`, et `git describe --tags --exact-match` comme `docker compose logs --no-log-prefix app | grep '=== File karaoké'` affichent la version voulue.
+
+Pour la version corrigée d'une réparation coupée, ce contrôle passé, retire la ligne `KARAOKE_REPAIR` et recrée `app` par l'étape 4 de « Couper la réparation » (section 18). Retirée plus tôt, elle manquerait au retour à la version précédente, qui relancerait alors la réparation en cause.
 
 ## 18. Vérifications et dépannage
 
@@ -752,11 +754,189 @@ docker compose exec app node server.js --print-staff-url
 
 Redonne-le ensuite aux gérants (section 13). Une autre ligne `Impossible de démarrer : …` donne sa cause, le plus souvent un réglage de `.env` : corrige-le, puis lance `docker compose up -d`.
 
-**Journal pour un diagnostic.** Le journal cite des prénoms : n'envoie jamais un fichier entier. Relis-le, par `docker compose logs --no-log-prefix app`, et copie seulement les lignes de connexion à KaraFun, sans aucun prénom.
+**Journal pour un diagnostic.** Le journal cite des prénoms : n'envoie jamais un fichier entier. Relis-le, par `docker compose logs --no-log-prefix app`, et copie seulement les lignes de connexion à KaraFun, sans aucun prénom. Pour la réparation des soirées, « Envoyer une soirée au développeur » (plus bas) dit quelles lignes envoyer.
 
-Jamais : `docker compose down -v` (il efface les volumes, donc la soirée et la clé), `docker compose run` hors de l'exception ci-dessus (seconde file), `node server.js` lancé en SSH (seconde file), publier `journal/` (il contient des prénoms).
+Jamais : `docker compose down -v` (il efface les volumes, donc la soirée et la clé) ; `docker compose run` hors de deux exceptions, celle ci-dessus et les commandes de la réparation des soirées (plus bas), application arrêtée : seconde file ; `node server.js` lancé en SSH (seconde file) ; publier `journal/` (il contient des prénoms).
 
 **Contrôle** : `docker compose ps` montre `caddy` et `app` en marche, `app` en `(healthy)`, et `/readyz` répond ; sur un serveur en retrait, aucun des deux n'est en marche.
+
+### Réparation des soirées
+
+Quand « Supprimer toutes les tables » a été oublié, une soirée peut mêler plusieurs nuits, et ses statistiques avec. À chaque démarrage, la file répare ces soirées : elle découpe chacune en une soirée par nuit, coupée le matin, au premier instant à partir de 8 h où aucun titre n'a commencé depuis une heure. Elle revoit la soirée en cours avant de répondre à la première requête, puis, une à une, les soirées closes pas encore vérifiées, jamais pendant une mise à jour. L'index `data/soirees/.bornage.json` garde l'état de chaque soirée close vérifiée, et l'original de chaque soirée découpée reste dans `data/soirees-originales/<id>/1/` (section 20).
+
+Le journal du serveur le dit : à chaque démarrage, une ligne d'état, « Réparation des soirées : active. » ; une ligne « Réparation : <id> … » par soirée revue ; puis le bilan « Réparation des soirées closes terminée : … ». Une ligne d'échec qui porte « essai 1 sur 3 » ou « essai 2 sur 3 » finit par « reprise au prochain démarrage » : rien à faire, la réparation se refait seule. Une ligne « notée failed » finit par ce qu'il faut faire, avec le titre de la procédure à suivre ci-dessous. Dans le menu des statistiques, une soirée découpée porte « · séparée », une soirée que la réparation n'a pas pu découper « · à vérifier » (GUIDE-BAR.md, « Statistiques de la soirée »).
+
+### Couper la réparation
+
+À la demande du mainteneur seulement : une réparation qui échoue ou semble fausse à chaque démarrage (marque « · à vérifier » de la liste des soirées), en attendant le correctif. `KARAOKE_REPAIR=off` dans `deploy/.env` coupe le découpage des soirées, rien d'autre. Dans `~/karafun-plus/deploy` :
+
+1. Ajoute la ligne, précédée d'une ligne vide, puis recrée `app`. Sans la ligne vide, un `.env` sans fin de ligne collerait la clé à sa dernière ligne.
+
+   ```bash
+   printf '\nKARAOKE_REPAIR=off\n' >> .env
+   docker compose up -d app
+   ```
+
+2. Contrôle :
+
+   ```bash
+   docker compose logs --no-log-prefix app | grep 'Réparation des soirées'
+   ```
+
+   La commande doit montrer « Réparation des soirées : coupée (KARAOKE_REPAIR=off). La remise à zéro du matin reste. Pour la rallumer, retire KARAOKE_REPAIR (DEPLOIEMENT-SERVEUR §18, « Couper la réparation »). ».
+3. Tant que la ligne est dans `.env`, « Vérifier et mettre à jour » est refusé par « Cette version nécessite un réglage du serveur avant son installation. », qui ne la nomme pas (`deploy/update-agent.py`). La carte « Mise à jour » le rappelle sous son bouton. « Installer cette version » reste possible : une version choisie admet un réglage en trop.
+4. Pour la version corrigée, garde la ligne pendant son installation : choisis cette version dans la liste de la carte « Mise à jour », puis touche « Installer cette version » (section 17). Elle y paraît dans l'heure qui suit sa publication. Si elle ne démarre pas, l'agent remet la version en service, la réparation toujours coupée. Une fois la version corrigée en service, `app` en `(healthy)` dans `docker compose ps` comme au contrôle de la section 17, retire la ligne entière, puis recrée `app` :
+
+   ```bash
+   sed -i '/^KARAOKE_REPAIR=/d' .env
+   docker compose up -d app
+   ```
+
+   Jamais le `sed` avant l'installation : à un retour automatique (contrôles en échec, coupure du VPS), l'agent remet le `.env` d'avant, et la version en cause repartirait sans la ligne, sa réparation rallumée, soirée en cours comprise. Une ligne `KARAOKE_REPAIR=` vide rallume la réparation, mais bloque encore « Vérifier et mettre à jour ». Sans liste de versions sur la carte (agent installé avant elle, section 17), la « Procédure manuelle de maintenance » de la section 17 garde aussi la ligne jusqu'à son contrôle.
+
+5. Pour rallumer la réparation sur la même version : la commande `sed` de l'étape 4, puis `docker compose up -d app`. Le contrôle de l'étape 2 montre alors « Réparation des soirées : active. ».
+
+Sur le PC du bar, la variable se pose dans une invite, avant de lancer le kit (GUIDE-BAR.md, « Couper la réparation sur le PC »).
+
+### Commandes communes de la réparation
+
+Les trois procédures suivantes nomment une soirée par son identifiant d'origine, `<id>`, de la forme `2026-11-06_2040_ab12`, que donnent ses lignes « Réparation : » du journal du serveur.
+
+- Sur le serveur, dans `~/karafun-plus/deploy`, `data/` est dans le volume `karafun-data`. Application arrêtée, les commandes passent par `docker compose run --rm --no-deps -T app`, comme `deploy/sauvegarde.sh`, seconde exception de la ligne « Jamais » plus haut ; application en marche, par `docker compose exec -T app`. Pose d'abord `id=<id>`, puis tape `"$id"` à la place de `<id>`.
+- Sur le PC du bar, dans PowerShell, dans le dossier `karaoke-bar` : `node\node.exe` à la place de `node`, après `$id = '<id>'`, puis `$id` à la place de `<id>`.
+- Chaque commande `node` tient sur une ligne, sans point d'exclamation, dollar ni accent grave, ses chaînes entre apostrophes droites : la même ligne passe telle quelle dans bash et dans PowerShell. Elle vérifie d'abord `<id>` : un identifiant vide, mal tapé ou fait d'un chemin écrit « Identifiant de soirée invalide : … Rien ne change. », puis s'arrête avant toute lecture ou écriture.
+- Les lignes de `tar` et du retrait d'un morceau font la même vérification, en tête de la même ligne : sans un identifiant de la forme `2026-11-06_2040_ab12`, elles écrivent ce message et ne lancent rien.
+
+### Revenir à l'original d'une soirée découpée
+
+Seulement pour une soirée close quand sa copie a été prise : le `meta.json` de `data/soirees-originales/<id>/1/` a un `endedAt`. Aucune variable à poser : les autres soirées restent réparées, et « Vérifier et mettre à jour » reste possible. La soirée reste entière tant que la règle de bornage ne change pas ; une règle nouvelle repartirait de cet original (`TODOS.md`). Sur le PC, mêmes fichiers, dans le dossier `data` du kit.
+
+Une soirée coupée pendant qu'elle était en cours (`endedAt` vide dans la copie) ne se recopie jamais : la copie n'a pas les lignes écrites après la coupure. Elle attend un outil de rattachement (`TODOS.md`). Pas à pas, bar fermé, avec les commandes communes :
+
+1. Arrête l'application, puis garde une copie de tout. Sur le serveur, `./sauvegarde.sh` ne relance pas une file arrêtée, et doit écrire sa ligne « Sauvegarde écrite : … ».
+
+   ```bash
+   docker compose stop app
+   ./sauvegarde.sh
+   ```
+
+   ```powershell
+   .\ARRETER.bat
+   Copy-Item -Recurse data "data-avant-original-$(Get-Date -Format yyyyMMdd-HHmm)"
+   ```
+
+2. Vérifie la copie : la commande écrit un nombre, l'heure de clôture de la soirée. Avec `null` ou `undefined`, la soirée a été coupée pendant qu'elle était en cours : arrête-toi là, et relance l'application (étape 7).
+
+   ```bash
+   id=<id>
+   docker compose run --rm --no-deps -T app node -p "const ok=require('./evening-journal').validEveningId(process.argv[1]);if(ok===false){console.error('Identifiant de soirée invalide : '+process.argv[1]+' (forme 2026-11-06_2040_ab12). Rien ne change.');process.exit(1)}require('./data/soirees-originales/'+process.argv[1]+'/1/meta.json').endedAt" "$id"
+   ```
+
+   ```powershell
+   $id = '<id>'
+   node\node.exe -p "const ok=require('./evening-journal').validEveningId(process.argv[1]);if(ok===false){console.error('Identifiant de soirée invalide : '+process.argv[1]+' (forme 2026-11-06_2040_ab12). Rien ne change.');process.exit(1)}require('./data/soirees-originales/'+process.argv[1]+'/1/meta.json').endedAt" $id
+   ```
+
+3. Liste, sans rien changer, les morceaux à retirer, un nom par ligne. La liste ne donne jamais `<id>` lui-même : le dernier morceau garde cet identifiant.
+
+   ```bash
+   docker compose run --rm --no-deps -T app node -e "const ok=require('./evening-journal').validEveningId(process.argv[1]);if(ok===false){console.error('Identifiant de soirée invalide : '+process.argv[1]+' (forme 2026-11-06_2040_ab12). Rien ne change.');process.exit(1)}const fs=require('fs'),id=process.argv[1],v=require('./evening-journal').validEveningId;for(const n of fs.readdirSync('data/soirees')){if(n===id||v(n)===false)continue;let m=null;try{m=JSON.parse(fs.readFileSync('data/soirees/'+n+'/meta.json','utf8'))}catch(e){}if(m&&m.split&&m.split.from===id)console.log(n)}" "$id"
+   ```
+
+   ```powershell
+   node\node.exe -e "const ok=require('./evening-journal').validEveningId(process.argv[1]);if(ok===false){console.error('Identifiant de soirée invalide : '+process.argv[1]+' (forme 2026-11-06_2040_ab12). Rien ne change.');process.exit(1)}const fs=require('fs'),id=process.argv[1],v=require('./evening-journal').validEveningId;for(const n of fs.readdirSync('data/soirees')){if(n===id||v(n)===false)continue;let m=null;try{m=JSON.parse(fs.readFileSync('data/soirees/'+n+'/meta.json','utf8'))}catch(e){}if(m&&m.split&&m.split.from===id)console.log(n)}" $id
+   ```
+
+4. Retire ces dossiers un par un, par leur nom : pour chaque nom de la liste, pose-le à la place de `<morceau>`, puis lance la ligne qui suit.
+
+   ```bash
+   morceau=<morceau>
+   if [[ $morceau =~ ^[[:digit:]]{4}-[[:digit:]]{2}-[[:digit:]]{2}_[[:digit:]]{4}_[[:digit:]abcdef]{4}$ ]]; then docker compose run --rm --no-deps -T app rm -r "data/soirees/$morceau"; else echo "Identifiant de soirée invalide : $morceau (forme 2026-11-06_2040_ab12). Rien ne change." >&2; fi
+   ```
+
+   ```powershell
+   $morceau = '<morceau>'
+   if ($morceau -cmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4}_[0-9a-f]{4}\z') { Remove-Item -Recurse "data\soirees\$morceau" } else { throw "Identifiant de soirée invalide : $morceau (forme 2026-11-06_2040_ab12). Rien ne change." }
+   ```
+
+5. Recopie l'original, jamais `copie-complete` : `journal.jsonl`, `meta.json` et `summary.json`. Si la copie n'a pas de `summary.json`, celui du dernier morceau est retiré.
+
+   ```bash
+   docker compose run --rm --no-deps -T app node -e "const ok=require('./evening-journal').validEveningId(process.argv[1]);if(ok===false){console.error('Identifiant de soirée invalide : '+process.argv[1]+' (forme 2026-11-06_2040_ab12). Rien ne change.');process.exit(1)}const fs=require('fs'),id=process.argv[1],o='data/soirees-originales/'+id+'/1/',d='data/soirees/'+id+'/';for(const n of ['journal.jsonl','meta.json'])fs.copyFileSync(o+n,d+n);if(fs.existsSync(o+'summary.json'))fs.copyFileSync(o+'summary.json',d+'summary.json');else fs.rmSync(d+'summary.json',{force:true});console.log(id+' : original recopié')" "$id"
+   ```
+
+   ```powershell
+   node\node.exe -e "const ok=require('./evening-journal').validEveningId(process.argv[1]);if(ok===false){console.error('Identifiant de soirée invalide : '+process.argv[1]+' (forme 2026-11-06_2040_ab12). Rien ne change.');process.exit(1)}const fs=require('fs'),id=process.argv[1],o='data/soirees-originales/'+id+'/1/',d='data/soirees/'+id+'/';for(const n of ['journal.jsonl','meta.json'])fs.copyFileSync(o+n,d+n);if(fs.existsSync(o+'summary.json'))fs.copyFileSync(o+'summary.json',d+'summary.json');else fs.rmSync(d+'summary.json',{force:true});console.log(id+' : original recopié')" $id
+   ```
+
+6. Note `<id>` `'ok'` dans `data/soirees/.bornage.json`, pour que la réparation ne la recoupe pas :
+
+   ```bash
+   docker compose run --rm --no-deps -T app node -e "const ok=require('./evening-journal').validEveningId(process.argv[1]);if(ok===false){console.error('Identifiant de soirée invalide : '+process.argv[1]+' (forme 2026-11-06_2040_ab12). Rien ne change.');process.exit(1)}const fs=require('fs'),f='data/soirees/.bornage.json',id=process.argv[1],x=JSON.parse(fs.readFileSync(f,'utf8'));x.checked[id]='ok';fs.writeFileSync(f+'.tmp',JSON.stringify(x));fs.renameSync(f+'.tmp',f);console.log(id+' : ok dans '+f)" "$id"
+   ```
+
+   ```powershell
+   node\node.exe -e "const ok=require('./evening-journal').validEveningId(process.argv[1]);if(ok===false){console.error('Identifiant de soirée invalide : '+process.argv[1]+' (forme 2026-11-06_2040_ab12). Rien ne change.');process.exit(1)}const fs=require('fs'),f='data/soirees/.bornage.json',id=process.argv[1],x=JSON.parse(fs.readFileSync(f,'utf8'));x.checked[id]='ok';fs.writeFileSync(f+'.tmp',JSON.stringify(x));fs.renameSync(f+'.tmp',f);console.log(id+' : ok dans '+f)" $id
+   ```
+
+7. Relance l'application (`docker compose start app` ; sur le PC, `KaraFun Plus.exe`), puis contrôle : le menu des statistiques montre la soirée sans « · séparée », et plus aucun de ses morceaux.
+
+Pour une soirée coupée pendant qu'elle était en cours, comme pour tout doute : « Couper la réparation », puis « Envoyer une soirée au développeur ».
+
+### Refaire une réparation en échec
+
+Une soirée notée `failed` (« · à vérifier » dans le menu des statistiques, et sa ligne « Réparation : <id> en échec … notée failed … ») n'est refaite qu'avec une version nouvelle de l'application. Une fois la cause réglée (disque libéré, fichier remis), refais-la sans attendre, bar fermé, avec les commandes communes :
+
+1. Arrête l'application : `docker compose stop app` ; sur le PC, `.\ARRETER.bat`.
+2. Retire la seule entrée `<id>` de `data/soirees/.bornage.json`, jamais tout le fichier : un index absent ou illisible se lit comme vide, et une soirée remise à l'original serait recoupée. La commande refuse une entrée absente, sans rien changer.
+
+   ```bash
+   id=<id>
+   docker compose run --rm --no-deps -T app node -e "const ok=require('./evening-journal').validEveningId(process.argv[1]);if(ok===false){console.error('Identifiant de soirée invalide : '+process.argv[1]+' (forme 2026-11-06_2040_ab12). Rien ne change.');process.exit(1)}const fs=require('fs'),f='data/soirees/.bornage.json',id=process.argv[1],x=JSON.parse(fs.readFileSync(f,'utf8'));if(typeof x.checked[id]==='undefined'){console.error(id+' absent de '+f+' : rien ne change.');process.exitCode=1}else{delete x.checked[id];fs.writeFileSync(f+'.tmp',JSON.stringify(x));fs.renameSync(f+'.tmp',f);console.log(id+' retiré de '+f+' : refait au prochain démarrage.')}" "$id"
+   ```
+
+   ```powershell
+   $id = '<id>'
+   node\node.exe -e "const ok=require('./evening-journal').validEveningId(process.argv[1]);if(ok===false){console.error('Identifiant de soirée invalide : '+process.argv[1]+' (forme 2026-11-06_2040_ab12). Rien ne change.');process.exit(1)}const fs=require('fs'),f='data/soirees/.bornage.json',id=process.argv[1],x=JSON.parse(fs.readFileSync(f,'utf8'));if(typeof x.checked[id]==='undefined'){console.error(id+' absent de '+f+' : rien ne change.');process.exitCode=1}else{delete x.checked[id];fs.writeFileSync(f+'.tmp',JSON.stringify(x));fs.renameSync(f+'.tmp',f);console.log(id+' retiré de '+f+' : refait au prochain démarrage.')}" $id
+   ```
+
+3. Relance l'application (`docker compose start app` ; sur le PC, `KaraFun Plus.exe`), puis lis la dernière ligne « Réparation : » de `<id>` : réussie, ou en échec avec sa cause.
+
+   ```bash
+   docker compose logs --no-log-prefix app | grep "$id"
+   ```
+
+   ```powershell
+   Select-String -Path journal\serveur-*.log -Encoding UTF8 -Pattern $id
+   ```
+
+### Envoyer une soirée au développeur
+
+Application en marche, à la demande du développeur : une soirée mal découpée, ou une réparation en échec par une exception. Deux envois : `envoi.txt`, les seules lignes du journal du serveur dont le message commence par « Réparation » ou par « Fin de soirée », sans prénom ; puis les dossiers de la soirée, qui portent des prénoms. Jamais une ligne où ces mots viennent plus loin, ni la ligne « Clé du bar », écrite en clair au journal en mode PC.
+
+Sur le serveur, avec les commandes communes :
+
+```bash
+id=<id>
+docker compose exec -T app sh -c 'grep -hE "^[^ ]+ (Réparation|Fin de soirée)" /app/journal/serveur-*.log' | grep -v 'Clé du bar' > ~/envoi.txt
+docker compose exec -T app node -e "const ok=require('./evening-journal').validEveningId(process.argv[1]);if(ok===false){console.error('Identifiant de soirée invalide : '+process.argv[1]+' (forme 2026-11-06_2040_ab12). Rien ne change.');process.exit(1)}const fs=require('fs'),id=process.argv[1],v=require('./evening-journal').validEveningId;for(const n of fs.readdirSync('data/soirees')){if(n===id||v(n)===false)continue;let m=null;try{m=JSON.parse(fs.readFileSync('data/soirees/'+n+'/meta.json','utf8'))}catch(e){}if(m&&m.split&&m.split.from===id)console.log(n)}" "$id"
+if [[ $id =~ ^[[:digit:]]{4}-[[:digit:]]{2}-[[:digit:]]{2}_[[:digit:]]{4}_[[:digit:]abcdef]{4}$ ]]; then (umask 077; docker compose exec -T app tar -czf - -C /app "data/soirees/$id" "data/soirees-originales/$id" > ~/soiree-"$id".tar.gz); else echo "Identifiant de soirée invalide : $id (forme 2026-11-06_2040_ab12). Rien ne change." >&2; fi
+```
+
+La commande `node` liste les morceaux de la soirée, comme l'étape 3 de « Revenir à l'original d'une soirée découpée ». Ajoute chacun à la commande `tar`, `"data/soirees/<morceau>"` après `"data/soirees-originales/$id"`. La ligne de `tar` vérifie d'abord `$id`, et `umask 077` crée l'archive lisible par toi seul. Une soirée jamais découpée (une réparation en échec avant sa copie, par une exception par exemple) n'a pas de dossier dans `data/soirees-originales/` : `tar` écrit alors « Cannot stat » pour lui et finit en erreur, mais l'archive garde le reste.
+
+Sur le PC du bar, dans PowerShell, dans le dossier `karaoke-bar` :
+
+```powershell
+$id = '<id>'
+Select-String -Path journal\serveur-*.log -Encoding UTF8 -Pattern '^\S+ (Réparation|Fin de soirée)' | ForEach-Object { $_.Line } | Where-Object { $_ -notmatch 'Clé du bar' } | Set-Content -Path $HOME\envoi.txt -Encoding UTF8
+node\node.exe -e "const ok=require('./evening-journal').validEveningId(process.argv[1]);if(ok===false){console.error('Identifiant de soirée invalide : '+process.argv[1]+' (forme 2026-11-06_2040_ab12). Rien ne change.');process.exit(1)}const fs=require('fs'),id=process.argv[1],v=require('./evening-journal').validEveningId;for(const n of fs.readdirSync('data/soirees')){if(n===id||v(n)===false)continue;let m=null;try{m=JSON.parse(fs.readFileSync('data/soirees/'+n+'/meta.json','utf8'))}catch(e){}if(m&&m.split&&m.split.from===id)console.log(n)}" $id
+if ($id -cmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4}_[0-9a-f]{4}\z') { tar.exe -czf "$HOME\soiree-$id.tar.gz" "data/soirees/$id" "data/soirees-originales/$id" } else { throw "Identifiant de soirée invalide : $id (forme 2026-11-06_2040_ab12). Rien ne change." }
+```
+
+Les morceaux s'ajoutent de même à la commande `tar.exe`, entre les accolades de sa vérification ; `tar.exe` sert déjà à la section 19. Sans dossier dans `data/soirees-originales/`, `tar.exe` le signale de même, sans gâter l'archive. Jamais `findstr`, qui ne trouve pas un mot accentué dans un fichier UTF-8, ni `Compress-Archive`, qui mettrait les deux dossiers `<id>` au même nom.
+
+Relis `envoi.txt` avant l'envoi. Le dépôt et ses issues sont publics : `envoi.txt`, sans prénom, peut aller dans une issue « Défaut », dont le champ « Journal » (`.github/ISSUE_TEMPLATE/defaut.yml`) nomme ces lignes, sans la ligne « Clé du bar ». Les dossiers portent des prénoms (`meta.json`, section 20) : ils partent par un chemin privé convenu avec le développeur, comme une archive (section 16), jamais dans un message, une issue, une PR ni un signalement de faille. Chez le développeur aussi, ils restent hors du dépôt.
 
 ## 19. Retour arrière vers le kit Windows
 
@@ -806,6 +986,14 @@ Avec le kit Windows, ne relaie jamais le port du bar (3000) par un proxy HTTPS :
 ## 20. Données personnelles et accès
 
 Dans le panier préparé, la file est hébergée à Varsovie, en Pologne (Union européenne), sur un VPS d'OVHcloud. Vérifie la région du VPS livré avant de reprendre cette indication dans l'affiche destinée aux clients. Les prénoms et les heures de présence sont des données personnelles. Ils sont dans `data/` (soirées, statistiques), dans `journal/` (le journal du serveur et celui de KaraFun citent des prénoms), et dans chaque archive de `deploy/sauvegardes/` et ses copies. Docker garde aussi les journaux des conteneurs, jusqu'à 50 Mo chacun : celui de `app` cite les mêmes prénoms, celui de `caddy` des adresses IP de téléphones. La purge de la section 18 n'y touche pas : ils disparaissent quand le conteneur est recréé, à la mise à jour suivante ou, hors soirée, par `docker compose up -d --force-recreate`. Sur un serveur en retrait, qui ne doit pas démarrer (section 13), retire-les plutôt par `docker compose down`. Les PC Windows en gardent aussi : `data-avant-serveur-AAAAMMJJ`, les archives `karafun-plus-pc-AAAAMMJJ.tar.gz` et celles copiées par `scp`, l'ancien dossier `journal` du kit, et la clé USB qui a porté une archive entre deux PC (sections 12 et 19). Range-les sur le disque protégé de la section 16, et efface-les quand le retour au kit n'est plus utile. Informe les clients par une affiche, comme avec le kit.
+
+`data/soirees-originales/` garde les originaux des soirées découpées par la réparation (section 18), prénoms compris. Ce dossier est gardé comme `data/soirees`, sans purge automatique, et il part dans les archives des sections 16 et 17. Supprime-le une fois le découpage vérifié : aucune soirée marquée « · à vérifier » dans le menu des statistiques, et chaque nuit seule dans la liste. Sur le serveur, hors soirée, dans `~/karafun-plus/deploy` :
+
+```bash
+docker compose exec -T app rm -r data/soirees-originales
+```
+
+Sur le PC du bar, file arrêtée, dans PowerShell, dans le dossier `karaoke-bar` : `Remove-Item -Recurse data\soirees-originales`. Le PC garde aussi les copies `data-avant-original-…` de la section 18, et chaque envoi au développeur laisse son archive `soiree-<id>.tar.gz`, sur le serveur comme sur le PC : efface-les quand elles ne servent plus.
 
 La recherche et le catalogue exigent un QR de table valide sur les ports clients du serveur et du kit PC. Le port du bar sur le Wi-Fi du kit PC applique aussi cette règle. Sa boucle locale garde l'accès historique du bar. Pour « En solo », il faut aussi le QR personnel ou le téléphone actuel de la personne inscrite. La page du bar y accède avec sa clé sur le port privé, jamais avec cette clé sur le port clients.
 

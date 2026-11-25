@@ -52,14 +52,44 @@ function openBar(url) {
   child.unref();
 }
 
-async function helperRunning(port = barPort()) {
+// Fichier d'arrêt de la file d'un port (data/runtime-<port>.json, à côté de
+// ce fichier, comme stop.js), écrit par server.js dès que le port du bar est
+// pris : starting: true tant que le démarrage n'est pas fini (réparation de
+// la soirée en cours). Null s'il manque ou ne se lit pas.
+const runtimeFileOf = port => path.join(__dirname, 'data', `runtime-${port}.json`);
+function readRuntime(file) {
+  try {
+    const runtime = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return runtime !== null && typeof runtime === 'object' ? runtime : null;
+  } catch (_) { return null; }
+}
+// Processus vivant : process.kill(pid, 0) ne lève pas ESRCH (vaut aussi sous
+// Windows ; EPERM : vivant, d'un autre compte).
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
+}
+const portTaken = port => Object.assign(new Error(`Le port ${port} est utilisé par un autre programme.`), { code: 'PORT_TAKEN' });
+
+// La file de ce port : true quand elle répond (page du bar à ouvrir), false
+// quand rien n'écoute (elle peut démarrer), 'starting' quand elle démarre.
+// Une connexion acceptée sans réponse en 2 s (TimeoutError) n'est la nôtre
+// que d'après son fichier d'arrêt : celui d'une file vivante de ce port, à
+// starting, démarre (réparation en cours) ; sans starting, elle tourne mais
+// ne répond pas encore (passe des soirées closes) ; sinon, comme une réponse
+// étrangère, le port est à un autre programme (ou à une file figée), jamais
+// pris pour la file qui démarre.
+async function helperRunning(port = barPort(), { runtimeFile = runtimeFileOf(port) } = {}) {
   try {
     const response = await fetch(barUrl(port), { redirect: 'manual', signal: AbortSignal.timeout(2000) });
     if (response.status === 302 && /^\/staff\?key=/.test(response.headers.get('location') || '')) return true;
-    throw Object.assign(new Error(`Le port ${port} est utilisé par un autre programme.`), { code: 'PORT_TAKEN' });
+    throw portTaken(port);
   } catch (error) {
     if (error.code === 'PORT_TAKEN') throw error;
-    return false;
+    if (error?.name !== 'TimeoutError') return false;
+    const runtime = readRuntime(runtimeFile);
+    if (!runtime || runtime.port !== port || !pidAlive(runtime.pid)) throw portTaken(port);
+    return runtime.starting === true ? 'starting' : true;
   }
 }
 
@@ -81,7 +111,15 @@ async function main() {
       console.log('KaraFun introuvable aux emplacements habituels : ouvre-le manuellement, puis active sa télécommande.');
     } else if (running === null) console.log('Ouvre KaraFun manuellement si sa fenêtre ne s’affiche pas.');
   }
-  if (await helperRunning(port)) {
+  const queue = await helperRunning(port);
+  // Premier lancement encore en démarrage (double clic sur KaraFun Plus.exe) :
+  // aucun second serveur ; la file ouvre elle-même la page du bar à la fin de
+  // son démarrage, et le lanceur ne voit aucune erreur (code 0).
+  if (queue === 'starting') {
+    console.log('La file karaoké démarre déjà : la page du bar s’ouvrira dans un instant.');
+    return;
+  }
+  if (queue) {
     if (process.platform === 'win32') {
       console.log('La file karaoké tourne déjà : ouverture de la page du bar. Si elle affiche « essais arrêtés », clique sur « Reconnecter » une fois la Télécommande de KaraFun activée.');
       openBar(BAR_URL);

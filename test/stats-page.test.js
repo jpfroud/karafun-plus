@@ -119,10 +119,14 @@ function eveningEvents() {
 const meta = { eveningId: '2026-10-03_2000_abcd', startedAt: at(0), endedAt: null,
   roster: { pA: { name: 'Alice' }, pB: { name: 'Bruno' }, pC: { name: 'Chloé' }, pD: { name: 'Dina' }, pE: { name: 'Eve' } },
   tables: { 1: { name: 'Table 1' }, 2: { name: 'Terrasse' }, 3: { name: 'Table 3' } } };
-function apiView({ live = true, events = eveningEvents(), id = meta.eveningId, now = at(72), endedAt = live ? null : at(90) } = {}) {
-  const stats = computeStats({ meta: { ...meta, eveningId: id, endedAt }, events, now, live });
+// `closedBy` : celui de meta.json, que le serveur (statsView) passe à
+// computeStats et rend dans evening.closedBy ; 'auto' finit le karaoké d'une
+// soirée close d'office à son dernier titre (A5).
+function apiView({ live = true, events = eveningEvents(), id = meta.eveningId, now = at(72), endedAt = live ? null : at(90), closedBy } = {}) {
+  const by = closedBy === undefined ? {} : { closedBy };
+  const stats = computeStats({ meta: { ...meta, eveningId: id, endedAt, ...by }, events, now, live });
   const names = { people: Object.fromEntries(Object.entries(meta.roster).map(([k, v]) => [k, v.name])), tables: { 1: 'Table 1', 2: 'Terrasse' } };
-  return { evening: { id, startedAt: stats.evening.startedAt, endedAt: stats.evening.endedAt, current: live, truncated: !live },
+  return { evening: { id, startedAt: stats.evening.startedAt, endedAt: stats.evening.endedAt, current: live, truncated: !live, ...by },
     names, stats, insights: insights(stats, { nameOf: pid => names.people[pid], tableName: tid => names.tables[tid] || `Table ${tid}` }),
     generatedAt: at(72), journalError: live ? 'disque plein' : null };
 }
@@ -1089,4 +1093,213 @@ test('graduations des durées : pas selon la largeur, au moins 60 unités entre 
       }
     }
   }
+});
+
+// ------------------------------------------------------------------ A5 : menu des soirées et ligne de la soirée
+// Plan du 8 novembre, A5 : le menu des soirées donne l'ouverture de chaque
+// soirée (« ven. 6 nov. · 20:40 », openingLabel d'evening-journal.js à
+// l'heure du navigateur), au plus un suffixe court par option ; la phrase
+// entière, et « soirée close automatiquement à HH:MM », vont dans
+// #eveningLine de la soirée choisie, que la page prend dans la liste des
+// soirées.
+const { EveningJournal, openingLabel } = require('../evening-journal');
+
+test('A5 : page des statistiques : libellé du menu à l’ouverture (« ven. 6 nov. · 20:40 », openingLabel), une soirée dont KaraFun est resté connecté depuis la remise à zéro du matin à sa première activité ; un seul suffixe par option (« · à vérifier », sinon « · séparée ») et la phrase entière dans #eveningLine de la soirée choisie ; « soirée close automatiquement à HH:MM » dans #eveningLine, à sa clôture et non à la fin de son karaoké (dernier titre), jamais dans le Déroulé ; une ancienne soirée close par « Supprimer toutes les tables » sans cette mention ; marques reprises quand la liste arrive après les statistiques', async () => {
+  const P = text => Date.parse(`${text}:00+01:00`);
+  // Une soirée dont KaraFun est resté connecté depuis la remise à zéro du
+  // matin (8 h) : la liste du journal la date de sa première activité.
+  let t = P('2026-11-06T08:00');
+  const journal = new EveningJournal({ now: () => t });
+  journal.open();
+  journal.append('karaoke.phase', { phase: 'silent', blocker: 'empty' });
+  t = P('2026-11-06T20:40');
+  journal.append('person.joined', { personId: 'pA', tableId: '1' });
+  journal.person('pA', { name: 'Alice', tableId: '1' });
+  t = P('2026-11-07T01:00');
+  journal.close({ summarize: ({ meta: m, events }) => computeStats({ meta: m, events, now: t }) });
+  assert.equal(journal.read(journal.list()[0].id).summary.evening.openedAt, P('2026-11-06T08:00'), 'computeStats : ouverture au début du journal');
+  const morning = journal.list()[0];
+  assert.equal(morning.openedAt, P('2026-11-06T20:40'));
+  const ids = { piece: '2026-11-05_0800_aaaa', failed: '2026-11-04_1900_bbbb', retry: '2026-11-03_1900_cccc', old: '2026-11-02_1900_dddd' };
+  const rows = [
+    { id: meta.eveningId, current: true, startedAt: at(0), openedAt: at(30), people: 5, split: false, repair: null },
+    morning,
+    { id: ids.piece, current: false, startedAt: P('2026-11-05T08:00'), openedAt: P('2026-11-05T21:15'), people: 3, split: true, repair: 'ok' },
+    { id: ids.failed, current: false, startedAt: P('2026-11-04T19:00'), openedAt: P('2026-11-04T20:05'), people: 2, split: true, repair: 'failed' },
+    { id: ids.retry, current: false, startedAt: P('2026-11-03T19:00'), openedAt: null, people: 0, split: false, repair: 'retry' },
+    { id: ids.old, current: false, startedAt: P('2026-11-02T19:00'), openedAt: P('2026-11-02T21:30'), people: 4, split: false, repair: 'ok' },
+  ];
+  const closedBy = new Map([[ids.piece, 'auto'], [ids.failed, 'auto'], [ids.retry, 'staff-reset'], [ids.old, 'staff-reset'], [morning.id, 'staff-reset']]);
+  const endOf = id => (id === ids.piece ? P('2026-11-06T08:00') : at(90));
+  let release = () => {};
+  const gate = new Promise(resolve => { release = resolve; });
+  const responses = slow => ({
+    '/api/staff/stats/evenings': async () => { if (slow) await gate; return { ok: true, body: { current: meta.eveningId, evenings: rows } }; },
+    '/api/staff/stats': url => {
+      const id = url.searchParams.get('evening');
+      if (id === 'current') return { ok: true, body: apiView() };
+      const view = apiView({ live: false, id, endedAt: endOf(id), closedBy: closedBy.get(id) ?? null });
+      view.evening.truncated = false;
+      return { ok: true, body: view };
+    },
+  });
+  const page = loadPage({ responses: responses(false) });
+  await settle();
+  const options = page.$('eveningSelect').options();
+  assert.deepEqual(options.map(o => [o.getAttribute('value'), text(o)]), [
+    ['current', `Ce soir · ${openingLabel(at(30))} · 5 inscrits`],
+    [morning.id, `${openingLabel(P('2026-11-06T20:40'))} · 1 inscrits`],
+    [ids.piece, `${openingLabel(P('2026-11-05T21:15'))} · 3 inscrits · séparée`],
+    [ids.failed, `${openingLabel(P('2026-11-04T20:05'))} · 2 inscrits · à vérifier`],
+    [ids.retry, `${openingLabel(P('2026-11-03T19:00'))} · à vérifier`],
+    [ids.old, `${openingLabel(P('2026-11-02T21:30'))} · 4 inscrits`],
+  ]);
+  const weekday = new Date(P('2026-11-06T20:40')).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+  assert.equal(text(options[1]), `${weekday} · ${localHHMM(P('2026-11-06T20:40'))} · 1 inscrits`, 'ouverture à la première activité, pas l’heure de création du journal');
+  assert.doesNotMatch(text(options[1]), new RegExp(localHHMM(P('2026-11-06T08:00'))));
+  // Soirée en cours : aucune marque.
+  assert.doesNotMatch(text(page.$('eveningLine')), /séparée|réparation|automatiquement/);
+  const choose = async id => {
+    const select = page.$('eveningSelect');
+    select.value = id;
+    select.dispatch('change', { target: select });
+    await settle();
+    return text(page.$('eveningLine'));
+  };
+  const count = ` · ${apiView().stats.global.registered} inscrits`;
+  // Soirée close d'office : son karaoké finit à son dernier titre (A5), bien
+  // avant sa clôture C (8 h). La ligne donne les heures du karaoké, puis
+  // « soirée close automatiquement » à C.
+  const piece = apiView({ live: false, id: ids.piece, endedAt: endOf(ids.piece), closedBy: 'auto' }).stats;
+  assert.equal(piece.evening.closedAt, piece.timeline.stages.at(-1).end, 'karaoké fini à la fin du dernier titre');
+  assert.notEqual(localHHMM(piece.evening.closedAt), localHHMM(endOf(ids.piece)), 'fin du karaoké et clôture à deux heures différentes');
+  const longDay = t => new Date(t).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+  assert.equal(await choose(ids.piece), `${longDay(piece.evening.openedAt)} · ${localHHMM(piece.evening.openedAt)} – ${localHHMM(piece.evening.closedAt)}${count}` +
+    ` · soirée close automatiquement à ${localHHMM(endOf(ids.piece))} · séparée automatiquement (original conservé)`);
+  const timeline = text(page.doc.getElementById('chartTimeline'));
+  assert.doesNotMatch(timeline, /close automatiquement/, 'jamais dans le Déroulé de la soirée');
+  assert.ok((await choose(ids.failed)).endsWith(`${count} · soirée close automatiquement à ${localHHMM(at(90))} · séparée automatiquement (original conservé) · réparation impossible : préviens le mainteneur`));
+  assert.ok((await choose(ids.retry)).endsWith(`${count} · réparation à refaire au prochain démarrage`));
+  // Ancienne soirée close par « Supprimer toutes les tables » : aucune mention.
+  const old = await choose(ids.old);
+  assert.ok(old.endsWith(count), old);
+  assert.doesNotMatch(old, /automatiquement|séparée|réparation/);
+  assert.ok((await choose(morning.id)).endsWith(count));
+  // Liste arrivée après les statistiques : les marques suivent.
+  const late = loadPage({ search: `?key=cle-bar&evening=${ids.failed}`, responses: responses(true) });
+  await settle();
+  assert.doesNotMatch(text(late.$('eveningLine')), /séparée|réparation/);
+  release();
+  await settle();
+  assert.match(text(late.$('eveningLine')), / · séparée automatiquement \(original conservé\) · réparation impossible : préviens le mainteneur$/);
+  assert.equal(late.$('eveningSelect').value, ids.failed);
+});
+
+test('A5 : page laissée ouverte sur « Ce soir » pendant une remise à zéro (« Supprimer toutes les tables ») : la liste, lue au chargement, marquait la soirée en cours séparée et en échec ; au rafraîchissement de 15 s, la nouvelle soirée en cours ne prend pas ces marques dans #eveningLine', async () => {
+  const NEW_ID = '2026-10-04_0300_beef';
+  let reset = false;
+  const page = loadPage({ responses: {
+    '/api/staff/stats/evenings': () => ({ ok: true, body: { current: meta.eveningId, evenings: [
+      { id: meta.eveningId, current: true, startedAt: at(0), openedAt: at(30), people: 5, split: true, repair: 'failed' }] } }),
+    '/api/staff/stats': url => (url.searchParams.get('evening') === 'current'
+      ? { ok: true, body: apiView(reset ? { id: NEW_ID } : {}) } : { ok: false, status: 404, body: { error: 'Introuvable' } }),
+  } });
+  await settle();
+  const marked = / · séparée automatiquement \(original conservé\) · réparation impossible : préviens le mainteneur$/;
+  assert.match(text(page.$('eveningLine')), marked, 'soirée en cours de la liste : ses marques');
+  // Remise à zéro : la soirée en cours est une autre, que la liste ne connaît pas.
+  reset = true;
+  const lists = page.fetches.filter(u => u.pathname === '/api/staff/stats/evenings').length;
+  page.timers.filter(timer => timer.ms === 15000).at(-1).fn();
+  await settle();
+  assert.equal(page.fetches.at(-1).searchParams.get('evening'), 'current');
+  assert.equal(page.fetches.filter(u => u.pathname === '/api/staff/stats/evenings').length, lists, 'liste lue au chargement seulement');
+  const line = text(page.$('eveningLine'));
+  assert.match(line, / · 5 inscrits$/, line);
+  assert.doesNotMatch(line, /séparée|réparation/);
+});
+
+// La page garde les statistiques affichées tant qu'un autre choix du menu
+// charge, et après son échec : la ligne qu'elle redessine entre-temps
+// (redimension de la fenêtre, menu « Repère ») reste celle de ces
+// statistiques, avec les marques de leur soirée dans la liste.
+test('A5 : #eveningLine prend les marques de la soirée dont les statistiques sont affichées : pendant le chargement d’une autre soirée, après son échec (introuvable, réseau coupé) et pendant le chargement de « Ce soir », un nouveau rendu (redimension de la fenêtre, menu « Repère ») laisse à la soirée affichée ses seules marques', async () => {
+  const A = '2026-10-02_2000_aaaa', B = '2026-09-26_2000_bbbb';
+  const openB = at(-10040);
+  const rows = [
+    { id: meta.eveningId, current: true, startedAt: at(0), openedAt: at(30), people: 5, split: false, repair: null },
+    { id: A, current: false, startedAt: at(-1440), openedAt: at(-1400), people: 5, split: false, repair: 'retry' },
+    { id: B, current: false, startedAt: at(-10080), openedAt: openB, people: 3, split: true, repair: 'failed' },
+  ];
+  // Réponse de chaque soirée : 'ok', 'held' (retenue jusqu'à release()),
+  // 'missing' (404 « Soirée introuvable. ») ou 'network' (fetch qui lève).
+  const modes = new Map([['current', 'ok'], [A, 'ok'], [B, 'ok']]);
+  let release = () => {};
+  const page = loadPage({ search: `?key=cle-bar&evening=${A}`, responses: {
+    '/api/staff/stats/evenings': () => ({ ok: true, body: { current: meta.eveningId, evenings: rows } }),
+    '/api/staff/stats': async url => {
+      const id = url.searchParams.get('evening');
+      const mode = modes.get(id);
+      if (mode === 'network') throw new Error('Failed to fetch');
+      if (mode === 'missing') return { ok: false, status: 404, body: { error: 'Soirée introuvable.' } };
+      if (mode === 'held') await new Promise(resolve => { release = resolve; });
+      if (id === 'current') return { ok: true, body: apiView() };
+      const view = apiView({ live: false, id });
+      view.evening.truncated = false;
+      view.evening.closedBy = 'staff-reset';
+      if (id === B) view.stats.evening.openedAt = openB;
+      // meta.json de A sans eveningId (champ facultatif) : la ligne de la
+      // liste est celle de l'identifiant demandé, jamais celui de meta.json.
+      if (id === A) delete view.evening.id;
+      return { ok: true, body: view };
+    },
+  } });
+  await settle();
+  const line = () => text(page.$('eveningLine'));
+  const count = ` · ${apiView().stats.global.registered} inscrits`;
+  const lineA = line();
+  assert.ok(lineA.endsWith(`${count} · réparation à refaire au prochain démarrage`), lineA);
+  assert.doesNotMatch(lineA, /séparée|impossible|automatiquement/);
+  const select = page.$('eveningSelect'), focus = page.$('focusSelect');
+  const choose = async id => { select.value = id; select.dispatch('change', { target: select }); await settle(); };
+  const resize = () => { page.windowListeners.resize[0](); page.timers.filter(timer => timer.ms === 200).at(-1).fn(); };
+  const pickFocus = value => { focus.value = value; focus.dispatch('change', { target: focus }); };
+  // B choisie, sa réponse retenue : la page montre encore A.
+  modes.set(B, 'held');
+  await choose(B);
+  resize();
+  assert.equal(line(), lineA, 'B en chargement, redimension : en-tête et marques de A');
+  pickFocus('t:1');
+  assert.equal(line(), lineA, 'B en chargement, choix d’un repère : en-tête et marques de A');
+  // B arrivée : son en-tête et ses marques.
+  release();
+  await settle();
+  const lineB = line();
+  assert.ok(lineB.startsWith(new Date(openB).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })), lineB);
+  assert.ok(lineB.endsWith(`${count} · séparée automatiquement (original conservé) · réparation impossible : préviens le mainteneur`), lineB);
+  modes.set(B, 'ok');
+  await choose(A);
+  assert.equal(line(), lineA);
+  // B en échec (introuvable, puis réseau coupé) : la page garde A et dit
+  // l'erreur ; un nouveau rendu ne donne pas à A les marques de B.
+  modes.set(B, 'missing');
+  await choose(B);
+  assert.match(text(page.$('errorBox')), /Statistiques indisponibles : Soirée introuvable\./);
+  resize();
+  assert.equal(line(), lineA, 'B introuvable, redimension : en-tête et marques de A');
+  modes.set(B, 'network');
+  await choose(B);
+  assert.match(text(page.$('errorBox')), /Statistiques indisponibles : Failed to fetch/);
+  pickFocus('');
+  assert.equal(line(), lineA, 'réseau coupé, choix d’un repère : en-tête et marques de A');
+  // Retour à A, puis « Ce soir » en chargement : A garde ses propres marques.
+  await choose(A);
+  assert.equal(line(), lineA);
+  modes.set('current', 'held');
+  await choose('current');
+  resize();
+  assert.equal(line(), lineA, '« Ce soir » en chargement, redimension : marques de A gardées');
+  release();
+  await settle();
+  assert.ok(line().endsWith(`en cours${count}`), line());
 });

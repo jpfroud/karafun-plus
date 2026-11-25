@@ -137,7 +137,7 @@ const NS = 'http://www.w3.org/2000/svg';
 const $ = id => document.getElementById(id);
 const REFRESH_MS = 15000;
 const KIND = { solo: ['Solo', 'var(--s1)'], duo: ['Duo', 'var(--s2)'], battle: ['Battle', 'var(--s3)'], native: ['Hors file', 'var(--s4)'] };
-const state = { data: null, listError: null, loadError: null, evening: new URLSearchParams(location.search).get('evening') || 'current', focus: '', tables: {}, sort: { key: 'turns', dir: -1 }, timer: null,
+const state = { data: null, shown: null, evenings: [], listError: null, loadError: null, evening: new URLSearchParams(location.search).get('evening') || 'current', focus: '', tables: {}, sort: { key: 'turns', dir: -1 }, timer: null,
   tableViews: new Set(), // cartes affichées en tableau, gardées aux rafraîchissements
   loadSeq: 0, // seule la réponse du dernier chargement demandé s'affiche
   queueSampleAt: null }; // relevé de la file montré au clavier, gardé quand le graphique est redessiné
@@ -146,6 +146,30 @@ const state = { data: null, listError: null, loadError: null, evening: new URLSe
 const fmtNum = (v, d = 1) => v == null || !Number.isFinite(v) ? '—' : Number(v).toLocaleString('fr-FR', { maximumFractionDigits: d });
 const hhmm = t => t == null ? '—' : new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 const dayLabel = t => new Date(t).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+// Ouverture d'une soirée dans le menu : « ven. 6 nov. · 20:40 », à l'heure du
+// navigateur comme les autres heures de la page (openingLabel
+// d'evening-journal.js, au même fuseau, donne le même texte).
+const openingLabel = t => typeof t === 'number' && Number.isFinite(t)
+  ? `${new Date(t).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })} · ${hhmm(t)}` : '—';
+// Marque d'une soirée de la liste : dans le menu, au plus un suffixe court
+// (« · à vérifier » pour une réparation à refaire ou impossible, sinon
+// « · séparée » pour une soirée découpée) ; sous le titre, les phrases
+// entières.
+const toCheck = ev => ev?.repair === 'retry' || ev?.repair === 'failed';
+const menuMark = ev => toCheck(ev) ? ' · à vérifier' : ev?.split ? ' · séparée' : '';
+const markPhrases = ev => [ev?.split ? 'séparée automatiquement (original conservé)' : null,
+  ev?.repair === 'retry' ? 'réparation à refaire au prochain démarrage' : ev?.repair === 'failed' ? 'réparation impossible : préviens le mainteneur' : null]
+  .filter(Boolean);
+// Ligne de la liste pour la soirée choisie dont les statistiques sont
+// affichées (state.shown, demandée par le chargement qui a donné state.data),
+// jamais pour un autre choix du menu encore en chargement ou en échec : une
+// archive par l'identifiant demandé ; « Ce soir », la ligne de la soirée en
+// cours seulement si c'est celle que montrent les statistiques. La liste
+// n'est lue qu'au chargement : après une remise à zéro, la page restée
+// ouverte montre une autre soirée en cours, qui ne prend jamais les marques
+// de la précédente.
+const chosenRow = () => state.evenings.find(ev => (state.shown === 'current'
+  ? ev.current && ev.id === state.data?.evening?.id : ev.id === state.shown)) || null;
 function dur(sec) {
   if (sec == null || !Number.isFinite(sec)) return '—';
   const s = Math.max(0, Math.round(sec));
@@ -621,8 +645,13 @@ function renderHeader() {
   const opened = stats.evening.openedAt ?? evening.startedAt;
   const closed = stats.evening.closedAt ?? evening.endedAt ?? stats.timeline.end;
   // En direct, « en cours » tant que les statistiques n'ont pas fermé le karaoké.
+  // Après le nombre d'inscrits : la fin automatique de la soirée (sa clôture,
+  // C), puis les marques de la soirée dans la liste des soirées.
+  const notes = [evening.truncated ? 'dernière ligne du journal illisible ignorée' : null,
+    evening.closedBy === 'auto' && evening.endedAt != null ? `soirée close automatiquement à ${hhmm(evening.endedAt)}` : null,
+    ...markPhrases(chosenRow())].filter(Boolean);
   $('eveningLine').textContent = `${dayLabel(opened)} · ${hhmm(opened)} – ${live && stats.evening.closedAt == null ? 'en cours' : hhmm(closed)}` +
-    ` · ${stats.global.registered} inscrit${stats.global.registered > 1 ? 's' : ''}${evening.truncated ? ' · dernière ligne du journal illisible ignorée' : ''}`;
+    ` · ${stats.global.registered} inscrit${stats.global.registered > 1 ? 's' : ''}${notes.map(note => ` · ${note}`).join('')}`;
   renderErrors();
 }
 
@@ -913,29 +942,36 @@ async function loadEvenings() {
     const r = await fetch(api('/api/staff/stats/evenings'));
     if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
     const { evenings } = await r.json();
+    state.evenings = Array.isArray(evenings) ? evenings : [];
     const select = clear($('eveningSelect'));
-    for (const ev of evenings) {
+    // Ouverture de la soirée (son karaoké, jamais avant sa première activité),
+    // à défaut son début, au lieu de l'heure de création de son journal.
+    for (const ev of state.evenings) {
       select.appendChild(h('option', { value: ev.current ? 'current' : ev.id,
-        text: `${ev.current ? 'Ce soir · ' : ''}${new Date(ev.startedAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} ${hhmm(ev.startedAt)}${ev.people ? ` · ${ev.people} inscrits` : ''}` }));
+        text: `${ev.current ? 'Ce soir · ' : ''}${openingLabel(ev.openedAt ?? ev.startedAt)}${ev.people ? ` · ${ev.people} inscrits` : ''}${menuMark(ev)}` }));
     }
     select.value = state.evening;
     state.listError = null;
   } catch (error) { state.listError = `Liste des soirées indisponible : ${error.message}`; }
-  renderErrors();
+  // Liste arrivée après les statistiques : la ligne de la soirée prend ses marques.
+  if (state.data) renderHeader();
+  else renderErrors();
 }
 
 // Une réponse arrivée après un autre choix de soirée (ou après un chargement
 // plus récent) est ignorée : la page montre toujours la soirée choisie.
 async function load() {
   const seq = ++state.loadSeq;
+  const evening = state.evening; // soirée des statistiques que ce chargement affiche
   clearTimeout(state.timer);
   $('main').className = 'st-main loading';
   try {
-    const r = await fetch(api('/api/staff/stats', { evening: state.evening }));
+    const r = await fetch(api('/api/staff/stats', { evening }));
     const body = await r.json();
     if (seq !== state.loadSeq) return;
     if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
     state.data = body;
+    state.shown = evening;
     state.loadError = null;
     renderFilters();
     renderAll();

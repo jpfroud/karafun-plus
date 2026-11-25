@@ -1396,3 +1396,17 @@ test('TX3b « Connecter » crée le pont KaraFun avec karafunBridgeOptions()', a
     assert.equal(typeof seen[0].log, 'function', `${label} : journal du serveur`);
   }
 });
+
+// ---------------------------------------------------------------- réparation coupée (A6)
+// Plan du 8 novembre, A6 : en mode serveur, KARAOKE_REPAIR non vide (après
+// rognage, comme repairSwitch) donne updateState().repairOff, que la carte
+// « Mise à jour » dit sous son bouton ; vide, absente ou en mode PC, jamais.
+test('A6 : updateState() rend repairOff en mode serveur avec KARAOKE_REPAIR non vide, jamais sans elle ni en mode PC', () => {
+  for (const [value, expected] of [['off', true], ['OFF', true], ['0', true], [undefined, false], ['', false], ['  ', false]]) {
+    const f = harness({ env: { KARAOKE_REPAIR: value } });
+    assert.equal(f.SERVER ? f.staffState().update.repairOff : null, expected, `mode serveur, KARAOKE_REPAIR=${JSON.stringify(value)}`);
+  }
+  const pc = harness({ serverEnv: false, env: { KARAOKE_REPAIR: 'off' } });
+  assert.equal(pc.SERVER, null, 'harnais du mode PC');
+  assert.equal(pc.staffState().update.repairOff, false, 'mode PC');
+});

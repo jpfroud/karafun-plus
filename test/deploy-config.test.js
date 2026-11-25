@@ -303,11 +303,19 @@ test('D4 .env.example et mot de passe', () => {
   // Variables : celles de .env.example, ni plus ni moins, dans compose.yaml ;
   // environnement de chaque service exactement celui de la section 3 (celles
   // du Caddyfile à caddy, les deux origines à app, aucune valeur en clair).
+  // Deux variables facultatives, vides par défaut : KARAOKE_UPDATE_DIR, que
+  // l'installation de l'agent de mise à jour remplit, et KARAOKE_REPAIR, que
+  // l'administrateur ajoute à .env pour couper la réparation des soirées
+  // (plan du 8 novembre, A6) : jamais dans .env.example, car l'agent exige les
+  // clés de .env.example pour « Vérifier et mettre à jour ».
   const compose = read('deploy/compose.yaml');
   const composeVars = [...compose.matchAll(/\$\{([A-Z_]+):\?à renseigner dans deploy\/\.env\}/g)].map(m => m[1]);
-  assert.equal([...compose.matchAll(/\$\{/g)].length, composeVars.length + 1, 'seul le service de mise à jour est facultatif');
+  const optional = [...compose.matchAll(/\$\{([A-Z_]+):-\}/g)].map(m => m[1]);
+  assert.deepEqual(optional, ['KARAOKE_UPDATE_DIR', 'KARAOKE_REPAIR'], 'variables facultatives de compose.yaml');
+  assert.equal([...compose.matchAll(/\$\{/g)].length, composeVars.length + optional.length, 'seules la mise à jour et la coupure de la réparation sont facultatives');
   assert.deepEqual([...new Set([...composeVars, 'KARAOKE_UPDATE_DIR'])].sort(), Object.keys(values).sort(), 'variables de compose.yaml');
   assert.equal(values.KARAOKE_UPDATE_DIR, '', 'mise à jour désactivée avant installation de son agent');
+  assert.ok(!Object.hasOwn(values, 'KARAOKE_REPAIR'), 'KARAOKE_REPAIR hors de deploy/.env.example : sinon « Vérifier et mettre à jour » serait refusé');
   const composeLines = compose.split('\n');
   const environment = service => {
     const start = composeLines.indexOf(`  ${service}:`);
@@ -328,13 +336,14 @@ test('D4 .env.example et mot de passe', () => {
   assert.deepEqual(caddyVars, ['ACME_EMAIL', 'BAR_PASSWORD_HASH', 'BAR_USER', 'HOTE_BAR', 'HOTE_CLIENTS']);
   assert.deepEqual(environment('caddy'), ['ACME_EMAIL', 'HOTE_CLIENTS', 'HOTE_BAR', 'BAR_USER', 'BAR_PASSWORD_HASH'].map(required),
     'environnement de caddy');
-  assert.deepEqual(environment('app'), [...['KARAOKE_PUBLIC_URL', 'KARAOKE_STAFF_URL'].map(required), 'KARAOKE_UPDATE_DIR: ${KARAOKE_UPDATE_DIR:-}'], 'environnement de app');
-  // Le vérificateur retire de son environnement chaque réglage de .env.example
-  // (sinon une valeur du shell primerait sur son .env d'essai).
+  assert.deepEqual(environment('app'), [...['KARAOKE_PUBLIC_URL', 'KARAOKE_STAFF_URL'].map(required), 'KARAOKE_UPDATE_DIR: ${KARAOKE_UPDATE_DIR:-}',
+    'KARAOKE_REPAIR: ${KARAOKE_REPAIR:-}'], 'environnement de app');
+  // Le vérificateur retire de son environnement chaque réglage de .env.example,
+  // et KARAOKE_REPAIR (sinon une valeur du shell primerait sur son .env d'essai).
   const unset = /^unset ((?:[^\n]*\\\n)*[^\n]*)$/m.exec(read(VERIFIER));
   assert.ok(unset, `ligne unset absente de ${VERIFIER}`);
   const unsetNames = unset[1].split(/[\s\\]+/).filter(Boolean);
-  for (const key of Object.keys(values)) {
+  for (const key of [...Object.keys(values), 'KARAOKE_REPAIR']) {
     assert.ok(unsetNames.includes(key), `${key} non retiré de l’environnement par ${VERIFIER}`);
   }
 

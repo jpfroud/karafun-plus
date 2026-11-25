@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
+const { createRequire } = require('node:module');
 const { test, after } = require('node:test');
 const rejeu = require('./rejeu-soiree');
 
@@ -2813,4 +2815,385 @@ test('passe 26 : rejeu libre --gestes : glissement laissé en place par les anno
   } finally {
     P.recordManualChange = orig;
   }
+});
+
+// ------------------------------------------------- plan du 8 novembre, A7
+// Export fusionné (A7, « Export fusionné ») : la fixture recopiée à +24 h
+// (recopierFixture, journaux-tires.js : la copie a ses propres identifiants,
+// « S01-2 », « T1-2 »…), sous la forme d'un export de « Télécharger » : lignes
+// sans boot, soirée sans début ni fin. Les statistiques jointes sont celles de
+// l'export : pour un journal fusionné, celles de la soirée fusionnée, qu'aucune
+// de ses soirées ne reprend.
+const tires = require('./journaux-tires');
+const ROOT = path.join(__dirname, '..');
+function exportFusionne() {
+  const { events, meta, fixture } = tires.recopierFixture({ fois: 2 });
+  return {
+    format: 'karaoke-evening', version: 1, evening: { id: meta.eveningId, timezone: meta.timezone }, privacy: fixture.privacy,
+    people: Object.entries(meta.roster).map(([key, p]) => ({ key, table: p.tableId, name: p.name })),
+    tables: Object.entries(meta.tables).map(([key, tb]) => ({ key, individual: tb.individual, name: tb.name })),
+    stats: fixture.stats, events: events.map(({ boot: _boot, ...e }) => e),
+  };
+}
+// main() lancé comme par la ligne de commande : code, sortie et sortie d'erreur.
+async function lancer(argv) {
+  const out = [], err = [];
+  const code = await rejeu.main(argv, l => out.push(l), l => err.push(l));
+  return { code, out: out.join('\n'), err: err.join('\n') };
+}
+function dossierEssai(t, prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+const REFUS_FUSION = 'Cet export mêle 2 soirées (1 : jeu. 15 oct. · 19:52 ; 2 : ven. 16 oct. · 19:52) : ajoute --soiree 1 ou --soiree 2.';
+const MASQUE = 'Prénoms masqués (clés S01…) : --prenoms pour les voir, sortie à garder hors du dépôt et de la PR.';
+
+test('A7 : export fusionné : la fixture recopiée à +24 h refusée sans --soiree, avant tout rejeu, même avec --avant (texte exact, code 1, aucune pile) ; --soiree 3, comme tout numéro de trop, même au-delà des entiers sûrs, refusée (texte exact, code 1) ; --soiree 0 et toute valeur qui n’est ni un numéro à partir de 1 ni liste : l’aide, code 2 ; --soiree liste : deux lignes, code 0, sans rejeu ; un export sans ligne datée : ouverture inconnue ; un export d’une seule soirée se rejoue comme avant', async t => {
+  const dir = dossierEssai(t, 'rejeu-fusion-');
+  const file = path.join(dir, 'fusion.json');
+  const fusion = exportFusionne();
+  fs.writeFileSync(file, JSON.stringify(fusion));
+  const aide = await lancer(['--aide']);
+  // Sans --soiree : refusé avant tout rejeu ; avec --avant, avant même de
+  // chercher la version « avant » (sinon son erreur sortirait).
+  for (const argv of [[file], [file, '--libre', '--court'], [file, '--avant', 'pas-une-revision-0000'], [file, '--avant', ROOT, '--court']]) {
+    const r = await lancer(argv);
+    assert.deepEqual([r.code, r.err, r.out], [1, REFUS_FUSION, ''], argv.slice(1).join(' '));
+  }
+  // Un numéro de trop, même au-delà des entiers sûrs (2^53 et plus) : un numéro
+  // à partir de 1, refusé en route comme les autres, sous ses chiffres (sans
+  // les zéros de tête, comme « 007 », qui vaut 7).
+  const trop = await lancer([file, '--soiree', '3']);
+  assert.deepEqual([trop.code, trop.err, trop.out], [1, '--soiree 3 : cet export n\'a que 2 soirées.', '']);
+  for (const [value, shown] of [['9007199254740991', '9007199254740991'], ['9007199254740992', '9007199254740992'],
+    ['99999999999999999999', '99999999999999999999'], ['000123456789012345678901', '123456789012345678901']]) {
+    const r = await lancer([file, '--soiree', value]);
+    assert.deepEqual([r.code, r.err, r.out], [1, `--soiree ${shown} : cet export n'a que 2 soirées.`, ''], `--soiree « ${value} »`);
+  }
+  // La fonction des scripts (--reference du lot C) prend la même valeur :
+  // au-delà des entiers sûrs, un BigInt.
+  assert.throws(() => rejeu.soireeOf(fusion, 99999999999999999999n),
+    err => err instanceof rejeu.UsageError && err.message === '--soiree 99999999999999999999 : cet export n\'a que 2 soirées.');
+  // Ni un numéro à partir de 1 ni liste : l'aide et le code 2, comme une autre option fausse.
+  for (const value of ['0', '00', '-1', '1.5', '1e0', '+1', ' 2', '', 'deux', 'LISTE']) {
+    const r = await lancer([file, '--soiree', value]);
+    assert.equal(r.code, 2, `--soiree « ${value} »`);
+    assert.equal(r.out, `--soiree attend un numéro de soirée à partir de 1, ou liste (reçu « ${value} »)\n\n${aide.out}`, `--soiree « ${value} »`);
+  }
+  for (const argv of [[file, '--soiree'], [file, '--soiree', '--court']]) {
+    const r = await lancer(argv);
+    assert.deepEqual([r.code, r.out], [2, `--soiree attend une valeur\n\n${aide.out}`], argv.slice(1).join(' '));
+  }
+  // --soiree liste : une ligne par soirée, puis l'arrêt, sans rejeu (ni
+  // version « avant » cherchée, ni JSON écrit) ; chaque ligne de l'export
+  // dans une soirée, aucune perdue.
+  const json = path.join(dir, 'liste.json');
+  const liste = await lancer([file, '--soiree', 'liste', '--avant', 'pas-une-revision-0000', '--json', json]);
+  assert.deepEqual([liste.code, liste.err], [0, '']);
+  assert.deepEqual(liste.out.split('\n'), [
+    'Soirée 1 : ouverture jeu. 15 oct. · 19:52 ; coupure ven. 16 oct. · 08:00 ; 810 lignes',
+    'Soirée 2 : ouverture ven. 16 oct. · 19:52 ; jusqu\'à la fin de l\'export ; 782 lignes',
+  ]);
+  assert.equal(810 + 782, fusion.events.length);
+  assert.ok(!fs.existsSync(json), 'aucun JSON écrit');
+  // Les mêmes soirées par la fonction des scripts (bilan C6, essai réel d'A4).
+  const soirees = rejeu.soireesOf(fusion);
+  assert.deepEqual(soirees.map(s => [s.k, s.opening, s.cut, s.lines]),
+    [[1, 'jeu. 15 oct. · 19:52', Date.parse('2026-10-16T08:00+02:00'), 810], [2, 'ven. 16 oct. · 19:52', null, 782]]);
+  // L'ouverture est celle du menu des soirées du bar (A5) : celle du karaoké,
+  // jamais avant la première activité. Deux soirs où une table s'ouvre à 19 h 30,
+  // avant que KaraFun ne se connecte (20 h 30) : 20:30, pas 19:30.
+  const lines = [];
+  const add = (at, ev, fields = {}) => lines.push({ v: 1, seq: lines.length + 1, t: Date.parse(`${at}+02:00`), ev, ...fields });
+  for (const [day, k] of [['15', 1], ['16', 2]]) {
+    const at = time => `2026-10-${day}T${time}`;
+    if (k === 1) add(at('19:00'), 'evening.started', { rules: {} });
+    add(at('19:00'), 'karaoke.phase', { phase: 'unknown', blocker: 'offline' });
+    add(at('19:30'), 'table.opened', { tableId: `T${k}` });
+    add(at('19:30'), 'person.joined', { personId: `S0${k}`, tableId: `T${k}` });
+    add(at('20:30'), 'karaoke.phase', { phase: 'idle', blocker: null });
+    add(at('20:31'), 'song.requested', { personId: `S0${k}`, entryId: `e${k}`, songId: k, title: `t${k}`, mode: 'append' });
+    add(at('20:34'), 'turn.sent', { entryId: `e${k}`, ids: [`S0${k}`], ownerId: `S0${k}`, queueId: `q${k}` });
+    add(at('20:35'), 'stage.started', { queueId: `q${k}`, entryId: `e${k}`, ids: [`S0${k}`], ownerId: `S0${k}`, source: 'queue', title: `t${k}` });
+    add(at('20:39'), 'stage.ended', { queueId: `q${k}`, playedSec: 240 });
+    add(at('23:50'), 'karaoke.phase', { phase: 'unknown', blocker: 'offline' });
+  }
+  const tard = { evening: { id: 'tard', timezone: 'Europe/Paris' }, people: [{ key: 'S01', table: 'T1' }, { key: 'S02', table: 'T2' }],
+    tables: [{ key: 'T1' }, { key: 'T2' }], events: lines };
+  assert.deepEqual(rejeu.soireesOf(tard).map(s => [s.opening, s.cutLabel, s.lines]),
+    [['jeu. 15 oct. · 20:30', 'ven. 16 oct. · 08:00', 10], ['ven. 16 oct. · 20:30', null, 9]]);
+  // Un export sans aucune ligne datée (vide, ou des lignes sans heure, même
+  // avec evening.startedAt) : une soirée, d'ouverture inconnue, jamais le
+  // 1er janvier 1970.
+  const undated = path.join(dir, 'sans-heure.json');
+  for (const [events, evening] of [[[], {}], [[{ v: 1, seq: 1, ev: 'evening.started', rules: {} }, { v: 1, seq: 2, ev: 'karaoke.phase', t: 'hier' }],
+    { startedAt: Date.parse('2026-11-07T20:00+01:00') }]]) {
+    const exp = { evening: { id: 'sans-heure', timezone: 'Europe/Paris', ...evening }, people: [], tables: [], events };
+    fs.writeFileSync(undated, JSON.stringify(exp));
+    const r = await lancer([undated, '--soiree', 'liste']);
+    assert.deepEqual([r.code, r.err, r.out], [0, '', `Soirée 1 : ouverture inconnue ; jusqu'à la fin de l'export ; ${events.length} ligne${events.length > 1 ? 's' : ''}`]);
+    assert.deepEqual(rejeu.soireesOf(exp).map(s => [s.openedAt, s.opening, s.cut]), [[null, null, null]]);
+  }
+  // Un export d'une seule soirée : rejoué comme avant, sans option ; --soiree 1
+  // le rejoue de même, --soiree 2 est refusée, --soiree liste en donne une ligne.
+  const seule = await lancer([FIXTURE, '--court']);
+  assert.equal(seule.code, 0);
+  assert.equal((await lancer([FIXTURE, '--court', '--soiree', '1'])).out, seule.out);
+  assert.equal(rejeu.soireeOf(ev.raw, null), ev.raw, 'export d’une seule soirée rendu tel quel');
+  assert.equal(rejeu.soireeOf(ev.raw, 1), ev.raw);
+  const deux = await lancer([FIXTURE, '--soiree', '2']);
+  assert.deepEqual([deux.code, deux.err, deux.out], [1, '--soiree 2 : cet export n\'a qu\'une soirée.', '']);
+  const enorme = await lancer([FIXTURE, '--soiree', '99999999999999999999']);
+  assert.deepEqual([enorme.code, enorme.err, enorme.out], [1, '--soiree 99999999999999999999 : cet export n\'a qu\'une soirée.', '']);
+  const une = await lancer([FIXTURE, '--soiree', 'liste']);
+  assert.deepEqual([une.code, une.out], [0, 'Soirée 1 : ouverture jeu. 15 oct. · 19:52 ; jusqu\'à la fin de l\'export ; 796 lignes']);
+  // En processus séparé : les mêmes codes de sortie.
+  const { spawnSync } = require('node:child_process');
+  const script = path.join(__dirname, 'rejeu-soiree.js');
+  const refus = spawnSync(process.execPath, [script, file], { encoding: 'utf8' });
+  assert.deepEqual([refus.status, refus.stdout, refus.stderr], [1, '', `${REFUS_FUSION}\n`]);
+  assert.equal(spawnSync(process.execPath, [script, file, '--soiree', '0'], { encoding: 'utf8' }).status, 2);
+});
+
+test('A7 : export fusionné : --soiree 1 et --soiree 2 rejouent chacune la soirée du 15 octobre seule (lignes reportées pour état de départ, statistiques de l’export fusionné laissées de côté) : rapport, --json, rejeu libre et bilan --avant, coupé une fois par la version de travail avant ses deux rejeux, égaux à ceux de la fixture seule', async t => {
+  const dir = dossierEssai(t, 'rejeu-fusion-');
+  const file = path.join(dir, 'fusion.json');
+  const fusion = exportFusionne();
+  // La fixture seule, sans ses statistiques : une soirée d'un export fusionné
+  // n'a pas celles de l'export, qui sont celles de la soirée fusionnée.
+  const alone = structuredClone(ev.raw);
+  delete alone.stats;
+  // L'état de départ doit compter : les règles de la fixture sont celles par
+  // défaut de l'ordonnanceur, qu'un rejeu sans règles prendrait aussi. Un
+  // passage par tour au plus (roundAppearanceCap: 1), mis à la soirée seule et
+  // à l'export fusionné, change les décisions ; la soirée 2, sans ligne
+  // evening.started à elle, ne le tient que de sa ligne reportée.
+  const cap1 = x => { for (const e of x.events) if (e.ev === 'evening.started') e.rules = { ...e.rules, roundAppearanceCap: 1 }; };
+  cap1(alone);
+  cap1(fusion);
+  fs.writeFileSync(file, JSON.stringify(fusion));
+  const seule = path.join(dir, 'seule.json');
+  fs.writeFileSync(seule, JSON.stringify(alone));
+  // La copie du 16 octobre a ses propres identifiants : S01-2 pour S01, T1-2 pour T1.
+  const sansCopie = text => text.replace(/\b([ST]\d+)-2\b/g, '$1');
+  // JSON sans « ignored », le compte des lignes que le rejeu ne refait pas : la
+  // soirée 1 a aussi les lignes de la copie datées d'avant la coupure
+  // (redémarrages des 12 au 15 octobre), et sa clôture ; la soirée 2, ses
+  // lignes reportées, sans ces redémarrages. Rien d'autre ne change. Les
+  // heures de la soirée 2 (en ms, comme 1792092932088) sont 24 h plus tard.
+  const valeurs = (file, k = 1) => {
+    const res = JSON.parse(sansCopie(fs.readFileSync(file, 'utf8')), (key, value) =>
+      (k === 2 && typeof value === 'number' && value > 1e12 ? value - tires.DAY : value));
+    for (const side of [res, res.before, res.after]) if (side) delete side.ignored;
+    return res;
+  };
+  const cases = [
+    ['rejeu forcé', out => ['--json', out]],
+    ['rejeu libre', () => ['--libre', '--court']],
+    ['bilan --avant', out => ['--avant', ROOT, '--court', '--json', out]],
+  ];
+  for (const [n, [label, options]] of cases.entries()) {
+    const out = name => path.join(dir, `${n}-${name}.json`);
+    const expected = await lancer([seule, ...options(out('seule'))]);
+    assert.deepEqual([expected.code, expected.err], [0, ''], label);
+    if (label === 'bilan --avant') assert.match(expected.out, /Verdict : 0 indicateur mieux, 0 moins bien, 18 égaux/);
+    // Le plafond change bien le rejeu : sinon, rejouer sans l'état de départ passerait.
+    const fidelity = text => text.match(/^Fidélité : .*$/m)?.[0];
+    if (label === 'rejeu forcé') assert.notEqual(fidelity(expected.out), fidelity(rejeu.report(await forcedRun(), { short: true })));
+    for (const k of [1, 2]) {
+      const got = await lancer([file, '--soiree', String(k), ...options(out(`soiree-${k}`))]);
+      assert.deepEqual([got.code, got.err], [0, ''], `${label}, --soiree ${k}`);
+      assert.equal(sansCopie(got.out), expected.out, `${label}, --soiree ${k}`);
+      if (fs.existsSync(out('seule'))) assert.deepEqual(valeurs(out(`soiree-${k}`), k), valeurs(out('seule')), `${label}, --soiree ${k} : JSON`);
+    }
+  }
+  // La soirée rendue par la fonction des scripts : ses lignes reportées en
+  // tête (règles et dernière phase de KaraFun connues à la coupure), ses
+  // personnes et ses tables, sans les statistiques de l'export.
+  const second = rejeu.soireeOf(fusion, 2);
+  assert.deepEqual(second.events.filter(e => e.carried === true).map(e => e.ev), ['evening.started', 'karaoke.phase']);
+  // Sa seule ligne evening.started est la reportée : les règles en vigueur à
+  // la coupure, plafond compris.
+  assert.deepEqual(second.events.filter(e => e.ev === 'evening.started').map(e => [e.carried, e.rules?.roundAppearanceCap]), [[true, 1]]);
+  assert.equal(second.events.filter(e => e.carried !== true).length, 782);
+  assert.equal(second.stats, undefined);
+  assert.deepEqual(second.evening, fusion.evening);
+  // La première finit par sa ligne de clôture, datée de la coupure (8 h).
+  const first = rejeu.soireeOf(fusion, 1);
+  const lastSeq = Math.max(...first.events.slice(0, -1).map(e => e.seq));
+  assert.deepEqual(first.events.at(-1), { by: 'auto', reason: 'morning', split: true, v: 1, seq: lastSeq + 1,
+    t: Date.parse('2026-10-16T08:00+02:00'), ev: 'evening.closed', boot: 'split-g1-k1' });
+  assert.equal(first.events.length, 810 + 1);
+  // Les personnes et les tables de chacune, celles de son meta (pieceMeta) :
+  // les entrées de l'export (table, prénom, « En solo ») de celles qu'y font
+  // entrer ses lignes (person.joined, table.opened), dans l'ordre de l'export.
+  // Les rejeux plus haut ne les voient pas (prénoms égaux aux clés, personnes
+  // refaites de leurs lignes person.joined, personne à une table « En solo »),
+  // mais --prenoms et les tables « En solo » du bilan les lisent : jamais une
+  // liste vide, ni une entrée de l'autre soirée. La table « En solo » de la
+  // copie (T6-2), ouverte le 12 octobre, avant la coupure, est de la soirée 1.
+  const entrees = (x, ev, field, list) => {
+    const ids = new Set(x.events.filter(e => e.ev === ev).map(e => e[field]));
+    return list.filter(item => ids.has(item.key));
+  };
+  for (const [k, x] of [[1, first], [2, second]]) {
+    assert.deepEqual(x.people, entrees(x, 'person.joined', 'personId', fusion.people), `personnes de la soirée ${k}`);
+    assert.deepEqual(x.tables, entrees(x, 'table.opened', 'tableId', fusion.tables), `tables de la soirée ${k}`);
+  }
+  const keys = list => list.map(x => x.key);
+  assert.deepEqual([keys(first.people), keys(second.people)],
+    [keys(fusion.people.filter(p => !p.key.endsWith('-2'))), keys(fusion.people.filter(p => p.key.endsWith('-2')))]);
+  assert.deepEqual([keys(first.tables), keys(second.tables)],
+    [['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T6-2'], ['T1-2', 'T2-2', 'T3-2', 'T4-2', 'T5-2', 'T7-2']]);
+});
+
+test('A7 : export fusionné : l’export d’un morceau déjà découpé au bar (lignes reportées en tête), dont une demande est datée d’avant son début (heure du PC reculée, plan l. 508) : une seule soirée, comme au bar, rejouée sans option ni refus, chacune de ses lignes rejouée après ses lignes reportées', async t => {
+  const dir = dossierEssai(t, 'rejeu-recul-');
+  // Morceau coupé à 9 h 55 : ses lignes reportées (règles, phase de KaraFun,
+  // table et personne connues à la coupure), puis une demande écrite l'heure du
+  // PC reculée, datée de 7 h 50, et une autre à 10 h, l'heure revenue ; les
+  // deux titres chantés le soir, dans cet ordre.
+  const cut = Date.parse('2026-11-07T09:55+01:00');
+  const lines = [];
+  const carried = (ev, fields) => lines.push({ ...fields, carried: true, v: 1, seq: 0, t: cut, ev });
+  carried('evening.started', { rules: {} });
+  carried('karaoke.phase', { phase: 'unknown', blocker: 'offline' });
+  carried('table.opened', { tableId: 'T1', individual: false });
+  carried('person.joined', { personId: 'S01', tableId: 'T1' });
+  lines.forEach((e, i) => { e.seq = i - lines.length + 1; });
+  const add = (at, ev, fields) => lines.push({ v: 1, seq: 800 + lines.length, t: Date.parse(`2026-11-07T${at}+01:00`), ev, ...fields });
+  add('07:50', 'song.requested', { personId: 'S01', entryId: 'e0', songId: 9, title: 't0', mode: 'append' });
+  add('10:00', 'song.requested', { personId: 'S01', entryId: 'e1', songId: 1, title: 't1', mode: 'append' });
+  add('20:00', 'karaoke.phase', { phase: 'idle', blocker: null });
+  for (const [k, sent, start, end] of [[0, '20:04', '20:05', '20:09'], [1, '20:09', '20:10', '20:14']]) {
+    add(sent, 'turn.sent', { entryId: `e${k}`, ids: ['S01'], ownerId: 'S01', queueId: `q${k}` });
+    add(start, 'stage.started', { queueId: `q${k}`, entryId: `e${k}`, ids: ['S01'], ownerId: 'S01', source: 'queue', title: `t${k}` });
+    add(end, 'stage.ended', { queueId: `q${k}`, playedSec: 240 });
+  }
+  const exp = { format: 'karaoke-evening', version: 1, evening: { id: '2026-11-07_0955_ab12', timezone: 'Europe/Paris' },
+    people: [{ key: 'S01', table: 'T1' }], tables: [{ key: 'T1' }], events: lines };
+  const file = path.join(dir, 'morceau.json');
+  fs.writeFileSync(file, JSON.stringify(exp));
+  // Au bar, le meta.json du morceau (split, startedAt) : aucune coupure (A1,
+  // l'activité de 7 h 50 compte à 9 h 55), et computeStats compte les deux titres.
+  const { splitPlan } = require('../evening-journal');
+  const eveningStats = require('../evening-stats');
+  const bar = splitPlan({ meta: { eveningId: exp.evening.id, timezone: 'Europe/Paris', startedAt: cut, endedAt: null,
+    split: { from: '2026-11-06_2000_cd34', part: 2, generation: 1, rule: 'v1' }, roster: { S01: { tableId: 'T1' } }, tables: { T1: { individual: false } } },
+  events: lines, citedIds: eveningStats.citedIds });
+  assert.equal(bar.pieces.length, 1);
+  const now = Date.parse('2026-11-07T20:14+01:00');
+  assert.deepEqual(eveningStats.computeStats({ events: lines, now }).timeline.stages.map(s => s.entryId), ['e0', 'e1']);
+  // Le rejeu de même : une soirée, l'export rendu tel quel, ni refus ni
+  // option ; --soiree liste en donne une ligne, avec chacune de ses lignes.
+  assert.equal(rejeu.soireeOf(exp), exp);
+  const liste = await lancer([file, '--soiree', 'liste']);
+  assert.deepEqual([liste.code, liste.err, liste.out], [0, '', `Soirée 1 : ouverture sam. 7 nov. · 20:00 ; jusqu'à la fin de l'export ; ${lines.length} lignes`]);
+  // Chacune de ses lignes rejouée, après ses lignes reportées, son état de
+  // départ : la demande datée de 7 h 50 compte à 9 h 55, comme dans
+  // evening-stats.js et au découpage (evening-split.js).
+  const loaded = rejeu.loadEvening(exp);
+  assert.equal(loaded.events.length, lines.length);
+  assert.deepEqual(loaded.events.slice(0, 6).map(e => [e.ev, e.carried === true, e.t, e.entryId]), [
+    ['evening.started', true, cut, undefined], ['karaoke.phase', true, cut, undefined], ['table.opened', true, cut, undefined],
+    ['person.joined', true, cut, undefined], ['song.requested', false, cut, 'e0'], ['song.requested', false, Date.parse('2026-11-07T10:00+01:00'), 'e1']]);
+  const r = await lancer([file]);
+  assert.deepEqual([r.code, r.err], [0, '']);
+  assert.doesNotMatch(r.out, /non rejoué/);
+  assert.match(r.out, /^Fidélité : 2\/2 envois identiques à la réalité/m);
+  assert.match(r.out, /^ {2}réel {2}: n=2 /m);
+});
+
+test('A7 : prénoms du rejeu : un export avec un prénom (et un nom de table) : sans option, clés S01… et T1… dans le rapport, le bilan et --json, dits en tête ; --prenoms les montre ; --cles comme avant, sans la ligne en tête ; --prenoms --cles : l’aide, code 2 ; la fixture, sans prénom : aucune ligne, la sortie de --cles', async t => {
+  const dir = dossierEssai(t, 'rejeu-prenoms-');
+  const named = structuredClone(ev.raw);
+  named.privacy = { ...named.privacy, names: 'included' };
+  named.people.find(p => p.key === 'S01').name = 'Léa';
+  named.tables.find(tb => tb.key === 'T1').name = 'Zinc';
+  const file = path.join(dir, 'soiree-prenoms.json');
+  fs.writeFileSync(file, JSON.stringify(named));
+  const json = name => path.join(dir, name);
+  const read = name => fs.readFileSync(json(name), 'utf8');
+  // Sans option : la ligne en tête, puis exactement la sortie de --cles ; le
+  // JSON de --cles, avec cette même phrase en tête.
+  const masked = await lancer([file, '--json', json('masque.json')]);
+  const keys = await lancer([file, '--cles', '--json', json('cles.json')]);
+  assert.deepEqual([masked.code, keys.code], [0, 0]);
+  assert.equal(masked.out, `${MASQUE}\n${keys.out}`);
+  assert.doesNotMatch(masked.out + read('masque.json'), /Léa|Zinc/);
+  const maskedJson = JSON.parse(read('masque.json'));
+  assert.equal(Object.keys(maskedJson)[0], 'prenoms');
+  assert.equal(maskedJson.prenoms, MASQUE);
+  const { prenoms: _line, ...rest } = maskedJson;
+  assert.deepEqual(rest, JSON.parse(read('cles.json')));
+  // --cles : comme avant, ni ligne ni champ en tête, aucun prénom.
+  assert.ok(!keys.out.includes('Prénoms masqués') && !('prenoms' in JSON.parse(read('cles.json'))));
+  assert.equal(JSON.parse(read('cles.json')).names.S01, 'S01');
+  // --prenoms : le prénom, partout où l'outil nomme S01.
+  const shown = await lancer([file, '--prenoms', '--json', json('prenoms.json')]);
+  assert.equal(shown.code, 0);
+  assert.match(shown.out, /Sans monter sur scène, plus longues : réel S07 72 min, Léa 64 min/);
+  assert.ok(!shown.out.includes('Prénoms masqués'));
+  assert.equal(shown.out, keys.out.replace(/\bS01\b/g, 'Léa'));
+  assert.equal(JSON.parse(read('prenoms.json')).names.S01, 'Léa');
+  // Le bilan de même.
+  const bilan = await lancer([file, '--avant', ROOT, '--court', '--json', json('bilan.json')]);
+  assert.equal(bilan.code, 0);
+  assert.ok(bilan.out.startsWith(`${MASQUE}\nBILAN AVANT / APRÈS`), bilan.out.slice(0, 200));
+  assert.doesNotMatch(bilan.out + read('bilan.json'), /Léa|Zinc/);
+  assert.equal(JSON.parse(read('bilan.json')).prenoms, MASQUE);
+  const bilanShown = await lancer([file, '--avant', ROOT, '--court', '--prenoms', '--json', json('bilan-prenoms.json')]);
+  assert.ok(bilanShown.out.startsWith('BILAN AVANT / APRÈS'));
+  assert.equal(JSON.parse(read('bilan-prenoms.json')).names.S01, 'Léa');
+  // Les deux ensemble : l'aide et le code 2.
+  const aide = await lancer(['--aide']);
+  for (const argv of [[file, '--prenoms', '--cles'], [file, '--cles', '--prenoms', '--court']]) {
+    const both = await lancer(argv);
+    assert.equal(both.code, 2, argv.slice(1).join(' '));
+    assert.equal(both.out, `--prenoms et --cles ne vont pas ensemble : --prenoms montre les prénoms, --cles les remplace par les clés S01…\n\n${aide.out}`);
+  }
+  // La fixture, dont chaque prénom est sa clé : rien à masquer, aucune ligne en
+  // tête, la sortie de --cles octet pour octet.
+  const fixture = await lancer([FIXTURE]);
+  assert.equal(fixture.code, 0);
+  assert.equal(fixture.out, (await lancer([FIXTURE, '--cles'])).out);
+  assert.ok(!fixture.out.includes('Prénoms masqués'));
+});
+
+test('A7 : outils, une même interface (règle « Fichiers nouveaux ») : -h, --help et --aide donnent l’usage et 0 ; une option fausse, l’usage et 2 ; une erreur trouvée en route, une ligne sans pile et 1 ; une erreur imprévue, sa pile et 1 ; main(argv) rend le code', async t => {
+  const dir = dossierEssai(t, 'rejeu-codes-');
+  const aide = await lancer(['--aide']);
+  assert.match(aide.out, /^ *node test\/rejeu-soiree\.js <export\.json> \[options\]\n/);
+  for (const needed of ['--soiree <k>', '--soiree liste', '--prenoms', '--cles']) assert.ok(aide.out.includes(needed), needed);
+  for (const flag of ['-h', '--help', '--aide']) assert.deepEqual(await lancer([flag]), { code: 0, out: aide.out, err: '' }, flag);
+  assert.deepEqual(await lancer([FIXTURE, '--pas-une-option']), { code: 2, out: `Option inconnue : --pas-une-option\n\n${aide.out}`, err: '' });
+  assert.deepEqual(await lancer([]), { code: 2, out: aide.out, err: '' }, 'sans export');
+  const missing = await lancer([path.join(dir, 'absente.json')]);
+  assert.equal(missing.code, 1);
+  assert.match(missing.err, /^Export de soirée introuvable ou illisible : .*absente\.json \(ENOENT\)$/);
+  // Erreur imprévue (JSON impossible à écrire : un dossier) : sa pile.
+  const unexpected = await lancer([FIXTURE, '--court', '--json', dir]);
+  assert.equal(unexpected.code, 1);
+  assert.match(unexpected.err, /^Error: EISDIR/);
+  assert.match(unexpected.err, /\n\s+at /);
+});
+
+// Régression : job offline-tests de la CI (windows-latest) ; git y extrait les
+// sources en CRLF (aucune règle *.js dans .gitattributes), et l'usage, tiré de
+// l'en-tête du script, y gardait un « \r » au bout de chaque ligne.
+test('A7 : outils, une même interface : le script extrait en CRLF (git sous Windows, job offline-tests de la CI) donne le même usage qu’en LF, sans retour chariot', async () => {
+  const script = path.join(__dirname, 'rejeu-soiree.js');
+  const crlf = fs.readFileSync(script, 'utf8').replace(/\r?\n/g, '\r\n');
+  // Le script chargé une seconde fois à sa place, depuis sa source en CRLF :
+  // ses require résolus depuis test/, son fs lisant cette source.
+  const fromTest = createRequire(script);
+  const crlfFs = { ...fs, readFileSync: (file, ...rest) => file === script ? crlf : fs.readFileSync(file, ...rest) };
+  const mod = { exports: {} };
+  vm.compileFunction(crlf, ['exports', 'require', 'module', '__filename', '__dirname'], { filename: script })
+    .call(mod.exports, mod.exports, name => name === 'fs' ? crlfFs : fromTest(name), mod, script, __dirname);
+  const out = [];
+  assert.equal(await mod.exports.main(['--aide'], l => out.push(l)), 0);
+  assert.doesNotMatch(out.join('\n'), /\r/);
+  assert.equal(out.join('\n'), (await lancer(['--aide'])).out);
 });

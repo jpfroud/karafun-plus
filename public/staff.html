@@ -269,6 +269,7 @@
     <p class="small muted">Pendant une soirée, une confirmation est demandée avant une brève interruption. Les tables, les chansons et leur ordre sont conservés. La sauvegarde, l’installation et les vérifications sont automatiques. Si l’installation échoue, la version précédente est remise en place.</p>
     <p class="small" id="serverUpdateStatus" role="status" aria-live="polite"></p>
     <button type="button" class="btn primary" id="serverUpdateButton">Vérifier et mettre à jour</button>
+    <p class="small notice-line" id="serverRepairOff" hidden>Réparation des soirées coupée par KARAOKE_REPAIR (deploy/.env) : « Vérifier et mettre à jour » est refusé tant que la ligne y est. Préviens le mainteneur : il installe la version corrigée par « Installer cette version », la ligne gardée, puis la retire une fois cette version en service (DEPLOIEMENT-SERVEUR §18, « Couper la réparation »).</p>
     <div class="update-choice" id="serverVersionChoice" hidden>
       <p class="small muted">Un problème avec la version installée ? Installe une autre version publiée, par exemple la précédente, avec la même sauvegarde et le même retour automatique.</p>
       <div class="row wrap" id="serverVersionRow"><label class="small" for="serverVersionSelect">Version</label><select id="serverVersionSelect"></select><button type="button" class="btn small" id="serverVersionButton">Installer cette version</button></div>
@@ -560,6 +561,8 @@
       update.message || labels[update.phase] || `Version installée : ${S.app.version || update.currentVersion || 'inconnue'}.`;
     $('serverUpdateButton').disabled = updateSending || !!update.busy || !!update.blockedReason;
     $('serverUpdateButton').textContent = updateSending || update.busy ? 'Mise à jour en cours…' : 'Vérifier et mettre à jour';
+    // KARAOKE_REPAIR dans deploy/.env : l'agent refuse la mise à jour sans la nommer.
+    $('serverRepairOff').hidden = !update.repairOff;
     renderVersionChoice(update);
     // L'ancien script est encore en mémoire après un redémarrage. Attendre la
     // validation de l'installation avant de charger les nouveaux fichiers.

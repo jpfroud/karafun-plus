@@ -58,8 +58,8 @@ const { NightStateStore, snapshotNight, restoreNight, FULL_RESTORE_SINCE } = req
 const { DEFAULT_REPEAT_MIN, songNotice, queueRepeats } = require('./song-repeats');
 const { Lyrics } = require('./lyrics');
 const { SpotifyLink, SpotifyAutomation, OPTION_DEFAULTS: SPOTIFY_DEFAULTS } = require('./spotify');
-const { EveningJournal, validEveningId } = require('./evening-journal');
-const { computeStats, insights, exportEvening } = require('./evening-stats');
+const { EveningJournal, validEveningId, exportFileName, errorTrace, openingLabel } = require('./evening-journal');
+const { computeStats, insights, exportEvening, citedIds } = require('./evening-stats');
 const { DEFAULTS: SONG_DEFAULTS, TRACK, rangesFrom, normalizeSettings, validateField, songTracksOf, guideVoicesOf, liveFromStatus,
   settingsFromLive, neutralTarget, catchUpCommands } = require('./song-settings');
 const stageProgress = require('./stage-progress');
@@ -383,31 +383,67 @@ const sched = new Scheduler({ solverEnabled: !DEMO || argv.includes('--solver') 
 sched.solverPaused = () => serverUpdate.isBusy();
 // Journal de soirée (data/soirees/<id>/), en mémoire en démo. Écriture au
 // mieux : un disque plein est signalé mais n'arrête jamais la file.
+// `citedIds` (evening-stats.js) : les personnes qu'une ligne cite, pour la
+// réparation et le découpage des soirées fusionnées (A4).
 const journal = new EveningJournal({ dir: DEMO ? null : path.join(__dirname, 'data', 'soirees'), fs, app: BUILD, boot: BOOT_ID,
-  onError: error => appLog(`Journal de soirée indisponible : ${error.message}. La file continue.`) });
+  citedIds, onError: error => appLog(`Journal de soirée indisponible : ${error.message}. La file continue.`) });
+// Résumé d'une soirée close ou d'un morceau découpé (summary.json), le même
+// pour « Supprimer toutes les tables », la réparation et le découpage.
+const summarizeEvening = ({ meta, events }) => computeStats({ meta, events, now: Date.now() });
+// Morceau d'une soirée découpée (meta.split, A4, « Fin des morceaux ») : une
+// personne absente de son meta.roster n'y entre que si une ligne du morceau
+// l'inscrit (person.joined, reportée ou non) ou la cite. Sinon les personnes
+// de la veille restées en mémoire y reviendraient (« N inscrits »). Une
+// soirée jamais découpée garde la règle d'avant : toute personne nommée en
+// mémoire y entre, même si sa ligne person.joined manque au journal.
+const pieceMeta = () => {
+  const meta = journal.current?.meta;
+  return meta && meta.split !== null && typeof meta.split === 'object' && !Array.isArray(meta.split) ? meta : null;
+};
+const inRoster = (meta, personId) => Object.hasOwn(meta.roster || {}, personId);
+const inscribes = (event, personId) => event.ev === 'person.joined' && event.personId === personId;
 // Prénoms et noms de tables : seulement dans meta.json, jamais dans les lignes.
-function journalNames(fields = {}) {
+// `type` : la ligne écrite avec ces champs (règle des morceaux découpés).
+function journalNames(fields = {}, type = null) {
   const ids = [fields.personId, ...(Array.isArray(fields.ids) ? fields.ids : []), ...(Array.isArray(fields.personIds) ? fields.personIds : [])];
+  const piece = pieceMeta();
+  const line = piece && typeof type === 'string' ? { ...fields, ev: type } : null;
+  const cited = line ? citedIds(line) : [];
   for (const pid of ids) {
     const person = typeof pid === 'string' && sched.people.get(pid);
-    if (person) journal.person(person.id, { name: person.name, tableId: person.tableId });
+    if (!person) continue;
+    if (piece && !inRoster(piece, person.id) && !(line && (inscribes(line, person.id) || cited.includes(person.id)))) continue;
+    journal.person(person.id, { name: person.name, tableId: person.tableId });
   }
   const table = fields.tableId != null && sched.table(fields.tableId, false);
   if (table) journal.table(table.id, { name: table.name, individual: table.individual });
 }
 // Prénom provisoire (QR ouvert sans prénom) : pas au journal ; le premier vrai
-// prénom l'y inscrit (person.joined), même après un redémarrage.
+// prénom l'y inscrit (person.joined), même après un redémarrage. Dans un
+// morceau découpé, seulement les personnes déjà dans son meta.roster, ou
+// qu'une de ses lignes inscrit ou cite (journalNames).
 function journalRoster() {
   for (const t of sched.tables.values()) journal.table(t.id, { name: t.name, individual: t.individual });
+  const piece = pieceMeta();
+  let known = null;
+  if (piece) {
+    known = new Set();
+    for (const event of journal.current.events) {
+      if (event?.ev === 'person.joined' && typeof event.personId === 'string') known.add(event.personId);
+      for (const pid of citedIds(event)) known.add(pid);
+    }
+  }
   for (const person of sched.people.values()) {
-    if (!person.nameRequired) journal.person(person.id, { name: person.name, tableId: person.tableId });
+    if (person.nameRequired) continue;
+    if (piece && !inRoster(piece, person.id) && !known.has(person.id)) continue;
+    journal.person(person.id, { name: person.name, tableId: person.tableId });
   }
 }
 function journalEvent(type, fields = {}) {
   // QR ouvert sans prénom (peut-être abandonné) : rien au journal tant que la
   // personne ne s'est pas vraiment inscrite. Les statistiques l'ignorent.
   if (typeof fields?.personId === 'string' && sched.people.get(fields.personId)?.nameRequired) return null;
-  try { journalNames(fields); } catch (_) { /* noms au mieux */ }
+  try { journalNames(fields, type); } catch (_) { /* noms au mieux */ }
   return journal.append(type, fields);
 }
 sched.onEvent = journalEvent;
@@ -641,10 +677,7 @@ function stopHelper(reason = 'stop') {
   sched.closeSolver();
   try { bridge?.disconnect(); bridge?.releaseIdentity(); } catch (_) { /* arrêt en cours */ }
   try { fake?.close(); } catch (_) { /* arrêt en cours */ }
-  try {
-    const runtime = JSON.parse(fs.readFileSync(RUNTIME_FILE, 'utf8'));
-    if (runtime.pid === process.pid && runtime.secret === STOP_KEY) fs.unlinkSync(RUNTIME_FILE);
-  } catch (_) { /* fichier déjà absent */ }
+  removeOwnRuntime();
   server.close();
   publicServer.close();
   setTimeout(() => process.exit(0), 500).unref();
@@ -691,7 +724,11 @@ function nightInMemory() {
 function updateState() {
   return { ...serverUpdate.view(updateBlockedReason()), requiresConfirmation: updateRequiresConfirmation(),
     // Plus ancienne version proposée tant qu'une soirée est en mémoire (voir la route).
-    fullRestoreSince: FULL_RESTORE_SINCE, nightInMemory: nightInMemory() };
+    fullRestoreSince: FULL_RESTORE_SINCE, nightInMemory: nightInMemory(),
+    // Mode serveur, KARAOKE_REPAIR non vide dans deploy/.env (A6) : l'agent
+    // refuse « Vérifier et mettre à jour » sans nommer la ligne en trop, et la
+    // carte « Mise à jour » le dit sous son bouton.
+    repairOff: !!SERVER && !repairSwitch(process.env).enabled };
 }
 
 function saveTables() {
@@ -2594,7 +2631,7 @@ function noteSeen(person, now = Date.now()) {
 
 // Clôture de la soirée : résumé écrit avant la remise à zéro.
 function closeEvening(by, fields = {}) {
-  return journal.close({ by, fields, summarize: ({ meta, events }) => computeStats({ meta, events, now: Date.now() }) });
+  return journal.close({ by, fields, summarize: summarizeEvening });
 }
 
 // Données affichées par la page des statistiques : prénoms résolus au bar.
@@ -2612,8 +2649,12 @@ function statsView(saved) {
   for (const [id, row] of Object.entries(saved.meta.tables || {})) tables[id] = row.name || id;
   const nameOf = id => people[id] || 'Inconnu';
   const tableName = id => tables[id] || (/^\d+$/.test(String(id)) ? `Table ${id}` : String(id));
+  // Qui a clos la soirée (A5) : meta.closedBy, sinon le by de sa ligne
+  // evening.closed ; 'auto' fait dire « soirée close automatiquement à HH:MM »
+  // (endedAt, C) sous le titre de la page.
+  const closedBy = typeof saved.meta.closedBy === 'string' ? saved.meta.closedBy : stats.evening.closedBy;
   return { evening: { id: saved.meta.eveningId, startedAt: stats.evening.startedAt, endedAt: stats.evening.endedAt, current: live,
-    truncated: !!saved.truncated }, names: { people, tables }, stats, insights: insights(stats, { nameOf, tableName }),
+    truncated: !!saved.truncated, closedBy }, names: { people, tables }, stats, insights: insights(stats, { nameOf, tableName }),
     generatedAt: Date.now(), journalError: live ? journal.lastError : null };
 }
 
@@ -2622,13 +2663,19 @@ function statsRoute(p, u, req, res) {
     p === '/stats' ? 'text/plain; charset=utf-8' : undefined);
   if (p === '/stats') return sendFile(res, 'stats.html', 'text/html; charset=utf-8');
   if (p === '/api/staff/stats/evenings') return send(res, 200, { current: journal.id, evenings: journal.list() });
-  const saved = eveningData(u.searchParams.get('evening'));
+  const param = u.searchParams.get('evening');
+  const saved = eveningData(param);
   if (!saved) return send(res, 404, { error: 'Soirée introuvable.' });
   if (p === '/api/staff/stats') return send(res, 200, statsView(saved));
   const names = u.searchParams.get('names') === '1';
   const data = exportEvening({ meta: saved.meta, events: saved.events, now: Date.now(), live: !!saved.current, names, app: BUILD });
+  // Nom du fichier : l'ouverture de la soirée, la même que le menu des
+  // statistiques (A5), d'après l'identifiant demandé et validé, jamais celui
+  // écrit dans meta.json.
+  const id = saved.current ? journal.id : String(param);
+  const filename = exportFileName({ id, openedAt: journal.openedAt(id), timeZone: saved.meta.timezone, names });
   return send(res, 200, JSON.stringify(data, null, 1), 'application/json; charset=utf-8',
-    { 'Content-Disposition': `attachment; filename="soiree-${saved.meta.eveningId}${names ? '-prenoms' : ''}.json"` });
+    { 'Content-Disposition': `attachment; filename="${filename}"` });
 }
 
 // ------------------------------------------------------------------ duo improvisé noté au bar
@@ -6918,15 +6965,86 @@ function logBaseUrlWarning() {
   pendingBaseUrlWarning = null;
 }
 
-async function main() {
-  if (PUBLIC_PORT === PORT || !Number.isInteger(PUBLIC_PORT) || PUBLIC_PORT < 1 || PUBLIC_PORT > 65535) {
-    throw new Error('Le port public doit être valide et différent de celui du bar.');
+// Réparation des soirées (A4, « Coupure ») : KARAOKE_REPAIR, valable dans les
+// deux modes et hors de SERVER_VARIABLES. Lue rognée, sans tenir compte de la
+// casse : off coupe ; toute autre valeur non vide coupe aussi, par prudence,
+// avec un avertissement (la valeur reçue, coupée à 20 caractères) ; vide ou
+// absente, la réparation est active. Rend l'état et la ligne que startNight()
+// écrit à chaque démarrage.
+function repairSwitch(env = process.env) {
+  const value = String(env.KARAOKE_REPAIR ?? '').trim();
+  if (!value) return { enabled: true, line: 'Réparation des soirées : active.' };
+  if (value.toLowerCase() === 'off') {
+    return { enabled: false, line: 'Réparation des soirées : coupée (KARAOKE_REPAIR=off). La remise à zéro du matin reste. ' +
+      'Pour la rallumer, retire KARAOKE_REPAIR (DEPLOIEMENT-SERVEUR §18, « Couper la réparation »).' };
   }
-  // Avant la soirée et ensureSoloGroup(), qui réécrit en général data/tables.json.
-  pendingBaseUrlWarning = printedBaseUrlWarning();
+  return { enabled: false, line: `Réparation des soirées : coupée par prudence, KARAOKE_REPAIR="${[...value].slice(0, 20).join('')}" non reconnue ` +
+    '(attendu : off). Corrige la valeur, ou retire-la pour rallumer la réparation (DEPLOIEMENT-SERVEUR §18, « Couper la réparation »).' };
+}
+
+// Résultat de la réparation de la soirée en cours faite par ce démarrage
+// (journal.repair, A4), null sans soirée à réparer. Gardé pour la
+// vérification de démarrage, le bandeau du découpage et repairFailed (A2 et
+// A3, second commit du jalon 1) : { status: 'split', current: true,
+// previous: { id, cut, summary } } quand la soirée en cours a été découpée ;
+// en échec (retry, failed), `current` dit si l'échec est celui de la soirée
+// en cours (failedEveningOpen), sinon celui d'une soirée déjà close. La passe
+// des soirées closes ne la refait jamais : un essai par démarrage.
+let startupRepair = null;
+const REPAIR_FAILED = new Set(['retry', 'failed']);
+const REPAIR_FAILED_NOTE = 'Au démarrage, la soirée précédente n’a pas pu être séparée de celle-ci : elle est peut-être encore là. ' +
+  'Envoi automatique coupé : vérifie la file, puis « Supprimer toutes les tables » si la soirée précédente est encore là. Préviens le mainteneur.';
+
+// Réparation de la soirée en cours (A4), avant journal.open : celle que
+// désigne la sauvegarde de soirée, revue à chaque démarrage. Sans soirée
+// valide (installation neuve, version sans journal), rien. Ne lève jamais :
+// un appel qui lève compte comme une réparation en échec.
+function repairCurrentEvening(evening) {
+  const id = evening?.id;
+  if (!validEveningId(id)) return null;
+  try {
+    return journal.repair({ id, current: true, summarize: summarizeEvening, citedIds, log: appLog });
+  } catch (error) {
+    const trace = errorTrace(error);
+    appLog(`Réparation : ${id} en échec au démarrage (${trace.name}${trace.code ? `, code ${trace.code}` : ''}) : ` +
+      `soirée ouverte telle quelle. Pile : ${trace.stack || '(pile vide)'}`);
+    return { id, status: 'failed', current: true, code: 'EXCEPTION' };
+  }
+}
+
+// Soirée de la sauvegarde dont la réparation du démarrage a échoué : était-ce
+// la soirée en cours ? journal.repair rend current: false pour une soirée
+// déjà close (arrêt entre la clôture et la sauvegarde), mais aussi pour un
+// échec à sa lecture, avant de savoir si elle l'est. Reprise par
+// journal.open, ou relue sans clôture (ni meta.endedAt ni ligne
+// evening.closed, la règle de journal.open), ou illisible, elle compte comme
+// la soirée en cours.
+function failedEveningOpen(result, resumed) {
+  if (result.current || resumed) return true;
+  const saved = journal.read(result.id);
+  return !saved || !(Number.isFinite(saved.meta?.endedAt) || saved.events.some(e => e?.ev === 'evening.closed'));
+}
+
+// Démarrage de la soirée (A3), d'un seul bloc synchrone, dans le rappel du
+// port du bar : aucune requête n'est servie avant sa fin. Ligne d'état de la
+// réparation, lecture de la sauvegarde, réparation de la soirée en cours,
+// journal.open, restauration, ensureSoloGroup, inscriptions d'une soirée sans
+// journal, journalRoster, puis première sauvegarde obligatoire, qui lève si
+// elle échoue : le démarrage échoue alors avant toute clôture. Au second
+// commit du jalon 1 : forgetEveningEnd() en tête, le saut d'horloge tiré de
+// l'enveloppe juste après la lecture de la sauvegarde, et la vérification de
+// démarrage à la fin (A2).
+function startNight() {
+  const repair = repairSwitch(process.env);
+  journal.repairEnabled = repair.enabled;
+  appLog(repair.line);
   const previousNight = nightStore?.load();
+  startupRepair = repairCurrentEvening(previousNight?.evening);
   // Même soirée après un redémarrage : son journal continue.
   const resumed = journal.open({ resume: previousNight?.evening || null, rules: journalRules() });
+  if (startupRepair && REPAIR_FAILED.has(startupRepair.status)) {
+    startupRepair = { ...startupRepair, current: failedEveningOpen(startupRepair, resumed) };
+  }
   if (previousNight) {
     const recovered = restoreNight(previousNight, { scheduler: sched, access, settings,
       photoDir: PHOTO_DIR });
@@ -6943,6 +7061,17 @@ async function main() {
     for (const warning of recovered.warnings) appLog(`Sauvegarde de soirée réparée : ${warning}.`);
     if (recoveredPending) appLog('Envoi KaraFun interrompu : le bar doit vérifier la file avant de réactiver l’automatique.');
   } else loadTables();
+  // Soirée en cours en échec (A4) : ouverte telle quelle, envoi automatique
+  // coupé, une note au bar (après la restauration, qui reprend les réglages
+  // et le journal du bar). L'alerte repair-failed vient avec A2. Soirée déjà
+  // close en échec : la note d'une soirée close, l'envoi tel quel (entrée de
+  // l'index gardée par la lecture : la note de cette entrée, noteClosedRepair).
+  if (startupRepair && REPAIR_FAILED.has(startupRepair.status)) {
+    if (startupRepair.current) {
+      settings.auto = false;
+      sched.note(REPAIR_FAILED_NOTE, 'error');
+    } else noteClosedRepair(startupRepair.id, startupRepair);
+  }
   ensureSoloGroup();
   // Soirée reprise d'une version sans journal : ses inscriptions y sont
   // reportées à leur heure, pour que les présences restent justes.
@@ -6958,62 +7087,200 @@ async function main() {
     appLog(`Optimiseur de file indisponible au démarrage : ${sched.solverStatus().fallbackLastError || 'cause inconnue'}. Rotation locale de secours.`);
   }
   saveNight({ required: true });
+}
+
+// Passe des soirées closes (A4) : après la mise en écoute des deux ports,
+// une soirée par tour de boucle (setImmediate), chacune réparée d'un seul
+// bloc synchrone, index compris ; jamais pendant une mise à jour (isBusy :
+// elle attend, puis reprend) ; aucune soirée commencée une fois l'arrêt
+// demandé (shuttingDown) : les restantes sont reprises au prochain démarrage.
+// Gardée en entier : une exception hors d'une soirée (liste de data/soirees,
+// enchaînement, attente) l'arrête avec une ligne et sa pile, sans le message,
+// et ne sort jamais d'un rappel, car server.js n'a pas de garde
+// uncaughtException. Rend une promesse jamais rejetée : les nombres de sa
+// ligne de fin, ou null (réparation coupée, démo, arrêt, interruption).
+const REPAIR_BUSY_WAIT_MS = 500;
+function repairClosedEvenings() {
+  return new Promise(resolve => {
+    if (!journal.dir || !journal.repairEnabled) { resolve(null); return; }
+    const started = Date.now();
+    const counts = { verified: 0, cut: 0, failed: 0, retry: 0 };
+    let queue = null;
+    const step = () => {
+      try {
+        if (shuttingDown) { resolve(null); return; }
+        if (serverUpdate.isBusy()) { setTimeout(step, REPAIR_BUSY_WAIT_MS); return; }
+        if (!queue) queue = journal.repairQueue();
+        const id = queue.shift();
+        if (id === undefined) {
+          appLog(`Réparation des soirées closes terminée : ${counts.verified} vérifiées, ${counts.cut} découpées, ` +
+            `${counts.failed} en échec, ${counts.retry} à refaire ; en ${Date.now() - started} ms.`);
+          resolve(counts);
+          return;
+        }
+        // La soirée en cours (journal.id, relu à chaque étape) n'y entre
+        // jamais, ni celle que startNight() vient d'essayer, en cours ou déjà
+        // close : un essai par démarrage (« Échecs »), son entrée de l'index
+        // la reprend au démarrage suivant.
+        if (id !== journal.id && id !== startupRepair?.id) {
+          const result = journal.repair({ id, summarize: summarizeEvening, citedIds, log: appLog });
+          countClosedRepair(result, counts);
+          noteClosedRepair(id, result);
+        }
+        setImmediate(step);
+      } catch (error) {
+        const trace = errorTrace(error);
+        appLog(`Réparation des soirées closes interrompue (${trace.name}${trace.code ? `, code ${trace.code}` : ''}) : ` +
+          `reprise au prochain démarrage. Pile : ${trace.stack || '(pile vide)'}`);
+        resolve(null);
+      }
+    };
+    step();
+  });
+}
+
+// Bilan d'une soirée close réparée par la passe, pour sa ligne de fin :
+// vérifiée (ok, split), découpée (split), en échec (failed), à refaire
+// (retry, ou index illisible pour l'instant, qui fait attendre chaque soirée
+// close).
+function countClosedRepair(result, counts) {
+  const status = result?.status;
+  if (status === 'ok' || status === 'split') counts.verified++;
+  if (status === 'split') counts.cut++;
+  if (status === 'failed') counts.failed++;
+  if (status === 'retry' || (status === 'skipped' && result.code)) counts.retry++;
+}
+
+// Note au bar d'une soirée close en échec (retry, failed), par la passe ou
+// au démarrage (sauvegarde d'une soirée déjà close), nommée comme dans le
+// menu des statistiques (A5), sinon par son identifiant. Une lecture du
+// démarrage en échec qui a gardé l'entrée de l'index (`kept`, que seul
+// startNight reçoit) se juge à cette entrée, que rien ne réessaie : ok ou
+// split, aucune note ; failed, celle d'une soirée notée failed.
+function noteClosedRepair(id, result) {
+  const status = result?.kept ?? result?.status;
+  if (!REPAIR_FAILED.has(status)) return;
+  const label = openingLabel(journal.openedAt(id));
+  const evening = label ? `Soirée du ${label}` : `Soirée ${id}`;
+  sched.note(status === 'retry' ? `${evening} : réparation impossible pour l’instant, réessayée au prochain démarrage.` :
+    `${evening} : réparation impossible, à vérifier : préviens le mainteneur.`, 'error');
+}
+
+// Fichier d'arrêt (ARRETER.bat, stop.js) et de helperRunning
+// (start-evening.js) : pid, port et secret de cette file, et `starting` tant
+// que son démarrage n'est pas fini (A3) : écrit dès que le port du bar est
+// pris, avant startNight(), puis réécrit sans lui après les lignes de
+// démarrage.
+function writeRuntime({ starting = false } = {}) {
+  fs.mkdirSync(path.dirname(RUNTIME_FILE), { recursive: true });
+  fs.writeFileSync(RUNTIME_FILE, JSON.stringify({ pid: process.pid, port: PORT, secret: STOP_KEY, ...(starting ? { starting: true } : {}) }));
+}
+// Fichier d'arrêt effacé s'il est encore celui de cette file.
+function removeOwnRuntime() {
+  try {
+    const runtime = JSON.parse(fs.readFileSync(RUNTIME_FILE, 'utf8'));
+    if (runtime.pid === process.pid && runtime.secret === STOP_KEY) fs.unlinkSync(RUNTIME_FILE);
+  } catch (_) { /* fichier déjà absent */ }
+}
+
+// Exception dans le rappel d'un des deux ports (A3) : ce que fait main().catch,
+// l'avertissement de l'adresse puis « Impossible de démarrer : … », le fichier
+// d'arrêt effacé s'il est encore le sien, puis la sortie, ports rendus. Une
+// exception du rappel n'atteint pas main().catch, et process.exitCode seul
+// laisserait vivant un processus qui écoute.
+function failStart(error) {
+  logBaseUrlWarning();
+  appLog(`Impossible de démarrer : ${error?.message ?? error}`);
+  removeOwnRuntime();
+  process.exit(1);
+}
+
+// Ordre du démarrage (A3) : contrôles de main() et faux KaraFun de la démo,
+// puis le port du bar, avant toute lecture de la sauvegarde. Un second
+// lancement s'arrête donc sur le port occupé avant d'avoir lu ou écrit la
+// soirée.
+async function main() {
+  if (PUBLIC_PORT === PORT || !Number.isInteger(PUBLIC_PORT) || PUBLIC_PORT < 1 || PUBLIC_PORT > 65535) {
+    throw new Error('Le port public doit être valide et différent de celui du bar.');
+  }
+  // Avant la soirée et ensureSoloGroup(), qui réécrit en général data/tables.json.
+  pendingBaseUrlWarning = printedBaseUrlWarning();
   if (DEMO) {
     const { startFakeKaraFun } = require('./fake-karafun');
     fake = await startFakeKaraFun({ port: PORT + 1001, code: '123456', songSeconds: SONG_SECONDS, log: appLog });
     CODE = fake.code;
     appLog(`Mode démo : faux KaraFun sur ${fake.base} (chansons de ${SONG_SECONDS} s)`);
   }
-  server.listen(PORT, SERVER ? SERVER.bind : '0.0.0.0', () => {
-    publicServer.listen(PUBLIC_PORT, SERVER ? SERVER.publicBind : '127.0.0.1', () => {
-      // Mode PC seulement : ouverte dans le navigateur de ce PC, jamais écrite
-      // au journal ; la clé n'y figure que sur la ligne « Clé du bar »
-      // (GUIDE-BAR.md) et, depuis ce PC, l'adresse sans clé mène à la page du
-      // bar (GET /). Mode serveur : aucune des deux ne sert (GET / répond 403).
-      const staffUrl = `http://localhost:${PORT}/staff?key=${STAFF_KEY}`;
-      const localUrl = `http://localhost:${PORT}/`;
-      // Mode serveur : ni la clé ni un lien qui la porte (empreinte seulement).
-      if (SERVER) {
-        for (const line of serverStartupLines()) appLog(line);
-        logBaseUrlWarning();
-      } else {
-        appLog('');
-        appLog(`=== File karaoké ${BUILD.version}${BUILD.commit ? ` (${BUILD.commit})` : ''} ===`);
-        appLog(`Page du bar (sur ce PC)        : ${localUrl}`);
-        appLog(`Adresse pour les téléphones    : QR secret à imprimer depuis ${localUrl}`);
-        appLog(`QR codes à imprimer            : http://localhost:${PORT}/print`);
-        appLog(`Tunnel HTTPS (clients seulement) : http://127.0.0.1:${PUBLIC_PORT}`);
-        appLog(`Clé du bar (autre appareil)    : ${STAFF_KEY}  (ex. ${phoneBase()}/staff?key=${STAFF_KEY})`);
-      }
-      fs.mkdirSync(path.dirname(RUNTIME_FILE), { recursive: true });
-      fs.writeFileSync(RUNTIME_FILE, JSON.stringify({ pid: process.pid, port: PORT, secret: STOP_KEY }));
-      if (!SERVER) {
-        appLog('Laisse cette fenêtre ouverte pendant la soirée. Ctrl+C pour arrêter.');
-        appLog('');
-      }
-      if (CODE && !serverUpdate.isBusy()) connectKaraFun();
-      if (!SERVER && !NO_OPEN && process.platform === 'win32') spawn('cmd', ['/c', 'start', '', staffUrl], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-      setInterval(() => {
-        // La version candidate attend le contrôle de santé de l'agent hôte
-        // avant de retrouver la télécommande et ses automatismes.
-        if (SERVER && !serverUpdate.isBusy() && CODE && !bridge) connectKaraFun();
-        safeSync();
-      }, 2000);
-      setInterval(() => { if (!serverUpdate.isBusy()) battleVote.tick(); }, 2000);
-      setInterval(() => { if (!serverUpdate.isBusy()) spotifyTick().catch(() => {}); }, 3000);
-    });
-  });
+  server.listen(PORT, SERVER ? SERVER.bind : '0.0.0.0', barListening);
+  // Le fichier d'arrêt, écrit dès le port du bar pris, ne survit pas à la
+  // sortie (port des clients déjà pris, par exemple).
   server.on('error', (e) => {
     logBaseUrlWarning();
     if (e.code === 'EADDRINUSE') appLog(portInUseMessage());
     else appLog(`Erreur serveur : ${e.message}`);
+    removeOwnRuntime();
     process.exit(1);
   });
   publicServer.on('error', (e) => {
     logBaseUrlWarning();
     appLog(`Port public ${PUBLIC_PORT} indisponible : ${e.message}`);
+    removeOwnRuntime();
     process.exit(1);
   });
+}
+
+// Port du bar pris (A3, « Ordre du démarrage ») : le fichier d'arrêt à
+// starting: true, la soirée (startNight), puis le port des clients.
+function barListening() {
+  try {
+    writeRuntime({ starting: true });
+    startNight();
+    publicServer.listen(PUBLIC_PORT, SERVER ? SERVER.publicBind : '127.0.0.1', clientsListening);
+  } catch (error) { failStart(error); }
+}
+
+// Port des clients pris : lignes de démarrage, fichier d'arrêt sans
+// starting, KaraFun, page du bar, minuteries, puis la passe des soirées
+// closes. Au second commit du jalon 1 (A2) : la vérification qui précède
+// connectKaraFun() et la minuterie de la minute (hors démo).
+function clientsListening() {
+  try {
+    // Mode PC seulement : ouverte dans le navigateur de ce PC, jamais écrite
+    // au journal ; la clé n'y figure que sur la ligne « Clé du bar »
+    // (GUIDE-BAR.md) et, depuis ce PC, l'adresse sans clé mène à la page du
+    // bar (GET /). Mode serveur : aucune des deux ne sert (GET / répond 403).
+    const staffUrl = `http://localhost:${PORT}/staff?key=${STAFF_KEY}`;
+    const localUrl = `http://localhost:${PORT}/`;
+    // Mode serveur : ni la clé ni un lien qui la porte (empreinte seulement).
+    if (SERVER) {
+      for (const line of serverStartupLines()) appLog(line);
+      logBaseUrlWarning();
+    } else {
+      appLog('');
+      appLog(`=== File karaoké ${BUILD.version}${BUILD.commit ? ` (${BUILD.commit})` : ''} ===`);
+      appLog(`Page du bar (sur ce PC)        : ${localUrl}`);
+      appLog(`Adresse pour les téléphones    : QR secret à imprimer depuis ${localUrl}`);
+      appLog(`QR codes à imprimer            : http://localhost:${PORT}/print`);
+      appLog(`Tunnel HTTPS (clients seulement) : http://127.0.0.1:${PUBLIC_PORT}`);
+      appLog(`Clé du bar (autre appareil)    : ${STAFF_KEY}  (ex. ${phoneBase()}/staff?key=${STAFF_KEY})`);
+    }
+    writeRuntime();
+    if (!SERVER) {
+      appLog('Laisse cette fenêtre ouverte pendant la soirée. Ctrl+C pour arrêter.');
+      appLog('');
+    }
+    if (CODE && !serverUpdate.isBusy()) connectKaraFun();
+    if (!SERVER && !NO_OPEN && process.platform === 'win32') spawn('cmd', ['/c', 'start', '', staffUrl], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    setInterval(() => {
+      // La version candidate attend le contrôle de santé de l'agent hôte
+      // avant de retrouver la télécommande et ses automatismes.
+      if (SERVER && !serverUpdate.isBusy() && CODE && !bridge) connectKaraFun();
+      safeSync();
+    }, 2000);
+    setInterval(() => { if (!serverUpdate.isBusy()) battleVote.tick(); }, 2000);
+    setInterval(() => { if (!serverUpdate.isBusy()) spotifyTick().catch(() => {}); }, 3000);
+    setImmediate(repairClosedEvenings);
+  } catch (error) { failStart(error); }
 }
 
 main().catch(e => { logBaseUrlWarning(); appLog(`Impossible de démarrer : ${e.message}`); process.exitCode = 1; });

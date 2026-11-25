@@ -3322,7 +3322,10 @@ test('valeurs imprévues : « ⏸ Spotify » du bar avant ou pendant l’alerte,
 // au bar, une ligne par minute au plus), et la route rend sa réponse. Hors
 // requête, un traitement appelé directement lève toujours l'erreur.
 test('filet de la synchronisation : geste fait pendant la panne, répondu, compté et enregistré par la vraie route', async () => {
-  const f = harness({ persistent: true });
+  // Heure figée (plan du 8 novembre, règles transversales) : sync() avec un
+  // pont prêt, des tables et des titres, hors démo, à 21 h comme ailleurs.
+  const clock = clockAt('2026-11-16T21:00:00.000Z');
+  const f = harness({ persistent: true, Date: clock.Date });
   const { bridge } = kcsBridge(f);
   const tb = openTable(f, '1');
   const lea = singer(f, tb, 'Léa', 101);
@@ -3653,7 +3656,10 @@ const SYNC_FAILED = 'La mise à jour avec KaraFun a échoué (Cannot convert obj
 // dans la liste ». Le complément relu après le geste est sous le même filet :
 // la route répond sans lui.
 test('filet de la synchronisation : panne qui empêche de lire KaraFun, gestes des téléphones répondus, comptés et enregistrés', async () => {
-  const f = harness({ persistent: true });
+  // Heure figée (plan du 8 novembre, règles transversales) : sync() avec un
+  // pont prêt, des tables et des titres, hors démo, à 21 h comme ailleurs.
+  const clock = clockAt('2026-11-16T21:00:00.000Z');
+  const f = harness({ persistent: true, Date: clock.Date });
   const { bridge } = kcsBridge(f);
   f.setCode('123456'); // lien de la Battle relu après un vote
   const tb = openTable(f, '1', 6);
@@ -3710,7 +3716,10 @@ test('filet de la synchronisation : panne qui empêche de lire KaraFun, gestes d
 // encore dans KaraFun y restent) est refusé avant tout changement : il
 // défaisait le duo à moitié.
 test('filet de la synchronisation : panne qui empêche de lire KaraFun, gestes du bar répondus, ou refusés sans rien changer', async () => {
-  const f = harness({ persistent: true });
+  // Heure figée (plan du 8 novembre, règles transversales) : sync() avec un
+  // pont prêt, des tables et des titres, hors démo, à 21 h comme ailleurs.
+  const clock = clockAt('2026-11-16T21:00:00.000Z');
+  const f = harness({ persistent: true, Date: clock.Date });
   const { bridge, sent } = kcsBridge(f);
   const calls = fakeSpotify(f);
   const tb = openTable(f, '1', 6);
@@ -3785,7 +3794,10 @@ test('filet de la synchronisation : déplacement du bar pendant la panne, soiré
   const { restoreNight } = require('../night-state');
   const { Scheduler } = require('../scheduler');
   const { TableAccess } = require('../table-access');
-  const f = harness({ persistent: true });
+  // Heure figée (plan du 8 novembre, règles transversales) : sync() avec un
+  // pont prêt, des tables et des titres, hors démo, à 21 h comme ailleurs.
+  const clock = clockAt('2026-11-16T21:00:00.000Z');
+  const f = harness({ persistent: true, Date: clock.Date });
   const { bridge } = kcsBridge(f);
   const tb = openTable(f, '1', 6);
   for (const [name, song] of [['Léa', 101], ['Tom', 201], ['Zoé', 301]]) singer(f, tb, name, song);
@@ -3835,7 +3847,10 @@ function get(f, url) {
 // de Léa et Tom est chargé dans KaraFun ; `presence` : « Je suis là »
 // obligatoire. `first()` : le prochain passage.
 async function outageScene({ presence = false, loaded = false, sentDuo = false } = {}) {
-  const f = harness({ persistent: true });
+  // Heure figée (plan du 8 novembre, règles transversales) : sync() avec un
+  // pont prêt, des tables et des titres, hors démo, à 21 h comme ailleurs.
+  const clock = clockAt('2026-11-16T21:00:00.000Z');
+  const f = harness({ persistent: true, Date: clock.Date });
   const { bridge } = kcsBridge(f);
   f.sched.opts.requirePresence = presence;
   const tb = openTable(f, '1', 8);

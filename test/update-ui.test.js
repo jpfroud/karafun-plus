@@ -382,3 +382,33 @@ test('choix de version : rechargement une seule fois après l’installation val
   await page.poll();
   assert.equal(page.reloads, 1, 'pas de boucle de rechargement');
 });
+
+// ---------------------------------------------------------------- réparation coupée (A6)
+// Plan du 8 novembre, A6 : KARAOKE_REPAIR dans deploy/.env fait refuser
+// « Vérifier et mettre à jour » par l'agent, qui ne la nomme pas ; la carte le
+// dit sous son bouton (updateState().repairOff, mode serveur seulement).
+const REPAIR_OFF = 'Réparation des soirées coupée par KARAOKE_REPAIR (deploy/.env) : « Vérifier et mettre à jour » est refusé tant que la ligne y est. Préviens le mainteneur : il installe la version corrigée par « Installer cette version », la ligne gardée, puis la retire une fois cette version en service (DEPLOIEMENT-SERVEUR §18, « Couper la réparation »).';
+
+test('A6 : carte « Mise à jour », réparation coupée par KARAOKE_REPAIR : la phrase sous le bouton avec repairOff, absente sans lui et en mode PC', async () => {
+  const staffHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'staff.html'), 'utf8');
+  const button = staffHtml.indexOf('id="serverUpdateButton"');
+  const sentence = staffHtml.indexOf('id="serverRepairOff"');
+  assert.ok(button > 0 && sentence > button && staffHtml.indexOf('id="serverVersionChoice"') > sentence, 'phrase juste sous le bouton');
+  const off = await openPage({ world: serverWorld({ repairOff: true }) });
+  assert.equal(off.$('serverUpdatePanel').hidden, false);
+  assert.equal(off.$('serverRepairOff').hidden, false);
+  assert.equal(off.$('serverRepairOff').textContent.replace(/\s+/g, ' ').trim(), REPAIR_OFF);
+  // Jamais la ligne retirée avant l'installation : un retour automatique de
+  // l'agent remettrait le .env d'avant, réparation rallumée (§18, étape 4).
+  assert.doesNotMatch(REPAIR_OFF, /retir\w* la ligne[^.]*puis « (Vérifier et mettre à jour|Installer cette version) »/);
+  assert.equal(off.$('serverUpdateButton').disabled, false, 'le bouton reste : « Installer cette version » aussi');
+  const on = await openPage({ world: serverWorld() });
+  assert.equal(on.$('serverRepairOff').hidden, true, 'sans repairOff');
+  const back = await openPage({ world: serverWorld({ repairOff: true }) });
+  back.world.update.repairOff = false;
+  await back.poll();
+  assert.equal(back.$('serverRepairOff').hidden, true, 'repairOff retiré : la phrase part');
+  const pc = await openPage({ world: { ...serverWorld({ repairOff: true }), app: { mode: 'pc', version: 'v1.0.0' } } });
+  assert.equal(pc.$('serverUpdatePanel').hidden, true);
+  assert.equal(pc.$('serverRepairOff').hidden, true, 'mode PC');
+});

@@ -12,8 +12,9 @@
 // TX5 (#28, port du bar occupé) : 3250, 3251 et 4251, réservés par l'épopée.
 //
 // Les aides exportées (portFree, choosePort, serverEnv, sandboxCopy, launch,
-// waitLine) servent aux autres tests du mode serveur : les tests de ce fichier
-// ne tournent que s'il est lancé directement.
+// waitLine, apresHuitHeures, dureeApresHuitHeures) servent aux autres tests du
+// mode serveur : les tests de ce fichier ne tournent que s'il est lancé
+// directement.
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -21,6 +22,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+const { morningAfter } = require('../evening-bounds');
 
 const root = path.join(__dirname, '..');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -167,11 +169,41 @@ process.on('exit', () => {
   for (const dir of temporary) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-module.exports = { portFree, choosePort, serverEnv, sandboxCopy, launch, waitLine };
+// Heure des essais (plan du 8 novembre, règles transversales) : une copie
+// lancée hors démo à l'heure réelle, avec des tables, ne doit voir aucune fin
+// de soirée pendant l'essai. Si le prochain 8 h local (fuseau du processus)
+// tombe dans les 5 min qui viennent, apresHuitHeures() le dit et attend
+// 8 h 01 ; chaque fichier qui l'appelle d'abord échoue s'il dure ensuite plus
+// de 5 min (dureeApresHuitHeures). `now`, `sleep` et `log` : horloge, attente
+// et sortie, que son essai donne. Rend l'attente en ms (0 sans attente).
+const MAX_APRES_HUIT_HEURES = 5 * 60000;
+async function apresHuitHeures({ now = Date.now, sleep: wait = sleep, log = line => console.log(line) } = {}) {
+  const t = now();
+  const next = morningAfter(t);
+  if (next - t > MAX_APRES_HUIT_HEURES) return 0;
+  const until = next + 60000;
+  log(`Attente de ${new Date(until).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })} : ` +
+    'le prochain 8 h local tomberait pendant cet essai.');
+  await wait(until - t);
+  return until - t;
+}
+// Durée de `nom` depuis la fin de son appel à apresHuitHeures() (`debut`) :
+// une ligne, ou une erreur au-delà de 5 min.
+function dureeApresHuitHeures(debut, nom, now = Date.now()) {
+  const duree = now - debut;
+  const texte = `${nom} : ${(duree / 1000).toFixed(1)} s après apresHuitHeures() (plafond 5 min).`;
+  if (duree > MAX_APRES_HUIT_HEURES) throw new Error(`${texte} Trop long : une fin de soirée a pu tomber pendant l’essai.`);
+  return texte;
+}
+
+module.exports = { portFree, choosePort, serverEnv, sandboxCopy, launch, waitLine, apresHuitHeures, dureeApresHuitHeures, MAX_APRES_HUIT_HEURES };
 
 // ---------------------------------------------------------------- tests
 if (require.main === module) {
-  const { test } = require('node:test');
+  const { test, before } = require('node:test');
+  // Premier geste du fichier : aucune fin de soirée pendant ses copies.
+  let debut = Date.now();
+  before(async () => { await apresHuitHeures(); debut = Date.now(); });
   const { staffKey } = require('./staff-auth');
   const demoArgs = port => ['--demo', '--song-seconds', '4', '--port', String(port), '--no-open'];
   const fingerprint = key => crypto.createHash('sha256').update(key).digest('hex').slice(0, 8);
@@ -517,15 +549,19 @@ if (require.main === module) {
   // Lignes d'avertissement dans les journal/serveur-<date>.log de la copie.
   const loggedWarnings = dir => fs.readdirSync(path.join(dir, 'journal')).filter(name => /^serveur-.*\.log$/.test(name))
     .map(name => fs.readFileSync(path.join(dir, 'journal', name), 'utf8')).join('').split(` ${OLD_WARNING}\n`).length - 1;
-  // data/runtime-<P>.json écrit par ce serveur, après ses lignes de démarrage.
+  // data/runtime-<P>.json écrit par ce serveur, après ses lignes de démarrage :
+  // sa seconde écriture, sans starting (A3), la première étant faite dès que
+  // le port du bar est pris, avant startNight().
   const waitRuntime = async child => {
     const file = runtimeFile(child);
+    const done = runtime => runtime?.pid === child.pid && runtime.starting === undefined;
     let runtime = null;
-    for (let i = 0; i < 300 && runtime?.pid !== child.pid; i++) {
+    for (let i = 0; i < 300 && !done(runtime); i++) {
       try { runtime = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { runtime = null; }
-      if (runtime?.pid !== child.pid) await sleep(50);
+      if (!done(runtime)) await sleep(50);
     }
-    assert.equal(runtime?.pid, child.pid, `data/${path.basename(file)} écrit\n${outputs(child)}`);
+    // gstack-timing-ok: attente bornée (300 × 50 ms) de la seconde écriture de data/runtime-<port>.json ; l'essai vérifie l'état du fichier, pas une durée.
+    assert.ok(done(runtime), `data/${path.basename(file)} écrit sans starting\n${outputs(child)}`);
   };
 
   test('R5 faux KaraFun de la démo : boucle locale seulement, la démo se connecte (mode PC)', async t => {
@@ -697,10 +733,13 @@ if (require.main === module) {
     assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
   });
 
-  // Démarrage qui échoue après la réécriture de data/tables.json (port du bar
-  // ou port clients déjà pris) : l'ancienne adresse reste à l'écran et au
+  // Premier démarrage qui échoue sur un port pris. Port du bar (A3 : pris
+  // avant toute lecture de la sauvegarde) : data/tables.json garde l'ancienne
+  // adresse, l'avertissement est écrit, puis repris au démarrage suivant,
+  // comme R10d. Port des clients, pris après startNight() : l'échec suit la
+  // réécriture de data/tables.json, l'ancienne adresse reste à l'écran et au
   // journal, une seule fois, et le démarrage suivant ne voit plus d'écart.
-  const failedFirstStart = async ({ busy, lastLine }) => {
+  const failedFirstStart = async ({ busy, lastLine, rewritten }) => {
     const { dir, tablesBaseUrl } = oldTablesCopy();
     const env = serverEnv();
     const port = await choosePort();
@@ -710,31 +749,42 @@ if (require.main === module) {
     try {
       const { code } = await finished(child);
       assert.equal(code, 1, outputs(child));
+      // A3 : aucun fichier d'arrêt laissé (jamais écrit si le port du bar est
+      // pris, effacé si c'est celui des clients).
+      assert.equal(fs.existsSync(runtimeFile(child)), false, `data/${path.basename(runtimeFile(child))} absent après la sortie`);
     } finally {
       await child.stop();
       await new Promise(resolve => blocker.close(resolve));
     }
-    assert.equal(tablesBaseUrl(), 'https://clients.exemple.fr', 'échec après la réécriture');
+    assert.equal(tablesBaseUrl(), rewritten ? 'https://clients.exemple.fr' : 'https://ancien.exemple.fr',
+      rewritten ? 'échec après la réécriture' : 'échec avant toute lecture de la sauvegarde : data/tables.json laissé tel quel');
     assert.deepEqual(baseUrlWarnings(child), [OLD_WARNING], `avertissement à l’écran\n${outputs(child)}`);
     assert.match(completeLines(child).at(-1), lastLine(port), 'raison de l’échec en dernière ligne');
     assert.equal(loggedWarnings(dir), 1, 'avertissement gardé dans journal/serveur-<date>.log');
-    // Démarrage suivant : plus d'écart, plus d'avertissement ; le journal garde l'ancienne adresse.
+    if (!rewritten) {
+      assert.ok(!completeLines(child).some(line => line.startsWith('Réparation des soirées')), `arrêt avant startNight()\n${outputs(child)}`);
+      assert.equal(fs.existsSync(path.join(dir, 'data', 'soirees')), false, 'aucun journal de soirée');
+      assert.deepEqual(fs.readdirSync(path.join(dir, 'data')).filter(name => name.startsWith('soiree')), [], 'aucune sauvegarde de soirée');
+    }
+    // Démarrage suivant : l'écart revient tant que data/tables.json garde
+    // l'ancienne adresse, puis le fichier est réécrit.
     child = launch(copyArgs(await choosePort()), { env, cwd: dir });
     try {
       await waitLine(child, 'Adresse des téléphones');
       await waitRuntime(child);
     } finally { await child.stop(); }
-    assert.deepEqual(baseUrlWarnings(child), [], 'aucun avertissement au démarrage suivant');
-    assert.equal(loggedWarnings(dir), 1, 'une seule ligne au journal');
+    assert.deepEqual(baseUrlWarnings(child), rewritten ? [] : [OLD_WARNING], 'avertissement au démarrage suivant');
+    assert.equal(loggedWarnings(dir), rewritten ? 1 : 2, 'lignes au journal');
+    assert.equal(tablesBaseUrl(), 'https://clients.exemple.fr', 'data/tables.json réécrit');
     assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
   };
 
-  test('R10b ancienne adresse gardée au journal quand le port du bar est pris au premier démarrage du mode serveur', () =>
-    failedFirstStart({ busy: port => port,
+  test('R10b port du bar pris au premier démarrage du mode serveur : arrêt avant la soirée, data/tables.json garde l’ancienne adresse, avertissement écrit puis repris au démarrage suivant (A3)', () =>
+    failedFirstStart({ busy: port => port, rewritten: false,
       lastLine: port => new RegExp(`^Le port ${port} est déjà utilisé : une autre instance de la file tourne peut-être déjà sur ce serveur\\.$`) }));
 
   test('R10c ancienne adresse gardée au journal quand le port clients est pris au premier démarrage du mode serveur', () =>
-    failedFirstStart({ busy: port => port + 1, lastLine: port => new RegExp(`^Port public ${port + 1} indisponible : `) }));
+    failedFirstStart({ busy: port => port + 1, rewritten: true, lastLine: port => new RegExp(`^Port public ${port + 1} indisponible : `) }));
 
   // Démarrage refusé par main() avant la réécriture (sauvegarde de soirée
   // illisible) : l'avertissement passe avant la raison, et data/tables.json
@@ -748,6 +798,9 @@ if (require.main === module) {
     try {
       const { code } = await finished(child);
       assert.equal(code, 1, outputs(child));
+      // A3 : le fichier d'arrêt, écrit dès le port du bar pris, est effacé
+      // avant la sortie (child.stop() efface celui d'un serveur arrêté).
+      assert.equal(fs.existsSync(runtimeFile(child)), false, `data/${path.basename(runtimeFile(child))} effacé avant la sortie`);
     } finally { await child.stop(); }
     assert.deepEqual(baseUrlWarnings(child), [OLD_WARNING], `avertissement à l’écran\n${outputs(child)}`);
     assert.equal(completeLines(child).at(-1), 'Impossible de démarrer : Sauvegarde de soirée invalide : les deux générations sont illisibles',
@@ -762,5 +815,27 @@ if (require.main === module) {
     assert.equal(loggedWarnings(dir), 2, 'une ligne de plus au journal');
     assert.equal(tablesBaseUrl(), 'https://clients.exemple.fr', 'data/tables.json réécrit');
     assert.equal(fs.existsSync(path.join(dir, 'data', 'last-karafun-code.json')), false, 'aucun code KaraFun dans la copie');
+  });
+
+  // Règles transversales : horloge donnée à apresHuitHeures(), au fuseau du
+  // processus ; aucune attente réelle.
+  test('A7 : horloge donnée à apresHuitHeures() : à 7 h 56, attente jusqu’à 8 h 01 avec sa ligne ; à 7 h 55 tout juste aussi ; à 7 h 54 et à 8 h 00 min 30 s, aucune attente', async () => {
+    const at = (hours, minutes, seconds = 0) => { const day = new Date(); day.setHours(hours, minutes, seconds, 0); return day.getTime(); };
+    for (const [time, label, waited] of [[at(7, 56), '7 h 56', 5 * 60000], [at(7, 55), '7 h 55', 6 * 60000], [at(7, 54), '7 h 54', 0],
+      [at(8, 0, 30), '8 h 00 min 30 s', 0]]) {
+      const waits = [], lines = [];
+      const result = await apresHuitHeures({ now: () => time, sleep: ms => { waits.push(ms); }, log: line => lines.push(line) });
+      assert.equal(result, waited, label);
+      assert.deepEqual(waits, waited ? [waited] : [], label);
+      assert.deepEqual(lines, waited ? ['Attente de 08:01 : le prochain 8 h local tomberait pendant cet essai.'] : [], label);
+      if (waited) assert.equal(new Date(time + waited).getHours() * 60 + new Date(time + waited).getMinutes(), 8 * 60 + 1, `${label} : jusqu’à 8 h 01`);
+    }
+    assert.equal(dureeApresHuitHeures(0, 'essai', 5 * 60000), 'essai : 300.0 s après apresHuitHeures() (plafond 5 min).');
+    assert.throws(() => dureeApresHuitHeures(0, 'essai', 5 * 60000 + 1), /^Error: essai : 300\.0 s après apresHuitHeures\(\) \(plafond 5 min\)\. Trop long/);
+  });
+
+  // Dernier essai du fichier : sa durée depuis apresHuitHeures().
+  test('A7 : server-mode-startup dure moins de 5 min après apresHuitHeures()', () => {
+    console.log(dureeApresHuitHeures(debut, 'server-mode-startup'));
   });
 }

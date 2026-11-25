@@ -28,7 +28,31 @@
  *   tôt la connexion de KaraFun) au début du passage.
  * - temps mort : intervalle entre deux chansons pendant lequel au moins un
  *   titre attendait (file vide et fermeture exclues).
+ *
+ * Morceau d'une soirée découpée (plan du 8 novembre, A4 ; evening-split.js) :
+ * un journal qui a des lignes reportées (carried: true). Elles sont l'état du
+ * morceau à son début, sans aucun compteur ; une personne ou une table n'y est
+ * créée que reportée, inscrite ou ouverte dans le morceau, ou citée ; le
+ * karaoké y ouvre au plus tôt à sa première activité ; une personne reportée
+ * que le bar réactive, partie avant la coupure, n'y est présente que depuis
+ * son retour ; la suite d'une demande de duo faite avant la coupure (réponse,
+ * annulation, expiration, duo ouvert rejoint ou fermé, invitée qui se retire)
+ * n'y compte pas dans les duos. Un journal sans ligne reportée est lu comme
+ * avant.
+ *
+ * Soirée close d'office (plan du 8 novembre, A5) : meta.closedBy, sinon le by
+ * de sa ligne evening.closed, vaut 'auto' (remise à zéro du matin, morceaux
+ * d'une soirée découpée). Elle finit à son point de clôture C (meta.endedAt,
+ * sinon le closedAt de cette ligne, sinon son heure) : aucune ligne datée
+ * après C n'est lue, sauf cette ligne, et d'une ligne app.started datée après
+ * C ne reste que la part de l'arrêt d'avant C ; de même, une coupure de
+ * KaraFun encore ouverte à C n'est durable que si elle dure déjà 30 min à C.
+ * Sans heure de fermeture passée, coupure durable de KaraFun ni arrêt de
+ * l'application, son karaoké finit à la fin de son dernier titre. Une soirée
+ * close par le bouton est lue comme avant.
  */
+
+const { isActivity } = require('./evening-bounds');
 
 const FORMAT = 1;
 const IDLE_CUT_MS = 30 * 60000;      // présence estimée : dernier signe + 30 min
@@ -284,11 +308,145 @@ function duration(seconds) {
   return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')}`;
 }
 
+// --------------------------------------------------------- personnes citées
+// Une ligne prolonge la présence des personnes qu'elle nomme par ces champs,
+// sauf un geste passif pour elles (gestes du bar sur une personne, messages et
+// demandes du serveur, envois et retraits, départs, fins de duo sans geste de
+// sa part) ou une ligne du bar (by: 'staff'). Une seule liste et un seul motif,
+// pour computeStats et pour citedIds.
+const PRESENCE_KEYS = ['personId', 'requesterId', 'voterId', 'proposerId'];
+const PASSIVE = /^(presence\.(asked|skipped)|staff\.|table\.|turn\.|person\.(left|joined|bonus)|song\.removed|duo\.(joinExpired|inviteExpired|improvised)|notice\.)/;
+// Un identifiant ne nomme quelqu'un que si c'est une chaîne non vide.
+const isId = value => typeof value === 'string' && value !== '';
+const isLine = e => !!e && typeof e === 'object' && typeof e.ev === 'string';
+function presenceIds(e) {
+  if (!isLine(e) || PASSIVE.test(e.ev) || e.by === 'staff') return [];
+  return PRESENCE_KEYS.map(key => e[key]).filter(isId);
+}
+
+// Personnes citées par une ligne (plan du 8 novembre, A4, « Personnes et
+// tables citées ») : celles qu'elle montre prendre part à la soirée. C'est la
+// règle par laquelle computeStats prolonge une présence, sans les signes de vie
+// des téléphones (person.seen) : par les champs de PRESENCE_KEYS, plus les ids
+// bruts d'un passage sur scène (stage.started) et l'invitée d'un duo noté par
+// le bar (duo.improvised, partnerId). « Je suis prêt » (defer.ended, how:
+// 'ready') nomme par personId celle qui l'a touché : elle cite, comme
+// computeStats y prolonge sa présence ; les autres lignes d'un « Pas prêt »
+// ne nomment que par ownerId. La réparation et le découpage des journaux
+// fusionnés (evening-split.js) la reçoivent. Ne rend que des chaînes non
+// vides, ne lève jamais.
+function citedIds(e) {
+  if (!isLine(e) || e.ev === 'person.seen') return [];
+  const ids = presenceIds(e);
+  if (e.ev === 'stage.started' && Array.isArray(e.ids)) ids.push(...e.ids.filter(isId));
+  else if (e.ev === 'duo.improvised' && isId(e.partnerId)) ids.push(e.partnerId);
+  return ids;
+}
+
+// ------------------------------------------------- morceaux (A4)
+// Un morceau d'une soirée découpée se reconnaît à ses lignes reportées
+// (carried, vrai seulement s'il vaut true), comme dans planSplit
+// (evening-split.js) : même relu sans sa meta (rejeu d'un export, --soiree).
+const isCarried = e => e.carried === true;
+// Champs qui nomment une personne (les mêmes que dans evening-split.js), dans
+// l'ordre de l'export (A4).
+const NAMING_KEYS = ['personId', 'personIds', 'ids', 'ownerId', 'partnerId', 'guestId', 'requesterId', 'voterId', 'proposerId', 'toId',
+  'previousPartnerId'];
+const NAMING_LISTS = new Set(['personIds', 'ids']);
+// Lecture large, pour l'export seulement (pseudonyms) : dans n'importe lequel
+// de ces champs, toute chaîne non vide que mapIds remplacerait nomme
+// quelqu'un, car mapIds remplace toute chaîne, quel que soit son champ : la
+// valeur du champ, puis ses éléments imbriqués (listes et objets, sauf sous
+// tableId et tableIds, que mapIds lit comme des tables), dans l'ordre.
+// Jusqu'au plus profond que garde cleanFields (evening-journal.js), qui rend
+// null une liste ou un objet de plus de trois niveaux : une chaîne y est dans
+// trois listes ou objets au plus, la valeur du champ comprise.
+const NAMED_DEPTH = 4;
+function namedIds(e) {
+  const ids = [];
+  const visit = (value, depth) => {
+    if (isId(value)) ids.push(value);
+    else if (depth < NAMED_DEPTH && value !== null && typeof value === 'object') {
+      if (Array.isArray(value)) for (const item of value) visit(item, depth + 1);
+      else for (const [key, item] of Object.entries(value)) if (!TABLE_KEYS.has(key)) visit(item, depth + 1);
+    }
+  };
+  for (const key of NAMING_KEYS) visit(e[key], 1);
+  return ids;
+}
+// Lecture stricte, pour les lignes qu'un morceau ignore, comme planSplit
+// (A7, champs de mauvais type) : un champ d'identifiant ne nomme que par une
+// chaîne non vide, personIds et ids que s'ils sont des listes, par leurs
+// éléments qui en sont. Un champ de mauvais type se lit comme absent.
+function namedPeople(e) {
+  const ids = [];
+  for (const key of NAMING_KEYS) {
+    const value = e[key];
+    if (NAMING_LISTS.has(key)) { if (Array.isArray(value)) ids.push(...value.filter(isId)); }
+    else if (isId(value)) ids.push(value);
+  }
+  return ids;
+}
+// Demande pour rejoindre un titre (A4) : le titre et la personne qui demande ;
+// null sans identifiant de personne.
+const joinKey = (entryId, requesterId) => (isId(requesterId) ? `${entryId}\u0000${requesterId}` : null);
+// Personnes et tables qu'un morceau crée (A4, « Personnes et tables
+// citées »), jugées sur tout le morceau : reportées (person.joined et
+// table.opened reportés ; la table d'une personne reportée est citée),
+// inscrites ou ouvertes dans le morceau, citées (citedIds), et les tables où
+// une inscription du morceau fait arriver quelqu'un. Aussi les demandes de duo
+// faites dans le morceau, quel que soit l'ordre des heures : une réponse datée
+// d'avant sa demande (heure du PC reculée) y répond quand même. Les
+// invitations par leur titre (entryId, un titre neuf par invitation) ; les
+// duos ouverts par leur titre et les demandes pour rejoindre par joinKey, avec
+// le seq de la première, car elles peuvent se refaire sur un titre de la
+// veille (une demande sans seq passe avant toute suite).
+function pieceMembers(list) {
+  const people = new Set(), tables = new Set(), invitations = new Set(), opens = new Map(), joins = new Map();
+  const asked = (requests, key, e) => {
+    const seq = Number.isFinite(e.seq) ? e.seq : -Infinity;
+    if (key != null && (!requests.has(key) || seq < requests.get(key))) requests.set(key, seq);
+  };
+  for (const e of list) {
+    if (!isCarried(e)) for (const id of citedIds(e)) people.add(id);
+    if (e.ev === 'person.joined' && isId(e.personId)) people.add(e.personId);
+    if ((e.ev === 'person.joined' || e.ev === 'table.opened') && isId(e.tableId)) tables.add(e.tableId);
+    if (isCarried(e) || e.entryId == null) continue;
+    if (e.ev === 'duo.invited') invitations.add(e.entryId);
+    else if (e.ev === 'duo.openRequested') asked(opens, e.entryId, e);
+    else if (e.ev === 'duo.joinRequested') asked(joins, joinKey(e.entryId, e.requesterId), e);
+  }
+  return { people, tables, invitations, opens, joins };
+}
+
+// ------------------------------------------- soirée close d'office (A5)
+// Soirée close d'office : meta.closedBy, sinon le by de sa ligne
+// evening.closed, vaut 'auto' (remise à zéro du matin, morceaux de la
+// réparation et de splitAt). La ligne compte, car test/rejeu-soiree.js relit
+// un export sans meta. Rend son point de clôture C : meta.endedAt, sinon le
+// closedAt de cette ligne, sinon son heure ; null pour toute autre soirée,
+// une soirée en direct, ou sans C connu.
+function officeClose(meta, closing, live) {
+  if (live) return null;
+  const by = typeof meta.closedBy === 'string' ? meta.closedBy : closing?.by;
+  if (by !== 'auto') return null;
+  if (Number.isFinite(meta.endedAt)) return meta.endedAt;
+  if (!closing) return null;
+  return Number.isFinite(closing.closedAt) ? closing.closedAt : closing.t;
+}
+
 // --------------------------------------------------------------- calcul
 function computeStats({ meta = {}, events = [], now = Date.now(), live = false } = {}) {
   // Ordre du journal ; une ligne dupliquée après un arrêt brutal est ignorée.
   const seen = new Set();
-  const list = [...events].filter(e => e && typeof e.ev === 'string' && Number.isFinite(e.t))
+  const readable = [...events].filter(e => e && typeof e.ev === 'string' && Number.isFinite(e.t));
+  // Morceau d'une soirée découpée (A4) : ses lignes reportées, datées de son
+  // début, viennent en tête de son journal. Une ligne datée d'avant elles
+  // (heure du PC reculée, A2, « Saut d'horloge ») a été écrite après elles :
+  // elle compte à leur heure, donc après elles, comme dans planSplit et comme
+  // une activité datée d'avant meta.startedAt dans un morceau découpé (A1).
+  const floor = readable.find(isCarried)?.t ?? null;
+  const ordered = (floor == null ? readable : readable.map(e => (e.t < floor ? { ...e, t: floor } : e)))
     .sort((a, b) => a.t - b.t || (a.seq || 0) - (b.seq || 0))
     .filter(e => {
       if (e.seq == null) return true;
@@ -297,21 +455,48 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       seen.add(key);
       return true;
     });
-  const closedEvent = list.find(e => e.ev === 'evening.closed');
+  // Soirée close d'office (A5, « Fin du karaoké d'une soirée close
+  // d'office ») : elle finit à C. Aucune ligne datée après C n'est lue, sauf
+  // sa ligne evening.closed : les lignes qu'une file écrit pendant un retard
+  // de la remise à zéro (téléphones revus, retraits, départs, avis, A2) ne
+  // changent ni les présences, ni les compteurs, ni la fin du karaoké. D'une
+  // ligne app.started datée après C, seule la part de l'arrêt d'avant C reste
+  // (PC éteint la nuit, puis remise à zéro au démarrage).
+  const closingLine = ordered.find(e => e.ev === 'evening.closed' && !isCarried(e));
+  const C = officeClose(meta, closingLine, live);
+  const list = C == null ? ordered : ordered.filter(e => e.t <= C || e === closingLine);
+  const stopsBeforeC = C == null ? [] : ordered.filter(e => e.t > C && e.ev === 'app.started' && e.offlineMs > 0 && e.t - e.offlineMs < C)
+    .map(e => [e.t - e.offlineMs, C]);
+  // Personnes et tables que le morceau crée ; null pour un journal sans ligne
+  // reportée, lu comme avant. Les lignes reportées ne sont que de l'état :
+  // aucune n'est une ligne de la soirée (`own`).
+  const piece = floor == null ? null : pieceMembers(list);
+  const own = piece ? list.filter(e => !isCarried(e)) : list;
+  const closedEvent = own.find(e => e.ev === 'evening.closed');
   const E0 = Math.min(Number.isFinite(meta.startedAt) ? meta.startedAt : Infinity, list[0]?.t ?? now);
   const lastT = list.at(-1)?.t ?? E0;
-  const E1 = Number.isFinite(meta.endedAt) ? meta.endedAt : closedEvent ? closedEvent.t : live ? Math.max(now, lastT) : lastT;
+  const E1 = C != null ? C : Number.isFinite(meta.endedAt) ? meta.endedAt : closedEvent ? closedEvent.t : live ? Math.max(now, lastT) : lastT;
   const roster = meta.roster || {};
   const tableNames = meta.tables || {};
 
   // Arrêts de l'application (reprise après redémarrage).
-  const offline = list.filter(e => e.ev === 'app.started' && e.offlineMs > 0)
-    .map(e => [Math.max(E0, e.t - e.offlineMs), e.t]);
-  const restarts = list.filter(e => e.ev === 'app.started' && e.restored).length;
+  const offline = [...own.filter(e => e.ev === 'app.started' && e.offlineMs > 0).map(e => [e.t - e.offlineMs, e.t]), ...stopsBeforeC]
+    .map(([a, b]) => [Math.max(E0, a), b]);
+  const restarts = own.filter(e => e.ev === 'app.started' && e.restored).length;
 
   // ------------------------------------------------ personnes et tables
+  // Dans un morceau, une personne ou une table qu'il ne crée pas ne l'est
+  // jamais : les lignes qui la nomment sont ignorées pour elle, sans erreur.
   const people = new Map();
   const tables = new Map();
+  // Personnes reportées d'un morceau, présentes dès sa coupure (A4).
+  const carriedPeople = new Set();
+  const tableOk = id => !piece || (isId(id) && piece.tables.has(id));
+  // Dans un morceau, un champ de mauvais type se lit comme absent, comme dans
+  // planSplit (A7) : une ligne ne nomme une table que par une chaîne non vide,
+  // et « En solo » n'y est vrai que s'il vaut true.
+  const namesTable = e => (piece ? isId(e.tableId) : e.tableId != null);
+  const individualOf = e => (piece ? e.individual === true : !!e.individual);
   const tableOf = id => {
     const key = String(id);
     if (!tables.has(key)) tables.set(key, { id: key, individual: !!tableNames[key]?.individual, openedAt: null, leftAt: null, bonus: 0, bonusLog: [] });
@@ -319,6 +504,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   };
   const personOf = (id, t) => {
     if (!id) return null;
+    if (piece && !piece.people.has(id)) return null;
     if (!people.has(id)) {
       people.set(id, { id, tableId: roster[id]?.tableId ?? null, joinedAt: t, intervals: [], openSince: t,
         lastActivity: t, explicitLeft: null, bonus: 0, bonusLog: [], active: new Set(), demandSince: null, demandSpans: [], leaves: [], presenceCuts: [], deferSpans: [],
@@ -419,41 +605,99 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
     stage.segmentStart = now; // la durée jouée suivante part de la reprise
     openStages.set(stage.queueId ?? `#${stages.length}`, stage);
   };
-  const activityKeys = ['personId', 'requesterId', 'voterId', 'proposerId'];
-  // Gestes du bar sur une personne (bonus, réglages de ses titres…) : pas un
-  // signe d'activité de cette personne.
-  const passive = /^(presence\.(asked|skipped)|staff\.|table\.|turn\.|person\.(left|joined|bonus)|song\.removed|duo\.(joinExpired|inviteExpired|improvised)|notice\.)/;
-
+  // Ligne reportée d'un morceau (A4) : l'état du morceau à son début (table
+  // d'une personne, bonus en vigueur, phase de KaraFun ; les règles ne servent
+  // pas ici), sans aucun compteur : ni staff.bonus, ni ouverture de table, ni
+  // inscription. Une ligne reportée d'un autre type ne compte pas.
+  const carriedState = (e, t) => {
+    switch (e.ev) {
+      case 'karaoke.phase': phases.push({ start: t, phase: e.phase || 'unknown', blocker: e.blocker || null }); break;
+      case 'table.opened': if (tableOk(e.tableId)) { const tb = tableOf(e.tableId); tb.individual = individualOf(e) || tb.individual; } break;
+      case 'table.bonus': if (tableOk(e.tableId)) { const tb = tableOf(e.tableId); tb.bonus = Number(e.level) || 0; tb.bonusLog.push([t, tb.bonus]); } break;
+      case 'person.joined': {
+        const p = personOf(e.personId, t);
+        if (!p) break;
+        carriedPeople.add(p.id);
+        if (namesTable(e)) p.tableId = String(e.tableId);
+        if (p.tableId != null && tableOk(p.tableId)) tableOf(p.tableId);
+        break;
+      }
+      case 'person.bonus': { const p = personOf(e.personId, t); if (p) { p.bonus = Number(e.level) || 0; p.bonusLog.push([t, p.bonus]); } break; }
+      default: break;
+    }
+  };
+  // Ligne d'un morceau qui ne nomme que des personnes ou des tables qu'il ne
+  // crée pas : ignorée, sans erreur (gestes du bar, avis, demandes et départs
+  // qui ne concernent que la veille). Lecture stricte : une ligne dont le seul
+  // nom est dans un champ de mauvais type ne nomme personne, et compte.
+  const outsiders = e => {
+    let named = false;
+    for (const id of namedPeople(e)) { if (piece.people.has(id)) return false; named = true; }
+    if (isId(e.tableId)) { if (piece.tables.has(e.tableId)) return false; named = true; }
+    return named;
+  };
+  // Suite d'une demande de duo (A4, « Ce qui traverse la coupure ») : dans un
+  // morceau, elle ne compte dans ses duos que si sa demande y a été faite,
+  // comme la réponse à une invitation ; celle d'une demande de la veille y est
+  // ignorée, et cite quand même ses personnes. Un duo ouvert ou une demande
+  // pour rejoindre refaits dans le morceau sur un titre de la veille ne valent
+  // que pour les suites écrites après eux (seq) : celle de la demande de la
+  // veille, écrite avant, reste ignorée.
+  const askedBefore = (requests, key, e) => requests.has(key) && !(Number.isFinite(e.seq) && e.seq < requests.get(key));
+  const priorInvite = e => !!piece && !piece.invitations.has(e.entryId);
+  const priorOpen = e => !!piece && !askedBefore(piece.opens, e.entryId, e);
+  const priorJoin = (e, requesterId = e.requesterId) => !!piece && !askedBefore(piece.joins, joinKey(e.entryId, requesterId), e);
+  // Invitation en attente ou duo accepté, venu d'une invitation, d'un duo
+  // ouvert ou d'une demande pour rejoindre de son invitée.
+  const priorDuo = (e, guestId) => priorInvite(e) && priorOpen(e) && priorJoin(e, guestId);
   for (const e of list) {
     const t = e.t;
-    if (!passive.test(e.ev) && e.by !== 'staff') for (const key of activityKeys) if (typeof e[key] === 'string') touch(e[key], t);
+    if (piece) {
+      if (isCarried(e)) { carriedState(e, t); continue; }
+      if (outsiders(e)) continue;
+    }
+    // Signe d'activité : les personnes que la ligne cite (citedIds), et le
+    // téléphone d'un signe de vie (person.seen) ; un geste du bar sur une
+    // personne (bonus, réglages de ses titres…) n'en est pas un. Passage sur
+    // scène et duo noté par le bar : plus bas, ids filtrés.
+    for (const id of presenceIds(e)) touch(id, t);
     switch (e.ev) {
-      case 'table.opened': { const tb = tableOf(e.tableId); tb.openedAt ??= t; tb.individual = !!e.individual || tb.individual; break; }
+      case 'table.opened': { if (!tableOk(e.tableId)) break; const tb = tableOf(e.tableId); tb.openedAt ??= t; tb.individual = individualOf(e) || tb.individual; break; }
       case 'table.left': {
-        const tb = tableOf(e.tableId); tb.leftAt = t;
+        if (tableOk(e.tableId)) tableOf(e.tableId).leftAt = t;
         for (const pid of Array.isArray(e.personIds) ? e.personIds : []) leave(people.get(pid), t, 'staff');
         break;
       }
       // Dernier niveau (affiché) et historique (pondération par le temps).
-      case 'table.bonus': { const tb = tableOf(e.tableId); tb.bonus = Number(e.level) || 0; tb.bonusLog.push([t, tb.bonus]); staff.bonus++; break; }
-      case 'person.bonus': { const p = personOf(e.personId, t); p.bonus = Number(e.level) || 0; p.bonusLog.push([t, p.bonus]); staff.bonus++; break; }
+      case 'table.bonus': { if (!tableOk(e.tableId)) break; const tb = tableOf(e.tableId); tb.bonus = Number(e.level) || 0; tb.bonusLog.push([t, tb.bonus]); staff.bonus++; break; }
+      // Une ligne qui ne nomme pas sa personne (personOf rend null) est
+      // ignorée (A7, champs de mauvais type).
+      case 'person.bonus': { const p = personOf(e.personId, t); if (!p) break; p.bonus = Number(e.level) || 0; p.bonusLog.push([t, p.bonus]); staff.bonus++; break; }
       case 'person.joined': {
         const p = personOf(e.personId, t);
+        if (!p) break;
         p.joinedAt = Math.min(p.joinedAt, t);
-        if (e.tableId != null) p.tableId = String(e.tableId);
-        if (p.tableId != null) tableOf(p.tableId);
+        if (namesTable(e)) p.tableId = String(e.tableId);
+        if (p.tableId != null && tableOk(p.tableId)) tableOf(p.tableId);
         break;
       }
       case 'person.left': leave(personOf(e.personId, t), t, e.by === 'staff' ? 'staff' : 'self'); break;
       case 'person.reactivated': {
         const p = personOf(e.personId, t);
-        if (p.openSince == null) p.openSince = t;
+        if (!p) break;
+        // Personne reportée que le bar réactive (A4) : sans départ noté avant
+        // dans le morceau, elle était partie avant la coupure, car le serveur
+        // ne note ce retour que pour une personne marquée partie. Sa présence
+        // part de son retour, comme dans le journal entier, et non de
+        // l'ouverture du karaoké (après un départ, elle n'en a déjà plus).
+        if (carriedPeople.delete(p.id) || p.openSince == null) p.openSince = t;
         p.explicitLeft = null;
         break;
       }
       case 'person.seen': break; // activité seulement
       case 'song.requested': {
         const p = personOf(e.personId, t);
+        if (!p) break;
         p.requests++;
         p.firstRequestAt ??= t;
         for (const old of Array.isArray(e.replacedEntryIds) ? e.replacedEntryIds : []) { dropEntry(p.id, old, t); retire(songs.get(old), t, 'self'); }
@@ -487,12 +731,23 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
         break;
       }
       case 'duo.answered': {
+        // Réponse à une invitation faite avant la coupure (A4) : sans
+        // invitation dans le morceau, ignorée dans ses duos ; elle cite quand
+        // même la personne qui répond.
+        if (priorInvite(e)) break;
         const s = songs.get(e.entryId);
         if (e.accepted) { duos.accepted++; const guest = e.partnerId || s?.partnerId; if (s && guest) s.guestSince.set(guest, t); }
         else { duos.declined++; if (s) { s.guestSince.delete(e.partnerId || s.partnerId); s.partnerId = null; } }
         break;
       }
-      case 'duo.cancelled': { const s = songs.get(e.entryId); if (s) { s.guestSince.delete(e.partnerId || s.partnerId); s.partnerId = null; } duos.cancelled++; break; }
+      // Invitation en attente ou duo accepté d'une demande de la veille (A4) :
+      // annulation ignorée dans les duos du morceau.
+      case 'duo.cancelled': {
+        if (priorDuo(e, e.partnerId)) break;
+        const s = songs.get(e.entryId); if (s) { s.guestSince.delete(e.partnerId || s.partnerId); s.partnerId = null; }
+        duos.cancelled++;
+        break;
+      }
       case 'duo.joinRequested': {
         duos.joinRequests++;
         const r = personOf(e.requesterId, t); if (r) r.joinRequests++;
@@ -500,6 +755,9 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
         break;
       }
       case 'duo.joinAnswered': {
+        // Réponse à une demande de la veille (A4) : ignorée, comme la réponse
+        // à une invitation.
+        if (priorJoin(e)) break;
         if (e.accepted) { duos.joinAccepted++; const s = songs.get(e.entryId); if (s) { s.partnerId = e.requesterId; s.guestSince.set(e.requesterId, t); } rejoin(e.entryId, e.requesterId); }
         else duos.joinDeclined++;
         break;
@@ -508,6 +766,8 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       // attend le duo dès qu'il le rejoint, comme l'invité d'un duo accepté.
       case 'duo.openRequested': duos.openRequests++; break;
       case 'duo.openAccepted': {
+        // Duo ouvert de la veille (A4) : ignoré, comme la réponse à une invitation.
+        if (priorOpen(e)) break;
         duos.openAccepted++;
         const guest = e.partnerId || e.personId;
         const s = songs.get(e.entryId);
@@ -515,17 +775,27 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
         if (guest) rejoin(e.entryId, guest);
         break;
       }
-      // Sans volontaire au départ du titre : il est parti en solo.
-      case 'duo.openExpired': duos.openExpired++; break;
-      case 'duo.openClosed': duos.openClosed++; break;
-      case 'duo.joinCancelled': duos.joinCancelled++; break;
-      case 'duo.joinExpired': duos.joinExpired++; break;
+      // Sans volontaire au départ du titre : il est parti en solo. Suites d'un
+      // duo ouvert ou d'une demande de la veille (A4) : ignorées.
+      case 'duo.openExpired': if (!priorOpen(e)) duos.openExpired++; break;
+      case 'duo.openClosed': if (!priorOpen(e)) duos.openClosed++; break;
+      case 'duo.joinCancelled': if (!priorJoin(e)) duos.joinCancelled++; break;
+      case 'duo.joinExpired': if (!priorJoin(e)) duos.joinExpired++; break;
       // Invitation sans réponse au départ du titre : il est parti en solo. Ni
-      // refusée ni annulée, elle n'est comptée qu'ici.
-      case 'duo.inviteExpired': { const s = songs.get(e.entryId); if (s) { s.guestSince.delete(e.partnerId || s.partnerId); s.partnerId = null; } duos.inviteExpired++; break; }
+      // refusée ni annulée, elle n'est comptée qu'ici. Invitation de la veille
+      // (A4) : ignorée.
+      case 'duo.inviteExpired': {
+        if (priorInvite(e)) break;
+        const s = songs.get(e.entryId); if (s) { s.guestSince.delete(e.partnerId || s.partnerId); s.partnerId = null; }
+        duos.inviteExpired++;
+        break;
+      }
       case 'duo.left': {
-        duos.left++;
         const guest = e.personId || e.partnerId || e.guestId;
+        // Invitée d'un duo d'une demande de la veille (A4) : son départ ne
+        // compte pas dans les duos du morceau, mais le passage, lui, ne la
+        // compte plus.
+        if (!priorDuo(e, guest)) duos.left++;
         const s = songs.get(e.entryId); if (s && s.partnerId === guest) s.partnerId = null;
         s?.guestSince.delete(guest);
         if (e.entryId && guest) {
@@ -575,18 +845,21 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'presence.asked':
         for (const pid of Array.isArray(e.personIds) ? e.personIds : []) {
           const p = personOf(pid, t);
+          if (!p) continue;
           p.presenceAsks++;
           if (!presenceAsked.has(pid)) presenceAsked.set(pid, t);
         }
         break;
       case 'presence.confirmed': {
         const p = personOf(e.personId, t);
+        if (!p) break;
         const asked = presenceAsked.get(p.id);
         if (asked != null) { p.presenceLatencies.push(t - asked); presenceAsked.delete(p.id); }
         break;
       }
       case 'presence.skipped': {
         const p = personOf(e.personId, t);
+        if (!p) break;
         p.presenceSkips++;
         if (e.removed) p.presenceRemoved++;
         presenceAsked.delete(p.id);
@@ -602,6 +875,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       case 'defer.requested': {
         const s = songs.get(e.entryId);
         const p = personOf(e.ownerId, t);
+        if (!p) break;
         p.deferrals++; p.deferSongs += Number(e.songs) || 1;
         if (s) { s.deferrals++; if (s.deferSince == null) s.deferSince = t; }
         break;
@@ -765,8 +1039,12 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   if (spotify.open) spotify.silences.push({ ...spotify.open, end: E1, ongoing: live });
 
   // Coupure de KaraFun « pour de bon » : pas de retour dans les 30 min (en
-  // direct, coupé depuis au moins 30 min).
-  const lasting = (ph, i) => (phases.slice(i + 1).find(next => next.blocker !== 'offline')?.start ?? (live ? E1 : Infinity)) - ph.start >= BLIP_MS;
+  // direct, coupé depuis au moins 30 min). Soirée close d'office (A5) : elle
+  // finit à C sans lire le retour daté après C (au morceau suivant pour un
+  // morceau découpé) ; une coupure encore ouverte à C n'est durable que si
+  // elle dure déjà 30 min à C, comme en direct, et comme l'arrêt de
+  // l'application dont seule la part d'avant C compte.
+  const lasting = (ph, i) => (phases.slice(i + 1).find(next => next.blocker !== 'offline')?.start ?? (live || C != null ? E1 : Infinity)) - ph.start >= BLIP_MS;
   // Première coupure pour de bon après `from` (et avant `until`).
   const lastingCut = (from, until = Infinity) =>
     phases.find((ph, k) => ph.blocker === 'offline' && ph.start > from && ph.start < until && lasting(ph, k));
@@ -817,7 +1095,11 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const resumeFrom = interruptions.length ? Math.max(...interruptions) : null;
   const connected = resumeFrom != null || phases[0]?.blocker === 'offline'
     ? phases.find(ph => ph.start >= (resumeFrom ?? -Infinity) && ph.blocker !== 'offline') : null;
-  const openedAt = Math.max(E0, Math.min(connected?.start ?? resumeFrom ?? E0, firstStageStart));
+  // Morceau (A4) : au plus tôt à sa première activité (A1, lignes reportées
+  // exclues), s'il en a une. La présence d'une personne reportée part de là,
+  // jamais de la coupure, même quand KaraFun est resté connecté depuis.
+  const firstActivity = piece ? own.find(isActivity)?.t ?? -Infinity : -Infinity;
+  const openedAt = Math.max(E0, Math.min(connected?.start ?? resumeFrom ?? E0, firstStageStart), firstActivity);
   // Fermeture du bar : heure de fermeture (ci-dessous), ou fin du dernier
   // titre s'il finit plus tard ; plus tôt, KaraFun déconnecté pour de bon ou
   // le PC éteint pendant ou après le dernier titre (en direct aussi, une fois
@@ -869,10 +1151,17 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   // après le début du dernier titre finit aussi la soirée. Même règle en
   // direct et une fois la soirée close.
   const offlineAfter = lastStageStart != null ? lastingCut(lastStageStart) : null;
-  const end = barClosed ? Math.max(lastStageEnd ?? -Infinity, closingFrom) : E1;
+  // Soirée close d'office (A5) qui a au moins un titre et aucune de ces trois
+  // fins : son karaoké finit à la fin de son dernier titre (plafonnée par
+  // MAX_SONG_SEC), jamais à C, le matin, ce qui compterait des heures de temps
+  // mort et d'attente quand KaraFun reste connecté toute la nuit. Le résumé la
+  // dit finie. Un morceau découpé dont l'arrêt de l'application n'est noté
+  // qu'au morceau suivant (app.started de la reprise) finit ainsi.
+  const officeEnd = C != null && stages.length > 0 && !barClosed && !offlineAfter && !appStop;
+  const end = barClosed ? Math.max(lastStageEnd ?? -Infinity, closingFrom) : officeEnd ? lastStageEnd : E1;
   const closedAt = Math.max(openedAt, Math.min(E1, end, offlineAfter?.start ?? Infinity, appStop?.[0] ?? Infinity));
   // En direct, un titre encore sur scène : le karaoké n'est pas fini.
-  const ended = !stages.some(st => st.ongoing) && (barClosed || !!offlineAfter || !!appStop);
+  const ended = !stages.some(st => st.ongoing) && (barClosed || !!offlineAfter || !!appStop || officeEnd);
   const inEvening = ([a, b, ...rest]) => [Math.max(a, openedAt), Math.min(b, closedAt), ...rest];
   // Demandes de l'équité : jusqu'à l'heure de fermeture une fois passée (après
   // elle, plus aucun titre ne part), même si le dernier titre finit plus tard.
@@ -882,7 +1171,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
   const eveningOffline = offline.map(inEvening).filter(([a, b]) => b > a);
   // Le redémarrage qui termine l'arrêt de la nuit (ouverture ancrée sur lui, en
   // direct tant que KaraFun n'est pas connecté) n'est pas un incident du karaoké.
-  const eveningRestarts = list.filter(e => e.ev === 'app.started' && e.restored && ((e.t > openedAt && e.t <= closedAt) ||
+  const eveningRestarts = own.filter(e => e.ev === 'app.started' && e.restored && ((e.t > openedAt && e.t <= closedAt) ||
     eveningOffline.some(([a, b]) => e.t - (e.offlineMs || 0) < b && e.t > a))).length;
   // Silences comblés par Spotify pendant le karaoké seulement : ni l'après-midi
   // avant la connexion de KaraFun, ni la nuit après la fermeture.
@@ -1187,7 +1476,7 @@ function computeStats({ meta = {}, events = [], now = Date.now(), live = false }
       hourly,
       closingAt: closing.closingAt,
     },
-    quality: { events: list.length, other, offlineSec: sec(sum(offline.map(([a, b]) => b - a))), restarts,
+    quality: { events: own.length, other, offlineSec: sec(sum(offline.map(([a, b]) => b - a))), restarts,
       missing: [!phases.length && stages.length > 1 ? 'karaoke.phase' : null, !samples.length ? 'queue.sample' : null].filter(Boolean) },
     definitions: DEFINITIONS,
   };
@@ -1256,10 +1545,20 @@ function insights(stats, { nameOf = id => id, tableName = id => id } = {}) {
 // --------------------------------------------------------------- export
 // Identifiants des personnes remplacés par S01, S02… (ordre d'arrivée) et
 // des tables par T1, T2… Les prénoms ne sont joints qu'avec `names`.
-function pseudonyms(meta, stats) {
+function pseudonyms(meta, stats, events = []) {
   const people = new Map(), tables = new Map();
   const order = [...stats.singers].sort((a, b) => a.joinedAt - b.joinedAt).map(s => s.id);
   for (const id of Object.keys(meta.roster || {})) if (!order.includes(id)) order.push(id);
+  // Puis toute personne nommée par une ligne sans être parmi les chanteurs
+  // ni dans meta.roster (A4 : celles de la veille qu'un morceau ne crée pas),
+  // dans l'ordre des lignes : aucun identifiant interne ne sort de l'export.
+  // Un journal d'aujourd'hui n'en a aucune : il nomme les personnes de son
+  // meta.roster.
+  const keyed = new Set(order);
+  for (const e of events) {
+    if (!e || typeof e !== 'object') continue;
+    for (const id of namedIds(e)) if (!keyed.has(id)) { keyed.add(id); order.push(id); }
+  }
   order.forEach((id, i) => people.set(id, `S${String(i + 1).padStart(2, '0')}`));
   const tableOrder = stats.tables.map(tb => tb.id);
   for (const id of Object.keys(meta.tables || {})) if (!tableOrder.includes(id)) tableOrder.push(id);
@@ -1283,7 +1582,7 @@ function mapIds(value, maps, key = '') {
 
 function exportEvening({ meta = {}, events = [], now = Date.now(), live = false, names = false, app = null } = {}) {
   const stats = computeStats({ meta, events, now, live });
-  const maps = pseudonyms(meta, stats);
+  const maps = pseudonyms(meta, stats, events);
   const roster = meta.roster || {}, tableMeta = meta.tables || {};
   const nameOf = id => names ? roster[id]?.name || maps.people.get(id) || '?' : maps.people.get(id) || '?';
   const tableName = id => names ? tableMeta[id]?.name || maps.tables.get(String(id)) || '?' : maps.tables.get(String(id)) || '?';
@@ -1308,4 +1607,4 @@ function exportEvening({ meta = {}, events = [], now = Date.now(), live = false,
   };
 }
 
-module.exports = { computeStats, insights, exportEvening, jain, median, duration, CAUSES, DEFINITIONS, FORMAT };
+module.exports = { computeStats, citedIds, insights, exportEvening, jain, median, duration, CAUSES, DEFINITIONS, FORMAT };

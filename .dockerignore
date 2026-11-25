@@ -13,7 +13,9 @@
 !server-update.js
 !battle-vote.js
 !catalog.js
+!evening-bounds.js
 !evening-journal.js
+!evening-split.js
 !evening-stats.js
 !fake-karafun.js
 !karafun-state.js

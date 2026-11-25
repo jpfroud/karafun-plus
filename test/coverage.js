@@ -26,7 +26,7 @@ const minLines = option('--min-lines') == null ? null : Number(option('--min-lin
 if (minLines != null && !(minLines >= 0 && minLines <= 100)) throw new Error('--min-lines attend un pourcentage.');
 
 // Fichiers mesurés : le code livré dans le kit du bar.
-const SOURCES = ['battle-vote.js', 'catalog.js', 'evening-journal.js', 'evening-stats.js', 'fake-karafun.js', 'karafun-state.js', 'karafun.js',
+const SOURCES = ['battle-vote.js', 'catalog.js', 'evening-bounds.js', 'evening-journal.js', 'evening-split.js', 'evening-stats.js', 'fake-karafun.js', 'karafun-state.js', 'karafun.js',
   'kcs-transport.js', 'lyrics.js', 'night-state.js', 'scheduler.js', 'lib/scheduler/common.js', 'lib/scheduler/duets.js', 'lib/scheduler/presence.js', 'lib/scheduler/staff.js', 'lib/scheduler/solver.js', 'lib/scheduler/rotation.js', 'lib/scheduler/passages.js', 'server.js', 'solo-invitations.js', 'private-event.js',
   'server-update.js', 'song-repeats.js', 'song-settings.js', 'spotify.js', 'stage-progress.js', 'start-evening.js', 'stop.js', 'table-access.js', 'solver/bridge.js', 'tools/diag-karafun.js',
   'public/client-i18n.js', 'public/client.html', 'public/staff.html', 'public/stats.html'];
