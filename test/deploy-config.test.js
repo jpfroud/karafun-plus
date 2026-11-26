@@ -80,18 +80,35 @@ test('D1 Dockerfile et contrat', () => {
     assert.ok(cleanup.includes(removed), `${removed} retiré de l’image d’exécution`);
   }
 
-  // Mise à niveau de zlib1g (SECURITY.md) : construction refusée si l'image de base
-  // a déjà le correctif (retirer l'étape), et version vérifiée après coup (un miroir de
-  // Debian en retard laisserait sinon l'ancienne sans erreur).
-  const zlib = inStage(finalStage, 'RUN').map(i => i.args).find(args => /--only-upgrade zlib1g/.test(args));
-  if (zlib) {
-    const corrige = /\bcorrige=(\S+)/.exec(zlib)?.[1];
-    assert.ok(corrige, 'version corrigée de zlib1g nommée dans l’étape');
-    assert.match(zlib, /if dpkg --compare-versions [\s\S]*? ge "\$corrige"; then [\s\S]*?retirer cette étape[\s\S]*?exit 1/,
-      'base déjà corrigée : construction refusée');
-    assert.match(zlib, /--only-upgrade zlib1g[\s\S]*if ! dpkg --compare-versions [\s\S]*? ge "\$corrige"; then [\s\S]*?exit 1/,
-      'version vérifiée après la mise à niveau');
-    assert.ok(read('SECURITY.md').includes(corrige), 'SECURITY.md cite la même version de zlib1g');
+  // Mises à niveau ciblées de paquets Debian (SECURITY.md) : une étape par paquet et
+  // une seule mise à niveau par étape. Avant elle, la construction s'arrête si l'image
+  // de base a déjà le correctif (retirer l'étape) ; après, si la version installée ne
+  // l'a pas (un miroir de Debian en retard laisserait sinon l'ancienne sans erreur).
+  // Chaque garde lit la version de ce même paquet et s'arrête elle-même par exit 1 ;
+  // les listes d'apt ne restent pas dans l'image. L'en-tête du Dockerfile vaut pour
+  // toutes ces étapes : il ne nomme aucun de leurs paquets.
+  const GARDE_AVANT = /if dpkg --compare-versions "\$\(dpkg-query -W -f='\$\{Version\}' ([^\s)]+)\)" ge "\$corrige"; then ([^;]*); exit 1; fi/g;
+  const GARDE_APRES = /if ! dpkg --compare-versions "\$\(dpkg-query -W -f='\$\{Version\}' ([^\s)]+)\)" ge "\$corrige"; then ([^;]*); exit 1; fi/g;
+  const enTete = read('Dockerfile').split(/^FROM /m)[0];
+  for (const etape of inStage(finalStage, 'RUN').map(i => i.args).filter(args => /--only-upgrade\b/.test(args))) {
+    const mises = [...etape.matchAll(/--only-upgrade((?:\s+[a-z0-9][a-z0-9+.:-]*)+)/g)];
+    assert.equal(mises.length, 1, `une seule mise à niveau --only-upgrade par étape : ${etape}`);
+    const paquets = mises[0][1].trim().split(/\s+/);
+    assert.equal(paquets.length, 1, `un seul paquet par étape --only-upgrade : ${paquets.join(' ')}`);
+    const [paquet] = paquets;
+    const corrige = /\bcorrige=(\S+)/.exec(etape)?.[1];
+    assert.ok(corrige, `version corrigée de ${paquet} nommée dans l’étape`);
+    const avant = [...etape.matchAll(GARDE_AVANT)];
+    const apres = [...etape.matchAll(GARDE_APRES)];
+    assert.equal(avant.length, 1, `${paquet} : une garde « base déjà corrigée » qui s'arrête par exit 1`);
+    assert.equal(apres.length, 1, `${paquet} : une vérification après la mise à niveau qui s'arrête par exit 1`);
+    assert.deepEqual([avant[0][1], apres[0][1]], [paquet, paquet], `${paquet} : les deux gardes lisent la version de ce paquet`);
+    assert.match(avant[0][2], /retirer cette étape/, `${paquet} : base déjà corrigée, construction refusée`);
+    assert.ok(avant[0].index < mises[0].index && mises[0].index < apres[0].index,
+      `${paquet} : garde, mise à niveau, puis vérification, dans cet ordre`);
+    assert.match(etape, /apt-get update[\s\S]*rm -rf \/var\/lib\/apt\/lists\/\*/, `${paquet} : listes d'apt retirées de l'image`);
+    assert.ok(read('SECURITY.md').includes(corrige), `SECURITY.md cite la même version de ${paquet}`);
+    assert.ok(!enTete.includes(paquet), `l'en-tête du Dockerfile ne nomme pas ${paquet} : il vaut pour toutes les mises à niveau ciblées`);
   }
 
   // Environnement de l'image : exactement ces cinq variables, aucune URL ni clé.

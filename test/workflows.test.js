@@ -830,6 +830,6 @@ test('W11 une montée de version change tout le dépôt d’un seul tenant', () 
     tag(file, text);
   }
   // SECURITY.md garde des versions écartées (« Node 25 et Java 26 », #48 à #50) : seule l'étiquette
-  // de l'image y est suivie (correctif de zlib).
+  // de l'image y est suivie (correctifs de zlib et de zstd).
   tag('SECURITY.md', read('SECURITY.md'));
 });
