@@ -1,0 +1,71 @@
+{
+  "$schema": "https://github.com/garrytan/gstack/docs/pregate.md#pregate-v1",
+  "runner": "node test/run-files.js {files}",
+  "dependencies": {
+    ".codex/hooks.json": [
+      "test/gstack-hook.test.ps1"
+    ],
+    ".codex/hooks/**": [
+      "test/gstack-hook.test.ps1"
+    ],
+    ".claude/hooks/gstack-gate.js": [
+      "test/gstack-gate.test.js"
+    ],
+    ".claude/hooks/pre-push": [
+      "test/gstack-gate.test.js",
+      "test/gstack-session-hook.test.sh"
+    ],
+    ".claude/hooks/*.sh": [
+      "test/gstack-session-hook.test.sh"
+    ],
+    ".claude/settings.json": [
+      "test/gstack-session-hook.test.sh",
+      "test/gstack-gate.test.js"
+    ],
+    "test/gstack-session-hook.test.sh": [
+      "test/gstack-session-hook.test.sh"
+    ],
+    "test/run-files.js": [
+      "test/run-files.test.js"
+    ],
+    "ARRETER.bat": [
+      "test/cli-persistence.test.js"
+    ],
+    "DEMARRER.bat": [
+      "test/cli-persistence.test.js"
+    ],
+    "DEMO.bat": [],
+    "CREER-LANCEUR.ps1": [],
+    "KIT-BAR-LISEZMOI.txt": [],
+    "launcher/**": [],
+    "test/check-inline.js": [
+      "test/check-inline.js"
+    ],
+    "test/sim-night.js": [
+      "test/sim-night.js"
+    ],
+    "test/fixtures/sauvegarde-chemins-*.json": [
+      "test/night-state-versions.test.js"
+    ],
+    "test/update-agent.test.py": [
+      "test/update-agent.test.js"
+    ],
+    "test/verifier-image.sh": [],
+    "test/verify-portable-kit.ps1": [],
+    "test/portable-solver-smoke.js": [],
+    "test/autoriser-reseau.ps1": [],
+    "test/duo-reel.js": [],
+    "test/rotation-reel.js": [],
+    "test/real-skip-list.js": [],
+    "test/verif-karafun.js": [],
+    "test/probe-kcs.js": [],
+    "test/timefold-budget-benchmark.js": [],
+    "test/ui-fixture.js": []
+  },
+  "empty_lanes": [],
+  "selection": {},
+  "warn": [],
+  "strays": {
+    "allow": []
+  }
+}

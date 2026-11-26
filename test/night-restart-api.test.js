@@ -11,6 +11,7 @@ const path = require('node:path');
 const root = path.join(__dirname, '..');
 const { NightStateStore } = require('../night-state');
 const { parseLines } = require('../evening-journal');
+const { apresHuitHeures, dureeApresHuitHeures } = require('./server-mode-startup.test');
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'karafun-api-restart-'));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -46,6 +47,10 @@ async function exited(child) {
 }
 
 async function main() {
+  // Premier geste du fichier (règles transversales) : aucune fin de soirée
+  // pendant les copies, lancées hors démo à l'heure réelle avec des tables.
+  await apresHuitHeures();
+  const debut = Date.now();
   for (const name of fs.readdirSync(root).filter(name => name.endsWith('.js'))) {
     fs.copyFileSync(path.join(root, name), path.join(sandbox, name));
   }
@@ -422,13 +427,18 @@ NightStateStore.prototype.save = function(snapshot, options) {
       const serverLog = () => fs.readdirSync(path.join(sandbox, 'journal')).filter(name => name.startsWith('serveur-'))
         .map(name => fs.readFileSync(path.join(sandbox, 'journal', name), 'utf8')).join('');
       const exitOf = child => new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal, at: Date.now() })));
-      // Fichier d'arrêt écrit (fin du démarrage) avant d'envoyer le signal.
+      // Fichier d'arrêt écrit (fin du démarrage) avant d'envoyer le signal :
+      // sa seconde écriture, sans starting (A3).
       const started = async child => {
         for (let i = 0; i < 50; i++) {
-          try { if (JSON.parse(fs.readFileSync(runtimeFile, 'utf8')).pid === child.pid) return; } catch (_) { /* pas encore écrit */ }
+          try {
+            const runtime = JSON.parse(fs.readFileSync(runtimeFile, 'utf8'));
+            if (runtime.pid === child.pid && runtime.starting === undefined) return;
+          } catch (_) { /* pas encore écrit */ }
           await sleep(100);
         }
-        assert.fail('fichier d’arrêt du serveur temporaire absent');
+        // gstack-timing-ok: attente bornée (50 × 100 ms) de la seconde écriture du fichier d'arrêt ; l'essai vérifie l'état du fichier, pas une durée.
+        assert.fail('fichier d’arrêt du serveur temporaire absent, ou encore à starting');
       };
       const portReleased = async () => {
         for (let i = 0; i < 30 && !(await portFree(port)); i++) await sleep(100);
@@ -474,6 +484,7 @@ NightStateStore.prototype.save = function(snapshot, options) {
       assert.ok(!fs.existsSync(runtimeFile));
       console.log('ok - arrêt par SIGTERM, SIGINT et SIGHUP : code 0, app.stopped noté, soirée et QR repris');
     }
+    console.log(`ok - ${dureeApresHuitHeures(debut, 'night-restart-api')}`);
   } finally {
     for (const child of children) {
       if (child.exitCode === null && child.signalCode === null) { child.kill(); await exited(child); }

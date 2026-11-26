@@ -69,11 +69,13 @@ function fakeNightStore() {
 
 // `persistent` : serveur réel (sans --demo), faux magasin de soirée, sans Java.
 // `server` : --server et les adresses HTTPS d'essai (clé dans KEY_FILE).
+// `disque` : disque en mémoire de la réparation (test/disque-memoire.js), à la
+// place du disque simple, et la soirée ouverte par l'essai (startNight).
 // Aucune variable KARAOKE_* héritée dans les deux cas.
-function harness({ persistent = false, server = false } = {}) {
+function harness({ persistent = false, server = false, disque = null } = {}) {
   const entry = source.lastIndexOf('main().catch(');
   assert.ok(entry > 0, 'point d’entrée du serveur introuvable');
-  const memory = memoryDisk();
+  const memory = disque ? { disk: new Map(), memFs: disque.fs } : memoryDisk();
   const night = fakeNightStore();
   const overrides = persistent ? {
     './night-state': { ...fromServer('./night-state'), NightStateStore: night.Store },
@@ -84,6 +86,12 @@ function harness({ persistent = false, server = false } = {}) {
     './spotify': (() => {
       const real = fromServer('./spotify');
       return { ...real, SpotifyLink: class extends real.SpotifyLink { constructor(o) { super({ ...o, file: null }); } } };
+    })(),
+    // Disque en mémoire : platform linux, comme chaque essai de la
+    // réparation (le job Windows de la CI lance toute la suite).
+    './evening-journal': (() => {
+      const real = fromServer('./evening-journal');
+      return { ...real, EveningJournal: class extends real.EveningJournal { constructor(o) { super({ ...o, platform: 'linux' }); } } };
     })(),
   } : {};
   const exits = [];
@@ -100,11 +108,13 @@ function harness({ persistent = false, server = false } = {}) {
   vm.runInNewContext(source.slice(0, entry) + `
     globalThis.fixture = { sched, journal, saveNight, STAFF_KEY, STOP_KEY, PORT, PUBLIC_PORT,
       handle: server.listeners('request')[0], stopHelper, readiness,
+      startNight: typeof startNight === 'function' ? startNight : undefined,
+      repairClosedEvenings: typeof repairClosedEvenings === 'function' ? repairClosedEvenings : undefined,
       setBridge: value => { bridge = value; }, setCode: value => { CODE = value; } };
   `, context, { filename: 'server.js' });
   assert.deepEqual(exits, [], 'le bac à sable démarre sans process.exit');
   const f = context.fixture;
-  f.journal.start({});
+  if (!disque) f.journal.start({});
   return Object.assign(f, { night: night.control, memory, exits, lines });
 }
 
@@ -358,4 +368,67 @@ test('H9 ARRETER.bat : réponse d’abord, puis un seul app.stopped « stop » a
   // gstack-timing-ok: minuteur de 150 ms, qui ne part jamais plus tôt ; un arrêt immédiat serait noté avant 145 ms.
   assert.ok(stopped[0].t - start >= 145, `arrêt noté ${stopped[0].t - start} ms après la demande`);
   assert.ok(f.lines.includes('Arrêt de la file karaoké demandé par le bar.'));
+});
+
+// Plan du 8 novembre, A4 : la passe des soirées closes ne commence aucune
+// soirée une fois l'arrêt demandé (shuttingDown) ; celle qu'elle répare finit
+// (un bloc synchrone), les autres sont reprises au prochain démarrage.
+test('A4 : passe des soirées closes arrêtée par stopHelper(\'SIGTERM\') après sa première soirée : la seconde n’est pas réparée, son entrée de .bornage.json ne change pas', async () => {
+  const { disqueMemoire } = require('./disque-memoire');
+  const disque = disqueMemoire({ racine: root, enMemoire: ['data', 'journal'] });
+  const MIN = 60000, DAY = 24 * 60 * MIN;
+  // Deux nuits mêlées, closes par le bar : la coupure tombe à 8 h.
+  const archive = id => {
+    const start = Date.parse('2026-10-20T20:00:00+02:00');
+    const events = [];
+    const add = (t, ev, fields) => events.push({ ...fields, v: 1, seq: events.length + 1, t, ev, boot: 'b' });
+    add(start - 30 * MIN, 'evening.started', { rules: {} });
+    for (const k of [0, 1]) {
+      const t0 = start + k * DAY, pid = `p${k}`;
+      add(t0, 'table.opened', { tableId: `T${k}`, individual: false });
+      add(t0 + MIN, 'person.joined', { personId: pid, tableId: `T${k}` });
+      add(t0 + 5 * MIN, 'song.requested', { personId: pid, entryId: `e${k}`, songId: 100 + k, title: 'Titre' });
+      add(t0 + 10 * MIN, 'stage.started', { queueId: k + 1, ids: [pid], ownerId: pid, entryId: `e${k}`, durationSec: 200 });
+      add(t0 + 14 * MIN, 'stage.ended', { queueId: k + 1, playedSec: 240 });
+    }
+    const endedAt = events.at(-1).t + 5 * MIN;
+    add(endedAt, 'evening.closed', { by: 'staff-reset' });
+    disque.ecrire(`data/soirees/${id}/meta.json`, JSON.stringify({ format: 'karaoke-evening-meta', version: 1, eveningId: id,
+      startedAt: start - 30 * MIN, endedAt, timezone: 'Europe/Paris',
+      roster: { p0: { name: 'Prénom 0', tableId: 'T0' }, p1: { name: 'Prénom 1', tableId: 'T1' } },
+      tables: { T0: { name: 'Table 0', individual: false }, T1: { name: 'Table 1', individual: false } } }));
+    disque.ecrire(`data/soirees/${id}/journal.jsonl`, events.map(e => JSON.stringify(e)).join('\n') + '\n');
+  };
+  const FIRST = '2026-10-20_1930_aaaa', SECOND = '2026-10-21_1930_bbbb';
+  archive(FIRST);
+  archive(SECOND);
+  // La seconde attendait déjà une reprise (retry d'un démarrage précédent).
+  const waiting = { status: 'retry', attempts: 1, code: 'EBUSY', version: 'v3.5.0' };
+  disque.ecrire('data/soirees/.bornage.json', JSON.stringify({ rule: 'v1', checked: { [SECOND]: waiting } }) + '\n');
+  const second = disque.contenus(`data/soirees/${SECOND}`);
+  const f = harness({ persistent: true, disque });
+  f.startNight();
+  const repaired = [];
+  const repair = f.journal.repair.bind(f.journal);
+  f.journal.repair = options => {
+    const result = repair(options);
+    repaired.push([options.id, result.status]);
+    if (repaired.length === 1) f.stopHelper('SIGTERM');
+    return result;
+  };
+  const counts = await f.repairClosedEvenings();
+  assert.equal(counts, null, 'passe arrêtée avant sa fin');
+  assert.deepEqual(repaired, [[FIRST, 'split']], 'une seule soirée réparée');
+  const index = JSON.parse(disque.lire('data/soirees/.bornage.json')).checked;
+  assert.equal(index[FIRST], 'split');
+  assert.deepEqual(index[SECOND], waiting, 'entrée de la seconde inchangée');
+  assert.deepEqual(disque.contenus(`data/soirees/${SECOND}`), second, 'seconde soirée intacte');
+  assert.equal(disque.fichiers(`data/soirees-originales/${SECOND}`).length, 0, 'aucune copie de la seconde');
+  const log = disque.contenus('journal');
+  const text = [...log.values()].join('');
+  assert.ok(text.includes(' Arrêt de la file karaoké (signal SIGTERM).\n'), 'arrêt au journal du serveur');
+  assert.ok(!text.includes('Réparation des soirées closes terminée'), 'aucune ligne de fin : la passe ne s’est pas terminée');
+  // gstack-timing-ok: le minuteur de sortie (500 ms) est armé par stopHelper avant cette attente de 700 ms.
+  await sleep(700);
+  assert.deepEqual(f.exits.map(exit => exit.code), [0]);
 });

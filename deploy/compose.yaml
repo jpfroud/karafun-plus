@@ -6,6 +6,8 @@
 #   puis docker compose restart app
 # Diagnostic KaraFun : docker run --rm ghcr.io/jpfroud/karafun-plus:<version> node tools/diag-karafun.js <code>
 # Arrêt (la soirée est enregistrée) : docker compose stop app
+# Réparation des soirées coupée, à la demande du mainteneur : KARAOKE_REPAIR=off
+#   dans .env, jamais dans .env.example (DEPLOIEMENT-SERVEUR.md, section 18)
 # Jamais « docker compose run app » sans commande : ce serait un second serveur.
 name: karafun-plus
 
@@ -68,6 +70,7 @@ services:
       KARAOKE_PUBLIC_URL: ${KARAOKE_PUBLIC_URL:?à renseigner dans deploy/.env}
       KARAOKE_STAFF_URL: ${KARAOKE_STAFF_URL:?à renseigner dans deploy/.env}
       KARAOKE_UPDATE_DIR: ${KARAOKE_UPDATE_DIR:-}
+      KARAOKE_REPAIR: ${KARAOKE_REPAIR:-}
     volumes:
       - karafun-data:/app/data
       - karafun-journal:/app/journal

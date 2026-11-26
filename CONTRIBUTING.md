@@ -14,8 +14,17 @@ donne l'essentiel pour ouvrir une PR.
 
 1. Partir de `main` à jour, sur une branche à part.
 2. Ajouter un test de régression pour chaque défaut corrigé ou cas nouveau.
-3. Lancer la suite hors ligne : `node test/run-offline.js`, et consigner le
-   résultat et ses limites dans `RAPPORT-TEST.md`.
+3. Lancer la suite hors ligne, `node test/run-offline.js`, qui dure plusieurs
+   minutes : en arrière-plan, sa sortie dans un fichier, quand une commande au
+   premier plan s'arrête à 10 min (terminal d'un agent). Vérifier d'abord
+   Playwright et Chromium (étape « Verifier que les mesures en navigateur
+   tourneront » de `.github/workflows/ci.yml`) et le jar du solveur
+   (« Préparer le poste ») : sans eux, la suite reste verte en sautant des
+   essais. Elle est finie à son code de sortie et à sa dernière ligne : code 0
+   et « T1 et recette approfondie hors ligne OK ». Sinon, corriger le premier
+   fichier en échec, le relancer seul (`node test/<fichier>`), puis relancer
+   toute la suite. Consigner dans `RAPPORT-TEST.md` le résultat, sa durée, les
+   essais ignorés et les limites.
 4. Pour un changement de la rotation ou des temps d'attente (choix du passage,
    tours, dettes, duos, présences, Timefold, statistiques d'attente), joindre
    le bilan avant/après d'une vraie soirée :

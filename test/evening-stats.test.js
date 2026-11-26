@@ -1805,3 +1805,982 @@ test('attentes : coupures, temps sans titre et « Pas prêt » comme la rotation
     'b1 0 à 10, invitée de a1 depuis la fin de b1 (14 à 20), b2 demandé à 30 sans titre entre-temps');
   assert.equal(singerOf(cross, 'p').stageWaits.n, 1, 'p noté par le bar sur b2 sans titre en liste : aucune attente');
 });
+
+// ------------------------------------------------------- A7 : statistiques figées
+// Règle « Rotation » → « Statistiques figées » : le rejeu mesure les deux côtés
+// avec l'evening-stats.js de la branche et ne voit pas un changement de
+// computeStats. computeStats et exportEvening de la version de travail, sur la
+// soirée du 15 octobre, sont donc comparés champ par champ à ceux de 1c15d72
+// (test/fixtures/soiree-2026-10-15-resume.json, écrit par test/figer-resume.js),
+// avec les mêmes meta et now (metaOf et NOW du script), sous TZ=Europe/Paris
+// réglé puis rendu comme dans fuseau.test.js.
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const figer = require('./figer-resume');
+
+// Champs nouveaux de computeStats ou d'exportEvening, absents de 1c15d72 :
+// chemin depuis « stats. » ou « export. », « [] » pour tout élément d'une
+// liste (par exemple 'stats.singers[].reported').
+const NOUVEAUX_CHAMPS = [];
+
+const ORIGINAL_TZ = process.env.TZ;
+const ORIGINAL_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+// Exécute `run` sous le fuseau `zone`, puis rend la valeur d'origine de TZ
+// (copie de fuseau.test.js, qui n'exporte rien).
+function inZone(zone, run) {
+  process.env.TZ = zone;
+  try {
+    assert.equal(Intl.DateTimeFormat().resolvedOptions().timeZone, zone, `fuseau ${zone} pris en compte`);
+    return run();
+  } finally {
+    if (ORIGINAL_TZ === undefined) { process.env.TZ = ORIGINAL_ZONE; delete process.env.TZ; }
+    else process.env.TZ = ORIGINAL_TZ;
+  }
+}
+function assertRestored() {
+  assert.equal(process.env.TZ, ORIGINAL_TZ, 'TZ d’origine rendue');
+  assert.equal(Intl.DateTimeFormat().resolvedOptions().timeZone, ORIGINAL_ZONE, 'fuseau d’origine rendu');
+}
+
+const ABSENT = Symbol('absent');
+const newField = p => {
+  const general = p.replace(/\[\d+\]/g, '[]');
+  return NOUVEAUX_CHAMPS.some(f => general === f || general.startsWith(`${f}.`) || general.startsWith(`${f}[`));
+};
+// Écarts entre la version de travail et le fichier figé, dans l'ordre des
+// champs ; un champ présent seulement aujourd'hui n'en est pas un s'il est
+// nommé dans NOUVEAUX_CHAMPS.
+function frozenDifferences(actual, frozen, at, found = []) {
+  const object = v => v !== null && typeof v === 'object';
+  if (object(actual) && object(frozen) && Array.isArray(actual) === Array.isArray(frozen)) {
+    const list = Array.isArray(actual);
+    const keys = list ? [...Array(Math.max(actual.length, frozen.length)).keys()]
+      : [...new Set([...Object.keys(frozen), ...Object.keys(actual)])];
+    for (const k of keys) {
+      const p = list ? `${at}[${k}]` : `${at}.${k}`;
+      const now = list ? k < actual.length : Object.hasOwn(actual, k);
+      const then = list ? k < frozen.length : Object.hasOwn(frozen, k);
+      if (now && !then) { if (!newField(p)) found.push({ path: p, actual: actual[k], frozen: ABSENT }); }
+      else if (!now) found.push({ path: p, actual: ABSENT, frozen: frozen[k] });
+      else frozenDifferences(actual[k], frozen[k], p, found);
+    }
+  } else if (!Object.is(actual, frozen)) found.push({ path: at, actual, frozen });
+  return found;
+}
+const shown = value => {
+  if (value === ABSENT) return 'absent';
+  const text = JSON.stringify(value);
+  return text.length > 120 ? `${text.slice(0, 117)}…` : text;
+};
+
+test('A7 : statistiques figées : computeStats et exportEvening égaux à ceux de 1c15d72 sur la soirée du 15 octobre', () => {
+  const file = path.relative(path.join(__dirname, '..'), figer.RESUME).split(path.sep).join('/');
+  assert.ok(fs.existsSync(figer.RESUME), `${file} absent : node test/figer-resume.js --ecrire`);
+  const frozen = JSON.parse(fs.readFileSync(figer.RESUME, 'utf8'));
+  assert.deepEqual(frozen.source, { commit: '1c15d72', module: 'evening-stats.js', fixture: 'test/fixtures/soiree-2026-10-15-anonyme.json',
+    timeZone: 'Europe/Paris', now: figer.NOW, live: false }, 'fichier figé écrit par test/figer-resume.js');
+  assert.equal(figer.NOW, 1792103188419, 'now : heure de la dernière ligne de la fixture, le 16 octobre à 00:26:28 à Paris');
+  const exported = JSON.parse(fs.readFileSync(figer.FIXTURE, 'utf8'));
+  const meta = figer.metaOf(exported);
+  const current = inZone('Europe/Paris', () => ({
+    stats: computeStats({ meta, events: exported.events, now: figer.NOW, live: false }),
+    export: exportEvening({ meta, events: exported.events, now: figer.NOW, live: false }),
+  }));
+  assertRestored();
+  // Même forme que le fichier figé (undefined retiré, NaN en null).
+  const actual = JSON.parse(JSON.stringify(current));
+  const found = [
+    ...frozenDifferences(actual.stats, frozen.stats, 'stats'),
+    ...frozenDifferences(actual.export, frozen.export, 'export'),
+  ];
+  if (!found.length) return;
+  const [first, ...others] = found;
+  assert.fail(`Statistiques figées : ${first.path} vaut ${shown(first.actual)}, ${shown(first.frozen)} avec 1c15d72 (${file}). ` +
+    'Champ nouveau : nomme-le dans NOUVEAUX_CHAMPS (evening-stats.test.js) ; sinon computeStats a changé sur une soirée ' +
+    'sans coupure ni déplacement : c\'est un défaut (règle « Rotation »).' +
+    (others.length ? `\nAutres écarts (${others.length}) : ${others.slice(0, 9).map(d => `${d.path} vaut ${shown(d.actual)}, ` +
+      `${shown(d.frozen)} avec 1c15d72`).join(' ; ')}${others.length > 9 ? ' ; …' : ''}.` : ''));
+});
+
+// main(argv) de test/figer-resume.js, sans 1c15d72 : la CI clone sans historique.
+const capture = () => {
+  const lines = { out: [], err: [] };
+  return { lines, io: { out: line => lines.out.push(line), err: line => lines.err.push(line) } };
+};
+
+test('A7 : figer-resume.js : --aide, option fausse, et --ecrire refusé sur le fichier figé, sans le réécrire ni lire 1c15d72', () => {
+  const help = capture();
+  assert.equal(figer.main(['--aide'], help.io), 0);
+  assert.match(help.lines.out.join('\n'), /^Usage : node test\/figer-resume\.js --ecrire/);
+  for (const argv of [['-h'], ['--help']]) assert.equal(figer.main(argv, capture().io), 0, argv[0]);
+
+  const wrong = capture();
+  assert.equal(figer.main(['--x'], wrong.io), 2);
+  assert.match(wrong.lines.err.join('\n'), /^Option inconnue : --x\n\nUsage : node test\/figer-resume\.js/);
+  assert.equal(figer.main([], capture().io), 2, 'sans --ecrire : l’usage et 2');
+
+  const before = fs.readFileSync(figer.RESUME);
+  const refused = capture();
+  let reads = 0;
+  assert.equal(figer.main(['--ecrire'], { ...refused.io, gitShow: () => { reads++; return ''; } }), 1);
+  assert.deepEqual(refused.lines.err, ['soiree-2026-10-15-resume.json existe déjà : efface-le d\'abord pour le refaire.']);
+  assert.equal(reads, 0, 'refus avant toute lecture de 1c15d72');
+  assert.ok(fs.readFileSync(figer.RESUME).equals(before), 'fichier figé inchangé, octet pour octet');
+  // Le vrai chemin, sans rien injecter : même refus, même dans un clone sans 1c15d72.
+  const real = capture();
+  assert.equal(figer.main(['--ecrire'], real.io), 1);
+  assert.deepEqual(real.lines.err, refused.lines.err);
+  assert.ok(fs.readFileSync(figer.RESUME).equals(before));
+});
+
+test('A7 : figer-resume.js : TZ=Europe/Paris réglée par le script puis rendue, module sans dépendance, 1c15d72 absent, copie sans dépôt git', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'figer-resume-'));
+  try {
+    // Module de remplacement qui relève ce qu'il reçoit.
+    const probe = `'use strict';
+      module.exports = {
+        computeStats: ({ meta, events, now, live }) => ({ zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          eveningId: meta.eveningId, timezone: meta.timezone, roster: meta.roster, tables: meta.tables, events: events.length, now, live }),
+        exportEvening: ({ now, live }) => ({ exportedAt: now, live }),
+      };`;
+    const outFile = path.join(dir, 'resume.json');
+    const written = capture();
+    assert.equal(figer.main(['--ecrire'], { ...written.io, gitShow: () => probe, outFile }), 0, written.lines.err.join('\n'));
+    assertRestored();
+    assert.equal(written.lines.out.length, 1);
+    const data = JSON.parse(fs.readFileSync(outFile, 'utf8'));
+    assert.equal(data.stats.zone, 'Europe/Paris', 'calcul sous TZ=Europe/Paris');
+    assert.deepEqual([data.stats.eveningId, data.stats.timezone, data.stats.events, data.stats.now, data.stats.live],
+      ['soiree-2026-10-15-anonyme', 'Europe/Paris', 796, figer.NOW, false]);
+    assert.deepEqual(data.stats.roster.S01, { name: 'S01', tableId: 'T1' }, 'prénom égal à la clé');
+    assert.deepEqual(data.stats.tables.T6, { name: 'T6', individual: true });
+    assert.equal(Object.keys(data.stats.roster).length, 18);
+    assert.deepEqual(data.export, { exportedAt: figer.NOW, live: false });
+    // Jamais remplacé.
+    const bytes = fs.readFileSync(outFile);
+    assert.equal(figer.main(['--ecrire'], { ...capture().io, gitShow: () => probe, outFile }), 1);
+    assert.ok(fs.readFileSync(outFile).equals(bytes));
+
+    // Une dépendance : refusée, une ligne sans pile, rien d'écrit.
+    const withRequire = capture();
+    const other = path.join(dir, 'autre.json');
+    assert.equal(figer.main(['--ecrire'], { ...withRequire.io, gitShow: () => `require('fs'); ${probe}`, outFile: other }), 1);
+    assert.deepEqual(withRequire.lines.err, ['1c15d72:evening-stats.js : dépendance inattendue (fs), le module doit être sans dépendance.']);
+    assert.equal(fs.existsSync(other), false);
+
+    const missing = withoutCommit(dir, other);
+    assert.equal(missing.code, 1);
+    assert.deepEqual(missing.err, ['1c15d72 introuvable : git fetch --unshallow, puis relance.']);
+    assert.equal(fs.existsSync(other), false);
+
+    // Copie sans dépôt git : la ligne fatale de git, pas le remède d'un clone
+    // sans 1c15d72, qui n'y marche pas ; une ligne, sans pile, rien d'écrit.
+    const outside = outsideRepository(dir, other);
+    assert.equal(outside.code, 1);
+    assert.equal(outside.err.length, 1, outside.err.join('\n'));
+    assert.match(outside.err[0], /^git show 1c15d72:evening-stats\.js a échoué : fatal: not a git repository\b[^\n]*$/i);
+    assert.equal(fs.existsSync(other), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Copie sans dépôt git (téléchargée en zip, par exemple), dans dir/hors-depot :
+// main(['--ecrire']) qui lit 1c15d72 par gitShowStats depuis ce dossier. La
+// recherche du dépôt s'arrête à dir (GIT_CEILING_DIRECTORIES), même si le
+// dossier temporaire est dans un dépôt. GIT_CONFIG_GLOBAL, un dossier, fait
+// écrire à git un avertissement avant sa ligne fatale, comme un HOME illisible.
+function outsideRepository(dir, outFile) {
+  const copy = path.join(dir, 'hors-depot');
+  fs.mkdirSync(copy);
+  const env = { ...process.env, GIT_CEILING_DIRECTORIES: dir, GIT_CONFIG_GLOBAL: copy };
+  for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete env[name];
+  const run = capture();
+  const code = figer.main(['--ecrire'], { ...run.io, gitShow: () => figer.gitShowStats({ cwd: copy, env }), outFile });
+  return { code, err: run.lines.err };
+}
+
+// Clone sans 1c15d72 (dépôt vide, dans dir/clone) : main(['--ecrire']) qui lit
+// 1c15d72 par gitShowStats dans ce dépôt. git n'y reçoit pas le dépôt d'un
+// crochet git en cours (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE le
+// détourneraient), comme dans comparer-images.test.js.
+function withoutCommit(dir, outFile) {
+  const repo = path.join(dir, 'clone');
+  fs.mkdirSync(repo);
+  const env = { ...process.env };
+  for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete env[name];
+  execFileSync('git', ['init', '-q', repo], { stdio: 'ignore', env });
+  const run = capture();
+  const code = figer.main(['--ecrire'], { ...run.io, gitShow: () => figer.gitShowStats({ cwd: repo, env }), outFile });
+  return { code, err: run.lines.err, repo };
+}
+
+test('A7 : figer-resume.js : 1c15d72 absent, lancé par un crochet git d’un autre dépôt (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE) : même refus, ce dépôt intact', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'figer-resume-'));
+  const names = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'];
+  const saved = new Map(names.map(name => [name, process.env[name]]));
+  try {
+    // Dépôt du crochet, son répertoire git hors de sa copie de travail comme
+    // celui d'une copie de travail liée (.git/worktrees/<nom>), où
+    // « git show 1c15d72:evening-stats.js » réussit (étiquette 1c15d72).
+    const hook = path.join(dir, 'crochet');
+    const hookGit = path.join(dir, 'crochet-git');
+    const config = path.join(dir, 'gitconfig');
+    fs.writeFileSync(config, '');
+    fs.mkdirSync(hook);
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: config, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'essai',
+      GIT_AUTHOR_EMAIL: 'essai@example.invalid', GIT_COMMITTER_NAME: 'essai', GIT_COMMITTER_EMAIL: 'essai@example.invalid' };
+    for (const name of names) delete env[name];
+    const git = (...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args],
+      { cwd: hook, env, stdio: 'ignore' });
+    git('init', '-q', `--separate-git-dir=${hookGit}`);
+    fs.writeFileSync(path.join(hook, 'evening-stats.js'),
+      'module.exports = { computeStats: () => ({}), exportEvening: () => ({}) };\n');
+    git('add', 'evening-stats.js');
+    git('commit', '-q', '-m', 'essai');
+    git('tag', figer.COMMIT);
+    const before = fs.readFileSync(path.join(hookGit, 'config'));
+    // Variables qu'exporte un crochet git lancé dans ce dépôt.
+    Object.assign(process.env, { GIT_DIR: hookGit, GIT_WORK_TREE: hook, GIT_INDEX_FILE: path.join(hookGit, 'index') });
+    const other = path.join(dir, 'resume.json');
+    const missing = withoutCommit(dir, other);
+    assert.equal(missing.code, 1, '1c15d72 lu dans le dépôt du crochet');
+    assert.deepEqual(missing.err, ['1c15d72 introuvable : git fetch --unshallow, puis relance.']);
+    assert.equal(fs.existsSync(other), false);
+    assert.ok(fs.existsSync(path.join(missing.repo, '.git')), 'dépôt vide créé dans clone');
+    assert.ok(fs.readFileSync(path.join(hookGit, 'config')).equals(before), 'configuration du dépôt du crochet inchangée');
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------- A4 : personnes citées (citedIds) et garde des événements
+// Une personne est citée par une ligne qui montre qu'elle prend part au
+// morceau (A4, « Personnes et tables citées ») : la règle par laquelle
+// computeStats prolonge une présence, sans les signes de vie des téléphones.
+// La garde des événements (règle « Gardes des listes ») range chaque type que
+// le code écrit dans l'une des deux listes d'A4, et dans l'activité des bornes
+// (A1) : un type non rangé fait échouer les deux essais qui la lisent.
+const { citedIds } = require('../evening-stats');
+const { ACTIVITY_TYPES } = require('../evening-bounds');
+
+// Types qui citent : par leurs champs personId, requesterId, voterId ou
+// proposerId (« champs »), par les ids d'un passage sur scène (« ids »), par
+// l'invitée d'un duo noté par le bar (« invitée »).
+const CITING_TYPES = new Map([
+  ['song.requested', 'champs'], ['queue.entered', 'champs'], ['song.reordered', 'champs'], ['song.settings', 'champs'],
+  ['songLength.refused', 'champs'], ['presence.confirmed', 'champs'], ['person.renamed', 'champs'],
+  ['person.transferred', 'champs'], ['person.gaveSpot', 'champs'], ['duo.invited', 'champs'], ['duo.answered', 'champs'],
+  ['duo.cancelled', 'champs'], ['duo.openRequested', 'champs'], ['duo.openAccepted', 'champs'], ['duo.openClosed', 'champs'],
+  ['duo.joinRequested', 'champs'], ['duo.joinAnswered', 'champs'], ['duo.joinCancelled', 'champs'], ['battle.vote', 'champs'],
+  ['battle.proposed', 'champs'],
+  // Deux gestes du bar qui disent qu'elle est là : « Toujours là » et son retour.
+  ['presence.stillHere', 'champs'], ['person.reactivated', 'champs'],
+  // Fin d'un « Pas prêt » : « Je suis prêt » (how: 'ready', cancelDeferral de
+  // lib/scheduler/presence.js) nomme par personId celle qui l'a touché, et
+  // computeStats y prolonge sa présence : elle cite, malgré l'exemple
+  // « defer.* » de la liste d'A4 qui ne cite pas. Ses autres fins ne nomment
+  // personne que par ownerId.
+  ['defer.ended', 'champs'],
+  ['stage.started', 'ids'], ['duo.improvised', 'invitée'],
+]);
+// Types qui ne citent personne : « passif », aucun champ ne cite (signes de
+// vie, inscription, messages et demandes du serveur, gestes du bar, envois et
+// retraits, fins de duo sans geste de la personne, départs) ; « sans champ »,
+// aucun appel qui l'écrit ne nomme quelqu'un par un champ qui cite (ownerId,
+// partnerId, guestId, toId au plus : son « Pas prêt », sa sortie d'un duo) :
+// la garde lit les champs de chaque appel (fieldsWritten).
+const NOT_CITING_TYPES = new Map([
+  ...['person.seen', 'person.joined', 'person.left', 'person.bonus', 'notice.sent', 'presence.asked', 'presence.skipped',
+    'song.removed', 'duo.inviteExpired', 'duo.joinExpired', 'duo.improvisedCancelled', 'duo.improvisedReplaced', 'staff.absent',
+    'staff.move', 'staff.next', 'staff.play', 'staff.queueClearStopped', 'staff.queueCleared', 'staff.recalculate', 'staff.undo',
+    'table.bonus', 'table.headcount', 'table.left', 'table.opened', 'table.renamed', 'turn.sent', 'turn.unsent'].map(type => [type, 'passif']),
+  ...['app.started', 'app.stopped', 'autoplay.held', 'autoplay.released', 'battle.automation', 'battle.cooldownLifted',
+    'battle.decided', 'battle.external', 'battle.resolved', 'battle.staffLaunch', 'closing.cleared', 'closing.reached', 'closing.set',
+    'defer.requested', 'duo.left', 'duo.openExpired', 'evening.closed', 'evening.started', 'karafun.renamed',
+    'karaoke.phase', 'queue.sample', 'send.unconfirmed', 'settings.changed', 'song.settingsCaughtUp', 'song.settingsReset',
+    'songLength.removed', 'spotify', 'stage.ended', 'stage.restarted'].map(type => [type, 'sans champ']),
+]);
+// Types qui ne sont pas une activité des bornes (A1 ; ACTIVITY_TYPES est
+// exportée par evening-bounds.js).
+const NOT_ACTIVITY_TYPES = [
+  'app.started', 'app.stopped', 'autoplay.held', 'autoplay.released', 'battle.automation', 'battle.cooldownLifted',
+  'battle.decided', 'battle.external', 'battle.proposed', 'battle.resolved', 'battle.staffLaunch', 'battle.vote',
+  'closing.cleared', 'closing.reached', 'closing.set', 'defer.ended', 'defer.requested', 'duo.answered', 'duo.cancelled',
+  'duo.improvised', 'duo.improvisedCancelled', 'duo.improvisedReplaced', 'duo.inviteExpired', 'duo.invited',
+  'duo.joinAnswered', 'duo.joinCancelled', 'duo.joinExpired', 'duo.joinRequested', 'duo.left', 'duo.openAccepted',
+  'duo.openClosed', 'duo.openExpired', 'duo.openRequested', 'evening.closed', 'evening.started', 'karafun.renamed',
+  'karaoke.phase', 'notice.sent', 'person.bonus', 'person.gaveSpot', 'person.left', 'person.reactivated', 'person.renamed',
+  'person.seen', 'person.transferred', 'presence.asked', 'presence.confirmed', 'presence.skipped', 'presence.stillHere',
+  'queue.entered', 'queue.sample', 'send.unconfirmed', 'settings.changed', 'song.removed', 'song.reordered', 'song.settings',
+  'song.settingsCaughtUp', 'song.settingsReset', 'songLength.refused', 'songLength.removed', 'spotify', 'staff.absent',
+  'staff.move', 'staff.next', 'staff.play', 'staff.queueClearStopped', 'staff.queueCleared', 'staff.recalculate', 'staff.undo',
+  'stage.ended', 'stage.restarted', 'table.bonus', 'table.headcount', 'table.left', 'table.renamed', 'turn.sent', 'turn.unsent',
+];
+
+// Relevé des types écrits : journal.append('…') et this.append('…')
+// d'evening-journal.js, journalEvent('…') de server.js, _event('…') de
+// scheduler.js et de lib/scheduler/, par un appel direct ou facultatif
+// (`?.`). Hors des trois relais, dont le type est calculé (_event de
+// scheduler.js, journalEvent de server.js et la reprise des lignes gardées
+// avant l'ouverture, _flushEarly d'evening-journal.js), un appel dont le type
+// n'est pas écrit en entier entre apostrophes est signalé.
+const ROOT = path.join(__dirname, '..');
+const WRITERS = ['evening-journal.js', 'server.js', 'scheduler.js',
+  ...fs.readdirSync(path.join(ROOT, 'lib', 'scheduler')).filter(name => name.endsWith('.js')).sort().map(name => `lib/scheduler/${name}`)];
+const RELAYS = new Set([
+  'scheduler.js:_event(type, fields = {}) {',
+  'server.js:function journalEvent(type, fields = {}) {',
+  'server.js:return journal.append(type, fields);',
+  'evening-journal.js:for (const [ev, fields, t] of early) this.append(ev, fields, t);',
+]);
+const WRITE_CALL = /\b(?:_event|journalEvent|journal\.append|this\.append)\s*(?:\?\.)?\(\s*/g;
+const TYPE_LITERAL = /^'([a-z][a-zA-Z]*(?:\.[a-zA-Z]+){0,3})'\s*[,)]/;
+// Champs par lesquels une ligne cite (PRESENCE_KEYS d'evening-stats.js).
+const CITING_KEYS = ['personId', 'requesterId', 'voterId', 'proposerId'];
+// Champs écrits par un appel, lus dans ses arguments après le type, jusqu'à
+// sa parenthèse fermante (chaînes et commentaires sautés) : les clés de ses
+// objets littéraux, et les champs que la garde ne lit pas (objet étendu par un
+// nom, `...fields`, champs passés par un nom, appel qui ne se referme pas).
+function fieldsWritten(source, from) {
+  const stack = [], hidden = [];
+  let text = '', closed = false;
+  for (let i = from; i < source.length && !closed; i++) {
+    const c = source[i];
+    if (c === '/' && (source[i + 1] === '/' || source[i + 1] === '*')) {
+      const next = source[i + 1] === '/' ? source.indexOf('\n', i) : source.indexOf('*/', i + 2) + 1;
+      i = next > 0 ? next : source.length;
+      text += ' ';
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      for (i++; i < source.length && source[i] !== c; i++) if (source[i] === '\\') i++;
+      text += "''";
+      continue;
+    }
+    if ('({['.includes(c)) stack.push(c);
+    else if (')}]'.includes(c)) { if (!stack.length) { closed = true; continue; } stack.pop(); }
+    else if (source.startsWith('...', i) && stack.at(-1) === '{') {
+      const name = /^\.\.\.\s*([A-Za-z_$][\w$.]*)/.exec(source.slice(i, i + 80));
+      if (name) hidden.push(`...${name[1]}`);
+    }
+    text += c;
+  }
+  if (!closed) return { keys: new Set(), hidden: ['appel non refermé'] };
+  const keys = new Set([...text.matchAll(/(?:^|[{,])\s*([A-Za-z_$][\w$]*)\s*(?=[:,}])/g)].map(m => m[1]));
+  const bare = /^,\s*([A-Za-z_$][\w$.]*)\s*(?:,|$)/.exec(text.trim());
+  if (bare) hidden.push(bare[1]);
+  return { keys, hidden };
+}
+// Champs étendus d'un type « sans champ », relus : ligne de l'appel, puis
+// d'où viennent ses champs, sans personId, requesterId, voterId ni proposerId.
+const SPREADS = new Map([
+  ["evening-journal.js:this.append('evening.closed', { ...fields, by, ...(reason ? { reason } : {}), ...(timed ? { closedAt: at } : {}) });",
+    'close({ fields }) : ceux de closeEvening (server.js), le bilan de « Supprimer toutes les tables » (unsungSongs, peopleWithSongs, people, tables), ' +
+    'et la première activité d’une fin automatique (firstActivityAt, A2) ; reason et closedAt viennent de close (A5)'],
+]);
+function eventTypesWritten(files = WRITERS, read = file => fs.readFileSync(path.join(ROOT, file), 'utf8')) {
+  const written = new Map(), computed = [], sites = new Map();
+  for (const file of files) {
+    const source = read(file).replace(/\r\n/g, '\n');
+    const lines = source.split('\n');
+    const starts = [0];
+    for (let i = source.indexOf('\n'); i >= 0; i = source.indexOf('\n', i + 1)) starts.push(i + 1);
+    const lineOf = index => { let low = 0, high = starts.length; while (low < high) { const mid = (low + high) >>> 1; if (starts[mid] <= index) low = mid + 1; else high = mid; } return low; };
+    for (const match of source.matchAll(WRITE_CALL)) {
+      const typeAt = match.index + match[0].length;
+      const literal = TYPE_LITERAL.exec(source.slice(typeAt, typeAt + 80));
+      if (literal) {
+        const line = lineOf(typeAt);
+        if (!written.has(literal[1])) written.set(literal[1], `${file}:${line}`);
+        if (!sites.has(literal[1])) sites.set(literal[1], []);
+        sites.get(literal[1]).push({ where: `${file}:${line}`, line: `${file}:${lines[line - 1].trim()}`,
+          ...fieldsWritten(source, typeAt + literal[0].length - 1) });
+        continue;
+      }
+      const line = lineOf(match.index);
+      if (!RELAYS.has(`${file}:${lines[line - 1].trim()}`)) computed.push(`${file}:${line}`);
+    }
+  }
+  return { written, computed, sites };
+}
+// Écarts de la garde, un message par type ou par appel.
+function guardProblems({ written, computed, sites = new Map() }) {
+  const problems = [];
+  for (const [type, where] of written) {
+    const once = (a, b) => a !== b;
+    if (!once(CITING_TYPES.has(type), NOT_CITING_TYPES.has(type)) || !once(ACTIVITY_TYPES.includes(type), NOT_ACTIVITY_TYPES.includes(type))) {
+      problems.push(`Type d'événement non rangé : ${type}, écrit à ${where}. Range-le une fois dans CITING_TYPES ou NOT_CITING_TYPES ` +
+        '(test/evening-stats.test.js, règle d\'A4), et une fois dans ACTIVITY_TYPES (evening-bounds.js) ou NOT_ACTIVITY_TYPES ' +
+        '(test/evening-stats.test.js, règle d\'A1).');
+    }
+  }
+  for (const where of computed) problems.push(`Type d'événement calculé à ${where} : écris-le en entier entre apostrophes, pour que la garde le range.`);
+  for (const [name, list] of [['CITING_TYPES', [...CITING_TYPES.keys()]], ['NOT_CITING_TYPES', [...NOT_CITING_TYPES.keys()]],
+    ['ACTIVITY_TYPES', ACTIVITY_TYPES], ['NOT_ACTIVITY_TYPES', NOT_ACTIVITY_TYPES]]) {
+    for (const type of list) if (!written.has(type)) problems.push(`Type d'événement rangé mais jamais écrit : ${type} (${name}). Retire-le de cette liste.`);
+  }
+  // Un type « sans champ » : aucun de ses appels n'écrit un champ qui cite,
+  // ni des champs que la garde ne lit pas, hors des appels relus de SPREADS.
+  const spread = new Set();
+  for (const [type, why] of NOT_CITING_TYPES) {
+    if (why !== 'sans champ') continue;
+    for (const site of sites.get(type) || []) {
+      const citing = CITING_KEYS.filter(key => site.keys.has(key));
+      if (citing.length) {
+        problems.push(`Type d'événement rangé « sans champ » mais écrit avec ${citing.join(', ')} à ${site.where} : range-le dans CITING_TYPES ` +
+          '(test/evening-stats.test.js, règle d\'A4), ou retire ce champ.');
+      }
+      if (!site.hidden.length) continue;
+      if (SPREADS.has(site.line)) { spread.add(site.line); continue; }
+      problems.push(`Type d'événement rangé « sans champ » écrit à ${site.where} avec des champs que la garde ne lit pas (${site.hidden.join(', ')}) : ` +
+        'vérifie qu\'ils ne nomment personne par personId, requesterId, voterId ou proposerId, puis ajoute cet appel à SPREADS ' +
+        '(test/evening-stats.test.js) ; sinon, range le type dans CITING_TYPES.');
+    }
+  }
+  for (const line of SPREADS.keys()) if (!spread.has(line)) problems.push(`Appel de SPREADS jamais écrit pour un type « sans champ » : ${line}. Retire-le.`);
+  return problems;
+}
+const WRITTEN = eventTypesWritten();
+
+test('A4 : garde des événements : chaque type écrit par le code rangé une fois parmi les types qui citent ou non (A4), une fois dans l’activité des bornes (A1), aucun type calculé hors des trois relais', () => {
+  assert.ok(WRITTEN.written.size >= 80, `types relevés : ${WRITTEN.written.size}`);
+  for (const type of ['evening.closed', 'stage.started', 'duo.improvisedReplaced', 'karafun.renamed', 'notice.sent']) {
+    assert.ok(WRITTEN.written.has(type), `${type} relevé (appel direct, facultatif ou d'evening-journal.js)`);
+  }
+  assert.deepEqual(guardProblems(WRITTEN), []);
+  // La garde elle-même, sur des sources écrites par l'essai : un type non
+  // rangé, un type calculé, un relais reconnu.
+  const fake = new Map([
+    ['scheduler.js', "  _event(type, fields = {}) {\n    this._event?.('duo.nouveau', { personId: p.id });\n    this._event(kind, {});\n"],
+    ['server.js', "journalEvent(`stage.${kind}`, {});\njournalEvent('stage.started', {});\n"],
+  ]);
+  const found = eventTypesWritten([...fake.keys()], file => fake.get(file));
+  assert.deepEqual([...found.written], [['duo.nouveau', 'scheduler.js:2'], ['stage.started', 'server.js:2']]);
+  assert.deepEqual(guardProblems(found).filter(p => !p.includes('jamais écrit')), [
+    'Type d\'événement non rangé : duo.nouveau, écrit à scheduler.js:2. Range-le une fois dans CITING_TYPES ou NOT_CITING_TYPES ' +
+      '(test/evening-stats.test.js, règle d\'A4), et une fois dans ACTIVITY_TYPES (evening-bounds.js) ou NOT_ACTIVITY_TYPES ' +
+      '(test/evening-stats.test.js, règle d\'A1).',
+    'Type d\'événement calculé à scheduler.js:3 : écris-le en entier entre apostrophes, pour que la garde le range.',
+    'Type d\'événement calculé à server.js:1 : écris-le en entier entre apostrophes, pour que la garde le range.',
+  ]);
+  // Les champs d'un type « sans champ », sur des sources écrites par l'essai :
+  // un champ qui cite, un objet étendu par un nom, des champs passés par un
+  // nom, un appel qui ne se referme pas ; un champ en commentaire ou dans une
+  // chaîne n'est pas lu, ni une liste étendue.
+  const shapes = new Map([
+    ['lib/scheduler/presence.js', "    this._event('defer.requested', { ownerId: p.id, personIds: ids, personId: p.id });\n" +
+      "    this._event?.('duo.openExpired', { ...extra, ownerId: owner.id });\n" +
+      "    this._event('duo.left', { ownerId: o.id, guestId: g.id /* , personId: g.id */, note: ', personId: x', ids: [...ids] });\n"],
+    ['server.js', "journalEvent('karaoke.phase', state);\njournalEvent('stage.ended', { queueId: 1,\n"],
+  ]);
+  assert.deepEqual(guardProblems(eventTypesWritten([...shapes.keys()], file => shapes.get(file))).filter(p => !p.includes('jamais écrit')), [
+    'Type d\'événement rangé « sans champ » mais écrit avec personId à lib/scheduler/presence.js:1 : range-le dans CITING_TYPES ' +
+      '(test/evening-stats.test.js, règle d\'A4), ou retire ce champ.',
+    'Type d\'événement rangé « sans champ » écrit à lib/scheduler/presence.js:2 avec des champs que la garde ne lit pas (...extra) : ' +
+      'vérifie qu\'ils ne nomment personne par personId, requesterId, voterId ou proposerId, puis ajoute cet appel à SPREADS ' +
+      '(test/evening-stats.test.js) ; sinon, range le type dans CITING_TYPES.',
+    'Type d\'événement rangé « sans champ » écrit à server.js:1 avec des champs que la garde ne lit pas (state) : ' +
+      'vérifie qu\'ils ne nomment personne par personId, requesterId, voterId ou proposerId, puis ajoute cet appel à SPREADS ' +
+      '(test/evening-stats.test.js) ; sinon, range le type dans CITING_TYPES.',
+    'Type d\'événement rangé « sans champ » écrit à server.js:2 avec des champs que la garde ne lit pas (appel non refermé) : ' +
+      'vérifie qu\'ils ne nomment personne par personId, requesterId, voterId ou proposerId, puis ajoute cet appel à SPREADS ' +
+      '(test/evening-stats.test.js) ; sinon, range le type dans CITING_TYPES.',
+  ]);
+});
+
+test('A4 : citedIds en tableau : chaque type des deux listes d’A4 et chaque champ ; personId, requesterId, voterId et proposerId citent, partnerId, toId, ownerId et guestId non, sauf l’invitée d’un duo noté par le bar ; ligne du bar, ids bruts d’un passage ; types « sans champ » avec les champs de leurs appels ; « Je suis prêt » (defer.ended, personId) cite', () => {
+  // Le relevé de la garde, sans second relevé : un type non rangé échoue ici aussi.
+  for (const [type, where] of WRITTEN.written) {
+    assert.ok(CITING_TYPES.has(type) !== NOT_CITING_TYPES.has(type),
+      `Type d'événement non rangé : ${type}, écrit à ${where}. Range-le une fois dans CITING_TYPES ou NOT_CITING_TYPES (test/evening-stats.test.js, règle d'A4).`);
+  }
+  const t = T0;
+  const CITING_FIELDS = { personId: 'p', requesterId: 'r', voterId: 'v', proposerId: 'x' };
+  const OTHER_FIELDS = { partnerId: 'q', toId: 'to', ownerId: 'o', guestId: 'g', previousPartnerId: 'pp' };
+  const LISTS = { ids: ['i1'], personIds: ['l1'] };
+  for (const [type, how] of CITING_TYPES) {
+    const line = fields => ({ v: 1, seq: 1, t, ev: type, boot: 'b1', ...fields });
+    if (how === 'champs') {
+      for (const [key, id] of Object.entries(CITING_FIELDS)) assert.deepEqual(citedIds(line({ [key]: id })), [id], `${type} : ${key} cite`);
+      for (const [key, id] of Object.entries(OTHER_FIELDS)) assert.deepEqual(citedIds(line({ [key]: id })), [], `${type} : ${key} ne cite pas`);
+      assert.deepEqual(citedIds(line({ ...LISTS })), [], `${type} : ids et personIds ne citent pas`);
+      assert.deepEqual(citedIds(line({ ...CITING_FIELDS, ...OTHER_FIELDS })), ['p', 'r', 'v', 'x'], `${type} : tous les champs`);
+      assert.deepEqual(citedIds(line({ ...CITING_FIELDS, by: 'staff' })), [], `${type} : une ligne du bar ne cite pas`);
+    } else if (how === 'ids') {
+      assert.deepEqual(citedIds(line({ ids: ['a', 'b', '', 5, null, 'a'], ownerId: 'o', ...OTHER_FIELDS })), ['a', 'b', 'a'],
+        `${type} : ids bruts, chaînes non vides seulement`);
+    } else {
+      assert.deepEqual(citedIds(line({ ownerId: 'o', partnerId: 'g' })), ['g'], `${type} : l'invitée citée, pas la personne du titre`);
+      assert.deepEqual(citedIds(line({ ...CITING_FIELDS, ownerId: 'o' })), [], `${type} : geste du bar, ses autres champs ne citent pas`);
+    }
+  }
+  // « passif » : avec les champs qui citent ; « sans champ » : avec les champs
+  // de chaque appel qui l'écrit (relevé de la garde), comme le code l'écrit.
+  const writtenFields = type => Object.fromEntries((WRITTEN.sites.get(type) || []).flatMap(site => [...site.keys]).map(key => [key, 'w']));
+  for (const [type, why] of NOT_CITING_TYPES) {
+    const line = { ...(why === 'passif' ? CITING_FIELDS : writtenFields(type)), ...OTHER_FIELDS, ...LISTS, v: 1, seq: 1, t, ev: type, boot: 'b1' };
+    assert.deepEqual(citedIds(line), [], `${type} (${why}) ne cite personne`);
+  }
+  // Le « Pas prêt » tel que lib/scheduler/presence.js l'écrit : « Je suis
+  // prêt » nomme par personId celle qui l'a touché (la personne du titre ou
+  // son invitée) et ne cite qu'elle ; la demande et les autres fins du report
+  // ne nomment que par ownerId.
+  const deferLine = (ev, fields) => citedIds({ ...fields, v: 1, seq: 1, t, ev, boot: 'b1' });
+  assert.deepEqual(deferLine('defer.ended', { personId: 'g', ownerId: 'o', entryId: 'e1', how: 'ready' }), ['g']);
+  for (const how of ['released', 'sent', 'dropped', 'alone', 'staff-move']) {
+    assert.deepEqual(deferLine('defer.ended', { ownerId: 'o', entryId: 'e1', how }), [], `defer.ended ${how}`);
+  }
+  assert.deepEqual(deferLine('defer.requested', { ownerId: 'o', personIds: ['o', 'g'], entryId: 'e1', songs: 1, total: 1, remaining: 1 }), []);
+  // Ce que la personne fait elle-même cite : réglage de son titre, sauf par le bar.
+  assert.deepEqual(citedIds({ ev: 'song.settings', t, by: 'self', where: 'list', personId: 'p1' }), ['p1']);
+  assert.deepEqual(citedIds({ ev: 'song.settings', t, by: 'staff', where: 'list', personId: 'p1' }), []);
+  // Champs de mauvais type : lus comme absents ; jamais d'exception.
+  assert.deepEqual(citedIds({ ev: 'song.requested', t, personId: 42 }), []);
+  assert.deepEqual(citedIds({ ev: 'song.requested', t, personId: '', requesterId: ['p'], voterId: { id: 'p' } }), []);
+  assert.deepEqual(citedIds({ ev: 'stage.started', t, ids: 'p1' }), []);
+  assert.deepEqual(citedIds({ ev: 'duo.improvised', t, partnerId: 7 }), []);
+  for (const bad of [null, undefined, 7, 'song.requested', {}, { ev: 5, personId: 'p' }, []]) assert.deepEqual(citedIds(bad), [], String(bad));
+});
+
+test('A4 : export en tableau : pseudonyms donne une clé S…, dans l’ordre des lignes, à toute personne nommée par une ligne sans être parmi les chanteurs ni dans meta.roster, par chacun des onze champs lus, éléments imbriqués compris (listes et objets, jusqu’au plus profond que garde cleanFields) ; aucun identifiant interne ne sort de l’export ; un journal d’aujourd’hui n’en reçoit aucune de plus', () => {
+  const { cleanFields } = require('../evening-journal');
+  // Les onze champs lus (A4, « Personnes et tables citées », export).
+  const NAMING = ['personId', 'personIds', 'ids', 'ownerId', 'partnerId', 'guestId', 'requesterId', 'voterId', 'proposerId', 'toId',
+    'previousPartnerId'];
+  const { meta, events } = fixture();
+  // Un journal d'aujourd'hui : chaque personne qu'il nomme est dans son meta.roster.
+  const today = exportEvening({ meta, events, now: at(180) });
+  assert.deepEqual(today.people.map(p => p.key), ['S01', 'S02', 'S03', 'S04']);
+  // Une personne hors du roster par champ, nommée par un avis (ligne qui ne
+  // crée personne dans les statistiques) ; puis, dans une même ligne, deux
+  // personnes dans l'ordre des champs et une personne déjà nommée ; enfin un
+  // nom dans une liste qui n'en est pas une (une clé quand même : rien
+  // d'interne ne sort), des valeurs qui ne nomment personne, et un
+  // identifiant de titre, qui n'est pas une personne. Des noms aussi dans des
+  // éléments imbriqués (A7, liste dont des éléments ne sont pas des chaînes
+  // non vides) : un objet dans la liste ids de cette ligne, puis une liste
+  // dans la liste, un objet, le plus profond que garde cleanFields, et un
+  // objet à la place d'un identifiant, dont le tableId reste une table.
+  const line = (i, fields) => ({ v: 1, seq: 100 + i, t: at(100 + i), ev: 'notice.sent', boot: 'b1', kind: 'turnSoon', ...fields });
+  const deepest = { ids: [[['hors-profond']]], partnerId: { tableId: '1', personId: 'hors-champ' } };
+  assert.deepEqual(cleanFields(deepest), deepest, 'gardé par cleanFields');
+  const extra = [
+    ...NAMING.map((key, i) => line(i, { [key]: ['personIds', 'ids'].includes(key) ? [`hors-${key}`] : `hors-${key}` })),
+    line(20, { toId: 'hors-cede', personId: 'hors-avant', ownerId: 'hors-personId' }),
+    line(21, { personIds: 'hors-chaine', personId: 42, partnerId: '', ids: ['', null, 7, { id: 'hors-objet' }], entryId: 'entree-9' }),
+    line(22, { personIds: ['pA', ['hors-liste']] }),
+    line(23, { personId: 'pA', personIds: [{ id: 'hors-element' }] }),
+    line(24, deepest),
+  ];
+  const all = [...events.slice(0, -1), ...extra, events.at(-1)];
+  const exported = exportEvening({ meta, events: all, now: at(180) });
+  const keys = [...NAMING.map(key => `hors-${key}`), 'hors-avant', 'hors-cede', 'hors-chaine', 'hors-objet', 'hors-liste', 'hors-element',
+    'hors-profond', 'hors-champ'];
+  const keyOf = i => `S${String(i + 5).padStart(2, '0')}`;
+  assert.deepEqual(exported.people.map(p => p.key), ['S01', 'S02', 'S03', 'S04', ...keys.map((_, i) => keyOf(i))]);
+  assert.deepEqual(exported.people.slice(4).map(p => p.table), keys.map(() => null));
+  // Chaque identifiant remplacé par sa clé, dans chaque champ.
+  const mapped = exported.events.filter(e => e.seq >= 100);
+  NAMING.forEach((key, i) => assert.deepEqual(mapped[i][key], ['personIds', 'ids'].includes(key) ? [keyOf(i)] : keyOf(i), key));
+  assert.deepEqual([mapped[11].personId, mapped[11].ownerId, mapped[11].toId], ['S16', 'S05', 'S17']);
+  assert.deepEqual([mapped[12].personIds, mapped[12].personId, mapped[12].partnerId, mapped[12].ids, mapped[12].entryId],
+    ['S18', 42, '', ['', null, 7, { id: 'S19' }], 'entree-9']);
+  assert.deepEqual([mapped[13].personIds, mapped[14].personId, mapped[14].personIds, mapped[15].ids, mapped[15].partnerId],
+    [['S01', ['S20']], 'S01', [{ id: 'S21' }], [[['S22']]], { tableId: 'T1', personId: 'S23' }]);
+  // Aucun identifiant interne des onze champs ne sort de l'export, prénoms demandés ou non.
+  for (const names of [false, true]) {
+    const text = JSON.stringify(exportEvening({ meta, events: all, now: at(180), names }));
+    for (const id of keys) assert.ok(!text.includes(`"${id}"`), `${id} dans l'export (names: ${names})`);
+  }
+  // Les statistiques ne changent pas : ces lignes ne créent personne.
+  assert.deepEqual(computeStats({ meta, events: all, now: at(180) }).singers, computeStats({ meta, events, now: at(180) }).singers);
+});
+
+test('A7 : lignes qui ne nomment pas leur personne (huit sortes) : computeStats et exportEvening rendent un résultat, la ligne ignorée', () => {
+  const base = [
+    { v: 1, seq: 1, t: at(0), ev: 'evening.started', boot: 'b1', rules: {} },
+    { v: 1, seq: 2, t: at(0), ev: 'table.opened', boot: 'b1', tableId: '1', individual: false },
+    { v: 1, seq: 3, t: at(1), ev: 'person.joined', boot: 'b1', personId: 'p1', tableId: '1' },
+    { v: 1, seq: 4, t: at(5), ev: 'song.requested', boot: 'b1', personId: 'p1', entryId: 'e1', title: 'Un', mode: 'append' },
+    { v: 1, seq: 5, t: at(10), ev: 'stage.started', boot: 'b1', queueId: 1, entryId: 'e1', ids: ['p1'], ownerId: 'p1', source: 'queue' },
+    { v: 1, seq: 6, t: at(14), ev: 'stage.ended', boot: 'b1', queueId: 1, playedSec: 240 },
+  ];
+  const closing = { v: 1, seq: 9, t: at(60), ev: 'evening.closed', boot: 'b1', by: 'staff-reset' };
+  const run = extra => {
+    const events = [...base, ...extra.map((e, i) => ({ v: 1, seq: 7 + i, t: at(20), boot: 'b1', ...e })), closing];
+    const meta = { eveningId: 'e', roster: { p1: { name: 'Léa', tableId: '1' } }, tables: { 1: { name: 'Table 1', individual: false } } };
+    return { stats: computeStats({ meta, events, now: at(60) }), exported: exportEvening({ meta, events, now: at(60) }) };
+  };
+  const reference = run([]).stats;
+  const LINES = [
+    { ev: 'person.joined', tableId: '1' },
+    { ev: 'song.requested', entryId: 'x1', title: 'Sans personne', mode: 'append' },
+    { ev: 'person.bonus', level: 2 },
+    { ev: 'person.reactivated' },
+    { ev: 'presence.confirmed', entryId: null },
+    { ev: 'presence.skipped', entryId: 'e1', skips: 1, removed: false },
+    { ev: 'presence.asked', personIds: ['', null], entryId: 'e1' },
+    { ev: 'defer.requested', personIds: ['p1'], entryId: 'e1', songs: 1 },
+  ];
+  for (const line of LINES) {
+    for (const variant of [{}, line.ev === 'defer.requested' ? { ownerId: '' } : { personId: '' }, line.ev === 'defer.requested' ? { ownerId: null } : { personId: null }]) {
+      const { stats, exported } = run([{ ...line, ...variant }]);
+      const label = `${line.ev} ${JSON.stringify(variant)}`;
+      assert.deepEqual(stats.singers, reference.singers, `${label} : ligne ignorée`);
+      assert.deepEqual(stats.fairness, reference.fairness, label);
+      assert.equal(exported.format, 'karaoke-evening', label);
+    }
+  }
+  // presence.asked : les éléments valides comptent, les autres sont ignorés.
+  const asked = run([{ ev: 'presence.asked', personIds: ['p1', '', null], entryId: 'e1' }]).stats;
+  assert.equal(singerOf(asked, 'p1').presenceAsks, 1);
+  assert.deepEqual(asked.singers.map(s => s.id), ['p1']);
+});
+
+// ------------------------------------------- A5 : soirée close d'office
+// A5, « Fin du karaoké d'une soirée close d'office » (A7, « Fin d'une soirée
+// close d'office » et « Retard de 3 h ») : la soirée du 15 octobre privée de
+// ce qui finit aujourd'hui son karaoké, la coupure durable de KaraFun après
+// son dernier titre (karaoke.phase offline de 00:12 et de 00:17) et son heure
+// de fermeture (closing.set) ; elle n'a aucun arrêt de l'application après son
+// dernier titre. KaraFun y reste donc connecté toute la nuit. Une soirée close
+// d'office se lit sur meta.closedBy, sinon sur le by de sa ligne
+// evening.closed (relue sans meta par test/rejeu-soiree.js) ; son C est
+// meta.endedAt, sinon le closedAt de cette ligne, sinon son heure.
+const { eveningBreaks, closurePoint, isActivity } = require('../evening-bounds');
+const PARIS = 'Europe/Paris';
+const MIN_MS = 60000;
+const HOUR_MS = 60 * MIN_MS;
+// Heure de Paris le 16 octobre 2026 (heure d'été, UTC+2).
+const le16 = hhmm => Date.parse(`2026-10-16T${hhmm}:00+02:00`);
+function sansFin() {
+  const exported = JSON.parse(fs.readFileSync(figer.FIXTURE, 'utf8'));
+  const lastStart = Math.max(...exported.events.filter(e => e.ev === 'stage.started').map(e => e.t));
+  const isEnd = e => e.ev === 'closing.set' || (e.ev === 'karaoke.phase' && e.blocker === 'offline' && e.t > lastStart);
+  const events = exported.events.filter(e => !isEnd(e));
+  return { events, ends: exported.events.filter(isEnd), meta: figer.metaOf(exported), lastStart,
+    firstActivityAt: Math.min(...events.filter(isActivity).map(e => e.t)), seq: Math.max(...exported.events.map(e => e.seq)) };
+}
+// Ligne evening.closed ajoutée à la fin d'un journal (seq après ses lignes).
+const closingOf = (events, t, fields) => ({ v: 1, seq: Math.max(...events.map(e => e.seq)) + 1, t, ev: 'evening.closed', boot: 'remise', ...fields });
+// Close d'office à C par la remise à zéro du matin (A2) : meta.endedAt à C,
+// closedBy 'auto', ligne datée de l'heure réelle de la remise à zéro (`t`, C
+// par défaut), avec reason, closedAt = C et la première activité.
+function closeOffice({ meta, events, firstActivityAt }, C, t = C) {
+  return { meta: { ...meta, endedAt: C, closedBy: 'auto' },
+    events: [...events, closingOf(events, t, { by: 'auto', reason: 'morning', closedAt: C, firstActivityAt })] };
+}
+// Close par « Supprimer toutes les tables » à `t` ; `cut` : lignes d'après `t`
+// retirées, la soirée suivante les aurait.
+function closeButton({ meta, events }, t, { cut = false } = {}) {
+  const kept = cut ? events.filter(e => e.t <= t) : events;
+  return { meta: { ...meta, endedAt: t, closedBy: 'staff-reset' }, events: [...kept, closingOf(kept, t, { by: 'staff-reset' })] };
+}
+const statsAt = ({ meta, events }, now = Math.max(...events.map(e => e.t))) => computeStats({ meta, events, now });
+// Relue sans meta, comme test/rejeu-soiree.js (statsOf : now à la dernière heure).
+const statsBare = ({ events }) => computeStats({ events, now: events.reduce((m, e) => Math.max(m, e.t), 0) });
+const lastEndOf = stats => Math.max(...stats.timeline.stages.map(st => st.end));
+// Temps mort, titres par heure, attente moyenne et attente sans monter sur
+// scène (par personne, invité compris).
+const waitFigures = stats => ({ deadShare: stats.global.deadShare, deadSec: stats.global.deadSec, songsPerHour: stats.global.songsPerHour,
+  waitAvgSec: stats.global.waitAvgSec, waitMedianSec: stats.global.waitMedianSec, netWaitAvgSec: stats.global.netWaitAvgSec,
+  waits: Object.fromEntries(stats.singers.map(s => [s.id, s.waits])), stageWaits: Object.fromEntries(stats.singers.map(s => [s.id, s.stageWaits])) });
+
+test('A7 : fin d’une soirée close d’office (A5) : la soirée du 15 octobre privée de ses fins, KaraFun connecté toute la nuit, close d’office à 9 h : karaoké fini à la fin de son dernier titre, résumé fini ; temps mort, titres par heure, attente moyenne et attente sans monter sur scène égaux à ceux de la même soirée close par le bouton juste après son dernier titre ; avec une coupure durable de KaraFun, un arrêt de l’application ou une heure de fermeture, la fin reste la leur ; close par le bouton, rien ne change', () => {
+  const base = sansFin();
+  assert.deepEqual(base.ends.map(e => e.ev), ['closing.set', 'karaoke.phase', 'karaoke.phase'], 'heure de fermeture et coupure durable de KaraFun retirées');
+  const C = le16('09:00');
+  const office = statsAt(closeOffice(base, C));
+  const lastEnd = lastEndOf(office);
+  assert.ok(lastEnd > base.lastStart && lastEnd < le16('00:12'), 'dernier titre fini vers minuit');
+  assert.equal(office.evening.closedAt, lastEnd, 'karaoké fini à la fin du dernier titre, résumé fini (closedAt rempli)');
+  assert.deepEqual([office.evening.endedAt, office.evening.closedBy], [C, 'auto']);
+  for (const s of office.singers) assert.ok(s.leftAt == null || s.leftAt <= lastEnd, `${s.id} : présence jusqu’à la fin du karaoké au plus`);
+  // La même soirée close par le bouton une minute après son dernier titre.
+  const button = statsAt(closeButton(base, lastEnd + MIN_MS, { cut: true }));
+  assert.deepEqual(waitFigures(office), waitFigures(button));
+  assert.deepEqual(office.timeline.stages, button.timeline.stages);
+  // Close par le bouton à la fin même du dernier titre : mêmes présences et
+  // même indice de Jain (0,744 ; 0,83 si le karaoké courait jusqu'à 9 h).
+  const atEnd = statsAt(closeButton(base, lastEnd, { cut: true }));
+  assert.deepEqual(office.singers.map(s => [s.id, s.presenceSec]), atEnd.singers.map(s => [s.id, s.presenceSec]));
+  assert.equal(office.fairness.jain, atEnd.fairness.jain);
+  assert.equal(office.fairness.jain, 0.744);
+  // Avec l'une des trois fins, la fin reste la sienne : celle de la même
+  // soirée close par le bouton à 9 h.
+  const cutAt = base.ends.at(-1).t;
+  const closingSet = base.ends.find(e => e.ev === 'closing.set');
+  const variants = [
+    ['coupure durable de KaraFun', base.ends.filter(e => e.ev === 'karaoke.phase'), cutAt],
+    ['arrêt de l’application', [{ v: 1, seq: base.seq + 1, t: le16('03:00'), ev: 'app.started', boot: 'reprise', restored: true,
+      offlineMs: 2 * HOUR_MS, version: 'v3.0.1' }], le16('01:00')],
+    ['heure de fermeture', [closingSet], closingSet.closingAt],
+  ];
+  for (const [name, extra, end] of variants) {
+    const evening = { ...base, events: [...base.events, ...extra] };
+    assert.equal(statsAt(closeOffice(evening, C)).evening.closedAt, end, `${name} : close d’office`);
+    assert.equal(statsAt(closeButton(evening, C)).evening.closedAt, end, `${name} : close par le bouton à 9 h`);
+  }
+  // Close par le bouton : rien ne change, le karaoké court jusqu'à la clôture
+  // (aucune fin, résumé sans closedAt) et S11, vu à 00:26, reste compté après
+  // le dernier titre.
+  const late = statsAt(closeButton(base, C));
+  assert.deepEqual([late.evening.closedAt, late.evening.closedBy, late.timeline.end], [null, 'staff-reset', C]);
+  assert.ok(singerOf(late, 'S11').leftAt > lastEnd);
+  assert.ok(singerOf(office, 'S11').leftAt <= lastEnd);
+});
+
+// Coupure de KaraFun encore ouverte à C : son retour, daté après C, n'est
+// jamais lu (un morceau découpé le laisse au morceau suivant). Elle est jugée
+// à C, comme en direct (coupée depuis au moins 30 min), et comme un arrêt de
+// l'application noté après C, dont seule la part d'avant C compte.
+test('A7 : fin d’une soirée close d’office (A5), coupure de KaraFun encore ouverte à C, retour daté après C : jugée à C, comme en direct et comme un arrêt de l’application noté après C ; KaraFun coupé à C − 10 min et revenu à C + 5 min : coupure brève, karaoké fini à la fin du dernier titre, mêmes présences et même indice de Jain que sans elle, avec meta comme relue sans meta ; coupé à C − 40 min, il l’est depuis 30 min à C : la fin reste la sienne', () => {
+  const base = sansFin();
+  const C = le16('09:00'), at = C + 3 * HOUR_MS;
+  const reference = statsAt(closeOffice(base, C, at), at);
+  const lastEnd = lastEndOf(reference);
+  assert.equal(reference.evening.closedAt, lastEnd);
+  let seq = base.seq;
+  const line = (minutes, ev, fields) => ({ ...fields, v: 1, seq: ++seq, t: C + minutes * MIN_MS, ev, boot: 'coupure' });
+  // KaraFun coupé de C + from à C + back (en minutes) ; application arrêtée
+  // de même, notée par l'app.started de sa reprise.
+  const karafun = (from, back) => [line(from, 'karaoke.phase', { phase: 'unknown', blocker: 'offline' }),
+    line(back, 'karaoke.phase', { phase: 'silent', blocker: 'empty' })];
+  const app = (from, back) => [line(back, 'app.started', { restored: true, offlineMs: (back - from) * MIN_MS, version: 'v3.5.0' })];
+  const presences = stats => stats.singers.map(s => [s.id, s.presenceSec]);
+  for (const [name, extra, end] of [
+    ['KaraFun coupé de C − 10 min à C + 5 min', karafun(-10, 5), lastEnd],
+    ['application arrêtée de C − 10 min à C + 60 min', app(-10, 60), lastEnd],
+    ['KaraFun coupé de C − 40 min à C + 5 min', karafun(-40, 5), C - 40 * MIN_MS],
+    ['application arrêtée de C − 40 min à C + 60 min', app(-40, 60), C - 40 * MIN_MS],
+  ]) {
+    const evening = closeOffice({ ...base, events: [...base.events, ...extra] }, C, at);
+    for (const [how, stats] of [['close d’office', statsAt(evening, at)], ['relue sans meta', statsBare(evening)]]) {
+      assert.equal(stats.evening.closedAt, end, `${name}, ${how} : fin du karaoké`);
+      if (end === lastEnd) {
+        assert.deepEqual([stats.fairness.jain, presences(stats)], [reference.fairness.jain, presences(reference)],
+          `${name}, ${how} : mêmes présences et même indice de Jain que sans elle`);
+      }
+    }
+  }
+  // Close par le bouton à C, le retour retiré (la soirée suivante l'aurait) :
+  // rien ne change, la coupure sans retour lu reste durable.
+  const button = statsAt(closeButton({ ...base, events: [...base.events, ...karafun(-10, 5)] }, C, { cut: true }));
+  assert.equal(button.evening.closedAt, C - 10 * MIN_MS, 'close par le bouton : rien ne change');
+});
+
+test('A7 : retard de 3 h (A5) : la même soirée close d’office à C (9 h) par une remise à zéro faite 3 h plus tard, avec les lignes d’une file qui attend : computeStats exactement égal à celui de la soirée close à C sans ces lignes ; relue sans meta (rejeu-soiree.js), même fin du karaoké, même indice de Jain, mêmes titres par heure, temps mort, attente moyenne et attente sans monter sur scène ; exportEvening garde chaque ligne ; eveningBreaks n’y coupe rien ; remise à zéro au démarrage, PC éteint de 1 h 30 à 10 h : karaoké fini à 1 h 30, à l’arrêt de l’application, comme sans la règle', () => {
+  const base = sansFin();
+  const C = le16('09:00');
+  const lastStage = base.events.filter(e => e.ev === 'stage.started').at(-1);
+  // Titre de S16 encore en liste : l'envoi en cours, confirmé pendant
+  // l'attente, puis retiré par le bar.
+  const waiting = base.events.find(e => e.ev === 'song.requested' && e.entryId === 'eb7a3b958ba7');
+  assert.equal(waiting.personId, 'S16');
+  let seq = base.seq;
+  const line = (minutes, ev, fields) => ({ ...fields, v: 1, seq: ++seq, t: C + minutes * MIN_MS, ev, boot: 'attente' });
+  const lines = [
+    line(5, 'karaoke.phase', { phase: 'between', blocker: 'evening-end' }),
+    // Six téléphones revus, dont S13 et S10, sans signe depuis plus d'une
+    // heure avant la fin du karaoké.
+    ...['S13', 'S10', 'S11', 'S03', 'S16', 'S17'].map((id, i) => line(10 + i, 'person.seen', { personId: id })),
+    line(20, 'notice.sent', { personId: 'S16', kind: 'turnSoon' }),
+    line(21, 'presence.asked', { personIds: ['S16'], entryId: waiting.entryId, source: 'auto' }),
+    line(22, 'turn.sent', { entryId: waiting.entryId, ids: ['S16'], ownerId: 'S16', kind: 'solo', queueId: 'attente-1', sentAt: C + 22 * MIN_MS }),
+    line(23, 'song.removed', { personId: 'S16', entryId: waiting.entryId, by: 'staff' }),
+    line(24, 'stage.ended', { queueId: lastStage.queueId, playedSec: 1500 }),
+    line(25, 'queue.sample', { ready: 1, songsListed: 1, demanding: 1, deferred: 0, present: 12, inKaraFun: 1 }),
+    line(26, 'person.left', { personId: 'S17', by: 'staff', songsDropped: 0 }),
+    // Mise à jour longue : application arrêtée de C + 2 h 10 à C + 2 h 50.
+    line(170, 'app.started', { restored: true, offlineMs: 40 * MIN_MS, version: 'v3.5.0' }),
+  ];
+  const office = statsAt(closeOffice(base, C));
+  for (const id of ['S13', 'S10']) assert.ok(singerOf(office, id).leftAt < lastEndOf(office) - 30 * MIN_MS, `${id} : sans signe depuis plus d’une heure`);
+  const reference = closeOffice(base, C);
+  const delayed = closeOffice({ ...base, events: [...base.events, ...lines] }, C, C + 3 * HOUR_MS);
+  assert.deepEqual(delayed.events.at(-1), { ...reference.events.at(-1), seq: seq + 1, t: C + 3 * HOUR_MS }, 'même ligne evening.closed, datée de C + 3 h');
+  const now = C + 3 * HOUR_MS;
+  assert.deepEqual(statsAt(delayed, now), statsAt(reference, now), 'computeStats rend le résultat de la soirée close à C');
+  // Relue sans meta : la ligne evening.closed dit 'auto' et closedAt = C.
+  const bareDelayed = statsBare(delayed), bareReference = statsBare(reference);
+  for (const [name, get] of [['fin du karaoké', s => s.evening.closedAt], ['indice de Jain', s => s.fairness.jain], ['titres par heure', s => s.global.songsPerHour],
+    ['temps mort', s => s.global.deadShare], ['attente moyenne', s => s.global.waitAvgSec],
+    ['attente sans monter sur scène', s => s.singers.map(x => [x.id, x.stageWaits])]]) {
+    assert.deepEqual(get(bareDelayed), get(bareReference), `sans meta : ${name}`);
+  }
+  assert.equal(bareDelayed.evening.closedAt, lastEndOf(bareReference));
+  assert.equal(bareDelayed.fairness.jain, office.fairness.jain);
+  // Le journal s'arrête à C (E1), même sans meta : le même résultat en tout.
+  assert.deepEqual([bareDelayed.timeline.end, bareDelayed.evening.endedAt], [C, C]);
+  assert.deepEqual(bareDelayed, bareReference, 'sans meta : le résultat de la soirée close à C');
+  // L'export garde chaque ligne ; eveningBreaks n'y coupe rien.
+  const exported = exportEvening({ ...delayed, now });
+  assert.equal(exported.events.length, delayed.events.length);
+  for (const e of lines) assert.ok(exported.events.some(x => x.seq === e.seq && x.ev === e.ev && x.t === e.t), `${e.ev} gardé dans l’export`);
+  assert.deepEqual(eveningBreaks({ events: delayed.events, timeZone: PARIS }).cuts, []);
+  // Remise à zéro au démarrage : PC éteint de 1 h 30 à 10 h, C au premier
+  // calme après 8 h. Le karaoké finit à l'arrêt de l'application, comme sans
+  // la règle (même journal clos par le bouton à C) ; de l'arrêt noté à 10 h,
+  // seule la part d'avant C compte.
+  const C8 = closurePoint({ firstActivityAt: base.firstActivityAt, events: base.events, timeZone: PARIS });
+  assert.equal(C8, le16('08:00'));
+  const restart = { v: 1, seq: base.seq + 1, t: le16('10:00'), ev: 'app.started', boot: 'matin', restored: true, offlineMs: 8.5 * HOUR_MS, version: 'v3.5.0' };
+  const startup = { ...base, events: [...base.events, restart] };
+  const atStartup = statsAt(closeOffice(startup, C8, le16('10:00') + 1000));
+  assert.equal(atStartup.evening.closedAt, le16('01:30'), 'karaoké fini à 1 h 30, à l’arrêt de l’application');
+  const withoutRule = { meta: { ...startup.meta, endedAt: C8, closedBy: 'staff-reset' },
+    events: [...startup.events, closingOf(startup.events, le16('10:00') + 1000, { by: 'staff-reset' })] };
+  assert.equal(statsAt(withoutRule).evening.closedAt, le16('01:30'), 'comme sans la règle');
+  const noRestart = statsAt(closeOffice(base, C8));
+  assert.equal(atStartup.quality.offlineSec - noRestart.quality.offlineSec, 6.5 * 3600, 'arrêt compté jusqu’à C');
+  assert.equal(atStartup.quality.restarts, noRestart.quality.restarts, 'la reprise de 10 h, après C, n’est pas lue');
+});
+
+// ------------------------------- A4 : suites des demandes de duo de la veille
+// Plan du 8 novembre, A4 (« Ce qui traverse la coupure ») : « réponses de duo
+// d'avant ignorées ». Une demande de duo encore en attente à la coupure (titre
+// laissé dans la liste, qui part quand KaraFun revient) n'a de suite dans le
+// morceau suivant que ses citations : ni sa réponse, ni son annulation, ni son
+// expiration au départ du titre, ni le duo ouvert rejoint ou fermé, ni
+// l'invitée qui se retire n'y comptent dans les duos. Sinon la carte « Duos et
+// Battles » montre « duos ouverts 0 · rejoints 1 » ou « invitations 0 … sans
+// réponse 1 ».
+const { planSplit, pieceJournal } = require('../evening-split');
+// Heure de Paris le 15 octobre 2026 (heure d'été, UTC+2).
+const le15 = hhmm => Date.parse(`2026-10-15T${hhmm}:00+02:00`);
+
+test('A4 : suites des demandes de duo faites avant la coupure (invitation annulée, expirée, ou acceptée puis quittée ; demande pour rejoindre acceptée puis annulée, refusée, retirée ou expirée ; duo ouvert rejoint puis quitté, fermé ou expiré) : ignorées dans les duos du morceau suivant, même quand le titre reçoit ensuite une demande du morceau ; les mêmes suites des demandes du morceau y comptent, réponse datée d’avant sa demande comprise, l’invitée qui se retire d’un duo de la veille n’est plus sur scène, et le journal sans ligne reportée les compte toutes', () => {
+  const events = [];
+  const line = (t, ev, fields = {}) => events.push({ ...fields, v: 1, seq: events.length + 1, t, ev, boot: 'b1' });
+  const title = (t, personId, entryId) => line(t, 'song.requested', { personId, entryId, title: entryId, mode: 'append' });
+  // Une invitation ajoute son propre titre (inviteDuet).
+  const invite = (t, ownerId, partnerId, entryId) => {
+    title(t, ownerId, entryId);
+    line(t + 1, 'duo.invited', { personId: ownerId, entryId, ownerId, partnerId, sameGroup: false });
+  };
+  const askJoin = (t, requesterId, ownerId, entryId) => line(t, 'duo.joinRequested', { requesterId, ownerId, entryId, direct: false });
+  const open = (t, personId, entryId) => line(t, 'duo.openRequested', { personId, entryId, fromCatalog: false });
+  let queueId = 0;
+  // Titre envoyé à KaraFun, puis chanté.
+  const sing = (t, entryId, ids) => {
+    line(t, 'turn.sent', { entryId, ids, ownerId: ids[0], kind: ids.length > 1 ? 'duo' : 'solo', queueId: ++queueId, sentAt: t });
+    line(t + MIN_MS, 'stage.started', { queueId, entryId, ids, ownerId: ids[0], source: 'queue', title: entryId });
+    line(t + 5 * MIN_MS, 'stage.ended', { queueId, playedSec: 240 });
+  };
+  // Jeudi : a et b à la table 1, c et d à la table 2 (jamais le même groupe :
+  // chaque demande attend sa réponse), un titre chanté.
+  const people = [['a', '1'], ['b', '1'], ['c', '2'], ['d', '2']];
+  line(le15('19:00'), 'evening.started', { rules: {} });
+  line(le15('19:00') + 1, 'app.started', { restored: false, offlineMs: 0 });
+  line(le15('19:01'), 'karaoke.phase', { phase: 'silent', blocker: 'empty' });
+  line(le15('19:05'), 'table.opened', { tableId: '1', individual: false });
+  line(le15('19:06'), 'table.opened', { tableId: '2', individual: false });
+  people.forEach(([personId, tableId], i) => line(le15('19:10') + i, 'person.joined', { personId, tableId }));
+  title(le15('19:30'), 'a', 'e0');
+  sing(le15('19:34'), 'e0', ['a']);
+  // Demandes encore en attente à la coupure : trois invitations, quatre
+  // demandes pour rejoindre un titre, trois duos ouverts (un par personne).
+  invite(le15('23:00'), 'a', 'c', 'v1');
+  invite(le15('23:01'), 'b', 'd', 'v2');
+  invite(le15('23:02'), 'c', 'a', 'v3');
+  [['a', 'c', 'j1'], ['b', 'd', 'j2'], ['c', 'a', 'j3'], ['d', 'b', 'j4']].forEach(([ownerId, requesterId, entryId], i) => {
+    title(le15('23:10') + i * MIN_MS, ownerId, entryId);
+    askJoin(le15('23:10') + i * MIN_MS + 1, requesterId, ownerId, entryId);
+  });
+  [['a', 'o1'], ['b', 'o2'], ['c', 'o3']].forEach(([personId, entryId], i) => {
+    title(le15('23:20') + i * MIN_MS, personId, entryId);
+    open(le15('23:20') + i * MIN_MS + 1, personId, entryId);
+  });
+  line(le16('01:10'), 'karaoke.phase', { phase: 'unknown', blocker: 'offline' });
+  // Vendredi, KaraFun revenu : les suites des demandes de la veille.
+  line(le16('18:30'), 'karaoke.phase', { phase: 'silent', blocker: 'empty' });
+  line(le16('19:00'), 'duo.cancelled', { personId: 'a', entryId: 'v1', ownerId: 'a', partnerId: 'c' });
+  line(le16('19:01'), 'duo.answered', { personId: 'a', entryId: 'v3', ownerId: 'c', partnerId: 'a', accepted: true });
+  line(le16('19:02'), 'duo.left', { ownerId: 'c', guestId: 'a', entryId: 'v3', sent: false });
+  line(le16('19:03'), 'duo.joinAnswered', { personId: 'a', ownerId: 'a', requesterId: 'c', entryId: 'j1', accepted: true });
+  line(le16('19:04'), 'duo.cancelled', { personId: 'a', entryId: 'j1', ownerId: 'a', partnerId: 'c' });
+  line(le16('19:05'), 'duo.joinAnswered', { personId: 'b', ownerId: 'b', requesterId: 'd', entryId: 'j2', accepted: false });
+  line(le16('19:06'), 'duo.joinCancelled', { requesterId: 'a', ownerId: 'c', entryId: 'j3' });
+  line(le16('19:07'), 'duo.openAccepted', { personId: 'd', ownerId: 'a', partnerId: 'd', entryId: 'o1' });
+  line(le16('19:08'), 'duo.openClosed', { personId: 'b', ownerId: 'b', entryId: 'o2', reason: 'self' });
+  // Titres de la veille partis en solo : leur demande expire.
+  line(le16('19:20'), 'duo.inviteExpired', { ownerId: 'b', partnerId: 'd', entryId: 'v2' });
+  sing(le16('19:20') + 1, 'v2', ['b']);
+  line(le16('19:30'), 'duo.joinExpired', { ownerId: 'd', requesterId: 'b', entryId: 'j4', reason: 'sent' });
+  sing(le16('19:30') + 1, 'j4', ['d']);
+  line(le16('19:40'), 'duo.openExpired', { ownerId: 'c', entryId: 'o3' });
+  sing(le16('19:40') + 1, 'o3', ['c']);
+  // Duo ouvert de la veille rejoint par d, déjà dans KaraFun quand elle se
+  // retire : le passage noté avec les deux noms ne la compte plus.
+  line(le16('19:50'), 'turn.sent', { entryId: 'o1', ids: ['a', 'd'], ownerId: 'a', kind: 'duo', queueId: ++queueId, sentAt: le16('19:50') });
+  line(le16('19:50') + 1, 'duo.left', { ownerId: 'a', guestId: 'd', entryId: 'o1', sent: true, by: 'guest' });
+  line(le16('19:51'), 'stage.started', { queueId, entryId: 'o1', ids: ['a', 'd'], ownerId: 'a', source: 'queue', title: 'o1' });
+  line(le16('19:55'), 'stage.ended', { queueId, playedSec: 240 });
+  // Demandes du morceau et leurs suites. Trois sur un titre de la veille dont
+  // la demande vient de finir (v1, o2, j2) : la suite de celle-ci, écrite
+  // avant elles, ne compte toujours pas.
+  invite(le16('20:00'), 'a', 'c', 'w1');
+  line(le16('20:01'), 'duo.cancelled', { personId: 'a', entryId: 'w1', ownerId: 'a', partnerId: 'c' });
+  invite(le16('20:02'), 'b', 'd', 'w2');
+  invite(le16('20:03'), 'c', 'a', 'w3');
+  line(le16('20:04'), 'duo.answered', { personId: 'a', entryId: 'w3', ownerId: 'c', partnerId: 'a', accepted: true });
+  line(le16('20:05'), 'duo.left', { ownerId: 'c', guestId: 'a', entryId: 'w3', sent: false });
+  askJoin(le16('20:10'), 'c', 'a', 'v1');
+  line(le16('20:11'), 'duo.joinAnswered', { personId: 'a', ownerId: 'a', requesterId: 'c', entryId: 'v1', accepted: true });
+  line(le16('20:12'), 'duo.cancelled', { personId: 'a', entryId: 'v1', ownerId: 'a', partnerId: 'c' });
+  open(le16('20:15'), 'b', 'o2');
+  line(le16('20:16'), 'duo.openAccepted', { personId: 'c', ownerId: 'b', partnerId: 'c', entryId: 'o2' });
+  line(le16('20:17'), 'duo.cancelled', { personId: 'b', entryId: 'o2', ownerId: 'b', partnerId: 'c' });
+  // Réponse écrite après sa demande mais datée d'avant elle (heure du PC
+  // reculée de 2 min) : elle y répond quand même, comme pour une invitation.
+  askJoin(le16('20:20'), 'd', 'b', 'j2');
+  line(le16('20:18'), 'duo.joinAnswered', { personId: 'b', ownerId: 'b', requesterId: 'd', entryId: 'j2', accepted: false });
+  title(le16('20:25'), 'd', 'w4');
+  askJoin(le16('20:26'), 'a', 'd', 'w4');
+  line(le16('20:27'), 'duo.joinCancelled', { requesterId: 'a', ownerId: 'd', entryId: 'w4' });
+  askJoin(le16('20:28'), 'c', 'd', 'w4');
+  title(le16('20:30'), 'c', 'w5');
+  open(le16('20:30') + 1, 'c', 'w5');
+  line(le16('20:31'), 'duo.openClosed', { personId: 'c', ownerId: 'c', entryId: 'w5', reason: 'self' });
+  title(le16('20:32'), 'a', 'w6');
+  open(le16('20:32') + 1, 'a', 'w6');
+  line(le16('21:00'), 'duo.inviteExpired', { ownerId: 'b', partnerId: 'd', entryId: 'w2' });
+  sing(le16('21:00') + 1, 'w2', ['b']);
+  line(le16('21:10'), 'duo.joinExpired', { ownerId: 'd', requesterId: 'c', entryId: 'w4', reason: 'sent' });
+  sing(le16('21:10') + 1, 'w4', ['d']);
+  line(le16('21:20'), 'duo.openExpired', { ownerId: 'a', entryId: 'w6' });
+  sing(le16('21:20') + 1, 'w6', ['a']);
+
+  const meta = { format: 'karaoke-evening-meta', version: 1, eveningId: '2026-10-15_1900_ab12', startedAt: events[0].t, endedAt: null,
+    timezone: PARIS, roster: Object.fromEntries(people.map(([id, tableId]) => [id, { name: `Prénom ${id}`, tableId }])),
+    tables: { 1: { name: 'Table 1', individual: false }, 2: { name: 'Table 2', individual: false } } };
+  const C = le16('08:00');
+  assert.deepEqual(eveningBreaks({ events, timeZone: PARIS, startedAt: meta.startedAt }).cuts, [C], 'deux nuits, coupure vendredi à 8 h');
+  const [first, second] = planSplit({ meta, events, cuts: [C], citedIds }).pieces;
+  const requests = lines => lines.filter(e => ['duo.invited', 'duo.joinRequested', 'duo.openRequested'].includes(e.ev)).map(e => e.entryId);
+  assert.deepEqual(requests(first.lines), ['v1', 'v2', 'v3', 'j1', 'j2', 'j3', 'j4', 'o1', 'o2', 'o3'], 'demandes de la veille au premier morceau');
+  assert.deepEqual(second.carried.filter(e => e.ev === 'person.joined').map(e => e.personId).sort(), ['a', 'b', 'c', 'd'],
+    'personnes citées dans le morceau, donc reportées : aucune de ses lignes n’est ignorée');
+  const journal = pieceJournal(second);
+  const stats = computeStats({ meta: second.meta, events: journal, now: journal.at(-1).t });
+  const none = { declined: 0, improvised: 0, improvisedCancelled: 0, improvisedReplaced: 0, improvisedStages: 0 };
+  // Seules les suites des demandes du morceau comptent : une de chaque sorte,
+  // et trois annulations (w1, et les duos de v1 et de o2 formés dans le morceau).
+  assert.deepEqual(stats.global.duos, { ...none, invites: 3, accepted: 1, cancelled: 3, inviteExpired: 1, left: 1,
+    joinRequests: 4, joinAccepted: 1, joinDeclined: 1, joinCancelled: 1, joinExpired: 1,
+    openRequests: 3, openAccepted: 1, openClosed: 1, openExpired: 1 });
+  // d s'est retirée du duo ouvert de la veille : elle ne compte pas sur scène.
+  assert.deepEqual(stats.timeline.stages.find(st => st.entryId === 'o1').ids, ['a']);
+  assert.equal(singerOf(stats, 'd').guestTurns, 0);
+  // Le journal fusionné, sans ligne reportée : toutes les suites comptent, comme avant.
+  const merged = computeStats({ meta, events, now: events.at(-1).t });
+  assert.deepEqual(merged.global.duos, { ...none, invites: 6, accepted: 2, cancelled: 5, inviteExpired: 2, left: 3,
+    joinRequests: 8, joinAccepted: 2, joinDeclined: 2, joinCancelled: 2, joinExpired: 2,
+    openRequests: 6, openAccepted: 2, openClosed: 2, openExpired: 2 });
+  assert.deepEqual(merged.timeline.stages.find(st => st.entryId === 'o1').ids, ['a']);
+});

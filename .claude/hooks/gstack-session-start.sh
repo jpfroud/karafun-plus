@@ -59,7 +59,10 @@ if [ "$EVENT" = SessionStart ] && [ "${CLAUDE_CODE_REMOTE:-}" = true ] && [ -n "
 fi
 
 # Table de routage : courte, elle est ajoutée à chaque demande.
-ROUTING="Avant d'agir, choisir la commande gstack adaptée à cette demande, l'annoncer en une ligne et la lancer avec l'outil Skill : défaut signalé ou « pourquoi X » → investigate ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; parcours dans l'application → qa (qa-only pour un simple constat) ; modification écrite, avant commit, push ou PR → review ; sécurité → cso ; état du code → health ; documentation après un changement → document-release. Si aucune ne convient (simple question), écrire « aucune commande gstack : <raison> » ; ne jamais passer ce choix sous silence. Les hooks refusent toute modification du dépôt tant qu'aucune compétence gstack n'a été lancée dans la session, et le hook git pre-push exige que le dernier commit envoyé sur chaque branche ait exactement le contenu d'une relecture review terminée (les commits intermédiaires ne sont pas comparés)."
+# Défaut : gstack 1.98 a retiré investigate (GST-1717) ; sa règle « Failures »
+# (contrôle de la cause, sinon test ciblé qui échoue d'abord) puis build-check
+# (verify, renommé par gstack 1.103, #4593).
+ROUTING="Avant d'agir, choisir la commande gstack adaptée à cette demande, l'annoncer en une ligne et la lancer avec l'outil Skill : défaut signalé ou « pourquoi X » → build-check (un contrôle en lecture de la cause ; si elle reste floue, un test ciblé qui échoue avant toute modification ; puis la correction de la cause et build-check jusqu'au vert) ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; parcours dans l'application → qa (qa-only pour un simple constat) ; modification écrite, avant commit, push ou PR → review ; sécurité → cso ; état du code → health ; documentation après un changement → document-release. Si aucune ne convient (simple question), écrire « aucune commande gstack : <raison> » ; ne jamais passer ce choix sous silence. Les hooks refusent toute modification du dépôt tant qu'aucune compétence gstack n'a été lancée dans la session, et le hook git pre-push exige que le dernier commit envoyé sur chaque branche ait exactement le contenu d'une relecture review terminée (les commits intermédiaires ne sont pas comparés)."
 # Hook git pre-push de la porte gstack : contrôle des envois lancés par Claude
 # Code. Installé seulement dans le dépôt du projet (CLAUDE_PROJECT_DIR), jamais
 # par-dessus un hook pre-push étranger ni quand core.hooksPath est réglé.
@@ -87,7 +90,7 @@ install_pre_push() {
 }
 [ "$EVENT" = SessionStart ] && install_pre_push
 
-RULES="Parcours obligatoire du projet : investigate pour un défaut, qa pour les parcours navigateur, review avant livraison. Après toute modification de la file, des duos, des présences ou des tables : node test/run-offline.js, puis consigner le résultat dans RAPPORT-TEST.md."
+RULES="Parcours obligatoire du projet : build-check pour un défaut (test ciblé d'abord), qa pour les parcours navigateur, review avant livraison. Après toute modification de la file, des duos, des présences ou des tables : node test/run-offline.js, puis consigner le résultat dans RAPPORT-TEST.md."
 RETRY="L'utilisateur a donné son accord : pour réessayer, lancer bash .claude/hooks/install-gstack.sh claude puis redémarrer l'agent. En attendant, faire les vérifications équivalentes et ne jamais prétendre avoir exécuté une compétence."
 if [ "$EVENT" = UserPromptSubmit ]; then
   if [ -n "$GSTACK_DIR" ]; then
@@ -103,6 +106,26 @@ elif [ -n "$GSTACK_DIR" ]; then
 else
   MESSAGE="GSTACK_MISSING : gstack est obligatoire dans ce dépôt et son installation automatique a échoué : ${REASON:-raison inconnue}. Le dire tout de suite à l'utilisateur, avant tout changement de code. $RETRY $RULES"
 fi
+
+# Compétences de la table de routage absentes de gstack : une mise à jour
+# automatique (mode équipe, en arrière-plan au démarrage) peut en retirer une,
+# comme investigate en 1.98, alors que la session la liste encore. Même test
+# que la porte (gstack-gate.js) : <gstack>/<compétence>/SKILL.md, et la
+# compétence absente de la liste GSTACK_RETIRED_SKILLS de gstack (une
+# compétence retirée peut garder son dossier, comme plan-eng-review en 1.98,
+# revenu en 1.99.5).
+ROUTED_SKILLS="build-check spec plan-eng-review qa qa-only review cso health document-release"
+MISSING_SKILLS=""
+if [ -n "$GSTACK_DIR" ]; then
+  RETIRED_SKILLS="$(sed -n 's/^GSTACK_RETIRED_SKILLS="\(.*\)"$/\1/p' "$GSTACK_DIR/bin/gstack-install-registry.sh" 2>/dev/null | head -n 1)"
+  for skill in $ROUTED_SKILLS; do
+    case " $RETIRED_SKILLS " in *" $skill "*) retired=1 ;; *) retired="" ;; esac
+    if [ -n "$retired" ] || [ ! -f "$GSTACK_DIR/$skill/SKILL.md" ]; then
+      MISSING_SKILLS="${MISSING_SKILLS:+$MISSING_SKILLS, }$skill"
+    fi
+  done
+fi
+[ -n "$MISSING_SKILLS" ] && MESSAGE="$MESSAGE GSTACK_INCOMPLET : compétences de la table de routage absentes de gstack ($MISSING_SKILLS). Ne pas les invoquer ; le dire à l'utilisateur et faire la vérification équivalente. Si gstack vient de se mettre à jour, adapter la table de routage du projet (hooks, CLAUDE.md, AGENTS.md)."
 
 [ -n "$PRE_PUSH_NOTE" ] && MESSAGE="$MESSAGE $PRE_PUSH_NOTE"
 

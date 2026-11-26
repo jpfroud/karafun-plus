@@ -40,5 +40,9 @@ body:
     id: journal
     attributes:
       label: Journal
-      description: Extrait de journal/ ou de docker compose logs, prénoms retirés.
+      description: >-
+        Extrait de journal/ ou de docker compose logs, prénoms retirés, jamais la ligne « Clé du bar ».
+        Pour une soirée mal découpée, les lignes « Réparation » et « Fin de soirée » d'envoi.txt
+        (DEPLOIEMENT-SERVEUR.md, section 18, « Envoyer une soirée au développeur ») ; ses dossiers, eux,
+        partent par un chemin privé.
       render: text

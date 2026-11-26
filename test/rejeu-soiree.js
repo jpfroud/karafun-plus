@@ -50,8 +50,20 @@
  *                          staff.recalculate) : pour juger un changement des gestes du bar.
  *                          Sans elle, ces gestes ne sont pas rejoués (signalés).
  *   --court                résumé seulement (sans la liste des décisions ni des attentes)
- *   --cles                 clés S01… à la place des prénoms (texte et JSON) : sortie
- *                          à reporter dans le dépôt ou une PR
+ *   --soiree <k>           export qui mêle plusieurs soirées (journal de plusieurs nuits,
+ *                          exporté avant sa réparation) : rejoue la k-ième (1, 2…), coupée
+ *                          comme au bar (8 h, puis une heure sans titre : evening-bounds.js,
+ *                          evening-split.js), une fois, par la version de travail, avant les
+ *                          deux rejeux d'un bilan ; elle part de ses lignes reportées (règles,
+ *                          tables et personnes connues à la coupure). Sans --soiree, un tel
+ *                          export est refusé ; un export d'une seule soirée se rejoue tel quel.
+ *   --soiree liste         une ligne par soirée de l'export (numéro, ouverture, coupure,
+ *                          nombre de lignes), sans rejeu
+ *   --prenoms              prénoms de l'export dans le rapport, le bilan et le JSON : sortie
+ *                          à garder hors du dépôt et de la PR. Sans elle, les clés S01… et
+ *                          T1…, dites en tête (« Prénoms masqués ») si l'export a des prénoms
+ *   --cles                 clés S01… et T1… à la place des prénoms (texte et JSON), sans la
+ *                          ligne en tête : sortie à reporter dans le dépôt ou une PR
  *   --avant <rév|dossier>  BILAN AVANT/APRÈS : la même soirée rejouée librement avec
  *                          l'ordonnanceur d'une autre version (révision git du dépôt,
  *                          extraite dans .git/karafun-rejeu, ou dossier de sources)
@@ -73,6 +85,10 @@
  *     after: { solver: true }, moves, budget, options });  r.compareReport(cmp)
  *   (`code` : révision git ou dossier, version de travail par défaut ; `solver`
  *   comme ci-dessus, true = jar de cette version)
+ *   Export qui mêle plusieurs soirées : r.soireesOf(exp) les décrit (--soiree
+ *   liste : { k, openedAt, opening, cut, cutLabel, lines }), r.soireeOf(exp, k)
+ *   rend la k-ième en export, à donner à loadEvening (--soiree k) ; `exp` :
+ *   chemin ou export déjà lu (r.readExport).
  *
  * Aucune méthode de l'ordonnanceur n'est copiée ici : les choix viennent de
  * select() et reserveNext(), les explications de son ÉTAT au moment de la
@@ -112,6 +128,10 @@ const { execFileSync, spawn } = require('child_process');
 const { Scheduler } = require('../scheduler');
 const { BUNDLED_JAVA } = require('../solver/bridge');
 const eveningStats = require('../evening-stats');
+// Découpage d'un export qui mêle plusieurs soirées (--soiree) : le calcul de la
+// réparation du bar, modules purs.
+const { splitPlan, karaokeOf, openingLabel } = require('../evening-journal');
+const { pieceJournal } = require('../evening-split');
 
 const ROOT = path.join(__dirname, '..');
 const jarsIn = dir => [path.join(dir, 'solver', 'target', 'karafun-solver.jar'), path.join(dir, 'solver', 'karafun-solver.jar')];
@@ -185,8 +205,8 @@ function timeOf(t, tz = 'Europe/Paris') {
 }
 
 // ------------------------------------------------------------------ export
-// `input` : chemin du fichier ou objet déjà lu.
-function loadEvening(input) {
+// Export lu, sans rejeu : `input` est le chemin du fichier ou l'objet déjà lu.
+function readExport(input) {
   let raw = input;
   if (typeof input === 'string') {
     let text;
@@ -194,10 +214,104 @@ function loadEvening(input) {
     try { raw = JSON.parse(text); } catch (err) { throw new UsageError(`Export de soirée illisible : ${input} n'est pas du JSON (${err.message})`); }
   }
   if (!raw || !Array.isArray(raw.events)) throw new UsageError('Export de soirée illisible : pas de liste « events ».');
+  return raw;
+}
+
+// ------------------------------------------------------------------ export fusionné (--soiree)
+// Un export d'un journal fusionné (plusieurs nuits sans remise à zéro, avant sa
+// réparation, plan du 8 novembre, A4) mêle plusieurs soirées. Ce sont celles du
+// bar : les coupures d'eveningBreaks puis les morceaux de planSplit, par
+// splitPlan (evening-journal.js), le calcul de la réparation, fait une fois,
+// par la version de travail, avant tout rejeu : les deux côtés d'un bilan
+// rejouent la même soirée. meta tirée de l'export comme metaOf
+// (test/figer-resume.js), sans prénom : evening.id, son fuseau (Europe/Paris
+// s'il n'en a pas, comme les heures du rejeu), la table de chaque personne et
+// les tables « En solo ». L'export d'un morceau déjà découpé au bar (lignes
+// reportées en tête, comme le reconnaît computeStats) reçoit aussi son début,
+// l'heure de sa première ligne reportée (pieceMeta, evening-split.js), et un
+// split, comme son meta.json : une activité datée d'avant ce début (heure du
+// PC reculée) y compte à ce début, et le morceau n'est pas recoupé avant
+// lui (A1).
+const REPLAY_ZONE = 'Europe/Paris';
+function splitExport(raw) {
+  const keyed = list => (Array.isArray(list) ? list : []).filter(x => typeof x?.key === 'string' && x.key !== '');
+  const carried = raw.events.find(e => e?.carried === true && Number.isFinite(e.t));
+  const meta = {
+    eveningId: raw.evening?.id ?? null,
+    timezone: raw.evening?.timezone || REPLAY_ZONE,
+    ...(carried ? { startedAt: carried.t, split: {} } : {}),
+    roster: Object.fromEntries(keyed(raw.people).map(p => [p.key, { tableId: typeof p.table === 'string' ? p.table : null }])),
+    tables: Object.fromEntries(keyed(raw.tables).map(tb => [tb.key, { individual: !!tb.individual }])),
+  };
+  return splitPlan({ meta, events: raw.events, citedIds: eveningStats.citedIds });
+}
+
+// Ouverture d'une soirée de l'export, celle du menu des soirées du bar (A5) :
+// karaokeOf du résumé de computeStats sur ses lignes, comme à la réparation.
+// Sans aucune ligne datée, null (« ouverture inconnue ») : rien ne la date.
+function openedAtOf(piece) {
+  const events = pieceJournal(piece);
+  const now = events.reduce((m, e) => (Number.isFinite(e?.t) ? Math.max(m, e.t) : m), -Infinity);
+  if (now === -Infinity) return null;
+  return karaokeOf(eveningStats.computeStats({ meta: piece.meta, events, now }), events, piece.meta).openedAt;
+}
+
+// Soirées de l'export (--soiree liste) : numéro k (à partir de 1), ouverture
+// (openedAt, et son libellé du menu des soirées, opening), coupure (cut et
+// cutLabel, null pour la dernière) et nombre de lignes de l'export (lines,
+// sans les lignes reportées ni la clôture que le découpage ajoute).
+function soireesOf(input) {
+  const plan = splitExport(readExport(input));
+  const n = plan.pieces.length;
+  return plan.pieces.map(piece => {
+    const openedAt = openedAtOf(piece);
+    const cut = piece.k < n ? piece.end : null;
+    return { k: piece.k, openedAt, opening: openingLabel(openedAt, plan.timeZone), cut,
+      cutLabel: cut == null ? null : openingLabel(cut, plan.timeZone), lines: piece.lines.length };
+  });
+}
+
+// La soirée à rejouer (--soiree), en export, pour loadEvening : un export d'une
+// seule soirée tel quel (avec ou sans --soiree 1) ; d'un export qui en mêle
+// plusieurs, la k-ième : ses lignes reportées, qui font son état de départ,
+// ses lignes, sa clôture, ses personnes et ses tables (celles de son meta,
+// pieceMeta d'evening-split.js). Les statistiques de l'export, celles de la
+// soirée fusionnée, ne la décrivent pas : le rejeu n'y compare pas ses
+// attentes. Sans numéro, un export fusionné est refusé, comme un numéro de
+// trop : une ligne, sans pile. Seule entrée du découpage, pour --soiree comme
+// pour les scripts (--reference du lot C, essai réel d'A4). `soiree` : null,
+// ou un entier à partir de 1, BigInt au-delà des entiers sûrs (parseArgs).
+function soireeOf(input, soiree = null) {
+  if (soiree != null && !((Number.isSafeInteger(soiree) || typeof soiree === 'bigint') && soiree >= 1)) {
+    throw new RangeError('soireeOf : numéro de soirée entier à partir de 1 attendu.');
+  }
+  const raw = readExport(input);
+  const plan = splitExport(raw);
+  const n = plan.pieces.length;
+  if (soiree == null && n > 1) {
+    const openings = plan.pieces.map(piece => `${piece.k} : ${openingLabel(openedAtOf(piece), plan.timeZone) ?? 'ouverture inconnue'}`);
+    const choices = plan.pieces.map(piece => `--soiree ${piece.k}`);
+    throw new UsageError(`Cet export mêle ${n} soirées (${openings.join(' ; ')}) : ajoute ${choices.slice(0, -1).join(', ')} ou ${choices.at(-1)}.`);
+  }
+  if (soiree != null && soiree > n) throw new UsageError(`--soiree ${soiree} : cet export n'a ${n > 1 ? `que ${n} soirées` : 'qu\'une soirée'}.`);
+  if (n === 1) return raw;
+  const piece = plan.pieces[Number(soiree) - 1];
+  const people = new Set(Object.keys(piece.meta.roster || {}));
+  const tables = new Set(Object.keys(piece.meta.tables || {}));
+  const { stats: _stats, insights: _insights, ...rest } = raw;
+  return { ...rest,
+    people: Array.isArray(raw.people) ? raw.people.filter(p => people.has(p?.key)) : raw.people,
+    tables: Array.isArray(raw.tables) ? raw.tables.filter(tb => tables.has(tb?.key)) : raw.tables,
+    events: pieceJournal(piece) };
+}
+
+// `input` : chemin du fichier ou objet déjà lu.
+function loadEvening(input) {
+  const raw = readExport(input);
   const skipped = {};
   // Ligne dupliquée après un arrêt brutal : ignorée, comme dans evening-stats.js.
   const seen = new Set();
-  const events = raw.events
+  const kept = raw.events
     .map((e, i) => ({ e, i }))
     .filter(({ e }) => {
       const ok = e && typeof e.ev === 'string' && Number.isFinite(e.t) && (e.v == null || e.v === 1);
@@ -207,7 +321,13 @@ function loadEvening(input) {
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
-    })
+    });
+  // Morceau d'une soirée découpée (A4) : ses lignes reportées, datées de son
+  // début, sont son état de départ. Une ligne datée d'avant elles (heure du PC
+  // reculée), écrite après elles, compte à leur heure, donc après elles, comme
+  // dans evening-stats.js et au découpage (evening-split.js).
+  const floor = kept.find(({ e }) => e.carried === true)?.e.t;
+  const events = (floor == null ? kept : kept.map(({ e, i }) => ({ e: e.t < floor ? { ...e, t: floor } : e, i })))
     // Ordre des heures, puis des numéros d'ordre, comme evening-stats.js (une
     // horloge qui recule ne mélange pas les gestes du rejeu).
     .sort((a, b) => a.e.t - b.e.t || (Number.isFinite(a.e.seq) && Number.isFinite(b.e.seq) ? a.e.seq - b.e.seq : 0) || a.i - b.i)
@@ -438,7 +558,7 @@ function loadEvening(input) {
     }
     for (const k in open) close(k, Infinity);
     noSend.push(...noReserve.slice(offline.length)); }
-  const timezone = raw.evening?.timezone || 'Europe/Paris';
+  const timezone = raw.evening?.timezone || REPLAY_ZONE;
   const realPassages = passagesFromEvents(events);
   // Attentes de evening-stats.js présentes dans l'export (vérification de la définition).
   const exportWaits = new Map();
@@ -2225,7 +2345,7 @@ function traceLines(res, d) {
 // ------------------------------------------------------------------ CLI
 function parseArgs(argv) {
   const o = { file: null, free: false, solver: false, budget: null, moves: null, traces: [], json: null, options: {}, short: false,
-    before: null, solverBefore: null, keys: false, gestures: false };
+    before: null, solverBefore: null, keys: false, names: false, soiree: null, gestures: false };
   const value = (k, name) => {
     if (argv[k] == null || argv[k].startsWith('--')) throw new Error(`${name} attend une valeur`);
     return argv[k];
@@ -2242,7 +2362,16 @@ function parseArgs(argv) {
     else if (a === '--json') o.json = value(++k, '--json');
     else if (a === '--court') o.short = true;
     else if (a === '--cles') o.keys = true;
-    else if (a === '--gestes') o.gestures = true;
+    else if (a === '--prenoms') o.names = true;
+    else if (a === '--soiree') {
+      const raw = value(++k, '--soiree');
+      const n = /^\d+$/.test(raw) ? Number(raw) : NaN;
+      if (raw === 'liste') o.soiree = 'liste';
+      // Tout numéro à partir de 1 ; au-delà des entiers sûrs, un BigInt, qui
+      // garde ses chiffres : un numéro de trop, refusé en route (soireeOf).
+      else if (n >= 1) o.soiree = Number.isSafeInteger(n) ? n : BigInt(raw);
+      else throw new Error(`--soiree attend un numéro de soirée à partir de 1, ou liste (reçu « ${raw} »)`);
+    } else if (a === '--gestes') o.gestures = true;
     else if (a === '--option') {
       const [key, ...rest] = String(argv[++k] || '').split('=');
       const raw = rest.join('=');
@@ -2261,25 +2390,48 @@ function parseArgs(argv) {
   if (o.solverBefore && !o.before) throw new Error('--solveur-avant va avec --avant');
   if (o.solverBefore && !o.solver) throw new Error('--solveur-avant demande aussi --solveur : les deux versions avec Timefold');
   if (o.before && o.traces.length) throw new Error('--trace détaille un seul rejeu : le lancer sans --avant');
+  if (o.names && o.keys) throw new Error('--prenoms et --cles ne vont pas ensemble : --prenoms montre les prénoms, --cles les remplace par les clés S01…');
   return o;
 }
 
-// Aide : le bloc d'usage de l'en-tête ci-dessus.
+// Aide : le bloc d'usage de l'en-tête ci-dessus, fins de ligne ignorées (git
+// extrait les sources en CRLF sous Windows).
 const USAGE = (() => {
-  const lines = fs.readFileSync(__filename, 'utf8').split('\n');
+  const lines = fs.readFileSync(__filename, 'utf8').split(/\r?\n/);
   const from = lines.findIndex(l => l.includes('node test/rejeu-soiree.js <export.json>'));
   const to = lines.findIndex(l => l.startsWith(' * Programmatique'));
   return lines.slice(from, to).map(l => l.replace(/^ \* ?/, '')).join('\n').trimEnd();
 })();
+
+// Prénoms du rejeu (plan du 8 novembre, A7) : sans --prenoms, le rapport, le
+// bilan et le JSON prennent les clés S01… et T1… ; sans --cles non plus, ils le
+// disent en tête dès qu'une personne de l'export a un nom différent de sa clé.
+const MASKED = 'Prénoms masqués (clés S01…) : --prenoms pour les voir, sortie à garder hors du dépôt et de la PR.';
+const hasNames = raw => Array.isArray(raw.people) && raw.people.some(p => typeof p?.key === 'string' && p.name && p.name !== p.key);
+// Une ligne de --soiree liste.
+const soireeLine = s => `Soirée ${s.k} : ouverture ${s.opening ?? 'inconnue'} ; ` +
+  `${s.cut == null ? 'jusqu\'à la fin de l\'export' : `coupure ${s.cutLabel}`} ; ${count(s.lines)} ligne${s.lines > 1 ? 's' : ''}`;
 
 async function main(argv = process.argv.slice(2), print = console.log, printError = console.error) {
   let o;
   try { o = parseArgs(argv); } catch (err) { print(printable(err.message) + '\n\n' + USAGE); return 2; }
   if (o.help || !o.file) { print(USAGE); return o.help ? 0 : 2; }
   try {
-    const ev = loadEvening(o.file);
-    // --cles : les prénoms de l'export ne sortent pas (rapport, bilan, JSON).
-    if (o.keys) for (const p of ev.people.values()) p.name = p.key;
+    const raw = readExport(o.file);
+    // --soiree liste : les soirées de l'export, puis l'arrêt, sans rejeu.
+    if (o.soiree === 'liste') {
+      print(soireesOf(raw).map(soireeLine).join('\n'));
+      return 0;
+    }
+    // Export qui mêle plusieurs soirées : coupé ici, une fois, avant tout rejeu
+    // (et avant de chercher la version « avant ») ; sans --soiree, refusé.
+    const ev = loadEvening(soireeOf(raw, o.soiree));
+    // Clés à la place des prénoms et des noms de table, sauf avec --prenoms.
+    const masked = !o.names && !o.keys && hasNames(raw);
+    if (!o.names) {
+      for (const p of ev.people.values()) p.name = p.key;
+      for (const tb of ev.tables.values()) tb.name = tb.key;
+    }
     let res, text;
     if (o.before) {
       res = await runCompare(ev, { budget: o.budget, moves: o.moves, options: o.options, gestures: o.gestures,
@@ -2293,8 +2445,8 @@ async function main(argv = process.argv.slice(2), print = console.log, printErro
         gestures: o.gestures });
       text = report(res, { traces: o.traces, short: o.short });
     }
-    print(text);
-    if (o.json) fs.writeFileSync(o.json, JSON.stringify(res, null, 1));
+    print(masked ? `${MASKED}\n${text}` : text);
+    if (o.json) fs.writeFileSync(o.json, JSON.stringify(masked ? { prenoms: MASKED, ...res } : res, null, 1));
     return 0;
   } catch (err) {
     // Erreur d'utilisation : son message ; défaut du rejeu : la trace complète.
@@ -2304,7 +2456,7 @@ async function main(argv = process.argv.slice(2), print = console.log, printErro
   }
 }
 
-module.exports = { loadEvening, runForced, runFree, runCompare, report, compareReport, analyse, computeWaits, replayJournal,
-  BLOCKER_PRIORITY, UNCONFIRMED_MS,
+module.exports = { loadEvening, readExport, soireeOf, soireesOf, runForced, runFree, runCompare, report, compareReport, analyse,
+  computeWaits, replayJournal, BLOCKER_PRIORITY, UNCONFIRMED_MS,
   stageWaitsOf, passagesFromEvents, balanceOf, summary, main, parseArgs, timeOf, UsageError };
 if (require.main === module) main().then(code => { process.exitCode = code; }, err => { console.error(err); process.exitCode = 1; });

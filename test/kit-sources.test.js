@@ -330,3 +330,19 @@ test('K5 planificateur livré, mesuré, chargé', () => {
     if (file.endsWith('.js')) assert.ok(sources.has(file), `couverture : ${file} chargé par le serveur, absent de SOURCES`);
   }
 });
+
+// Chaque essai est lancé par la suite (règle « Fichiers nouveaux » du plan du
+// 8 novembre) : nommé dans test/run-offline.js, seul ou en démo. Seul
+// gstack-gate.test.js en reste hors : la CI le lance à part (ci.yml, jobs
+// linux et Windows).
+const OUTSIDE_SUITE = new Set(['gstack-gate.test.js']);
+test('K6 chaque essai nommé dans test/run-offline.js', () => {
+  const suite = read('test/run-offline.js');
+  const tests = fs.readdirSync(path.join(root, 'test')).filter(name => name.endsWith('.test.js')).sort();
+  assert.ok(tests.length >= 100, `essais trouvés dans test/ : ${tests.length}`);
+  for (const name of OUTSIDE_SUITE) assert.ok(tests.includes(name), `exemption périmée : test/${name} n'existe plus`);
+  for (const name of tests.filter(name => !OUTSIDE_SUITE.has(name))) {
+    assert.ok(suite.includes(`'${name}'`) || suite.includes(`'test/${name}'`),
+      `Essai jamais lancé par la suite : test/${name}. Ajoute-le à la liste de test/run-offline.js.`);
+  }
+});

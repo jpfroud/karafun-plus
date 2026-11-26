@@ -489,6 +489,22 @@ if (d.code !== "") faute("code KaraFun « " + d.code + " », attendu vide");
 ' <<< "$ETAT"
 ok
 
+# Règle d'apresHuitHeures() (test/server-mode-startup.test.js) : la soirée de
+# V30 à V34 se fait et redémarre hors démo, à l'heure réelle et sous
+# TZ=Europe/Paris (Dockerfile). Si le prochain 8 h de Paris tombe dans les
+# 5 min qui viennent, attendre 8 h 01 : aucune fin de soirée pendant ces
+# contrôles. Seul le 8 h du jour peut être si proche : passé, le suivant est à
+# plus de 8 h. apres_huit_heures [maintenant, en secondes depuis 1970]
+apres_huit_heures() {
+  local maintenant=${1:-$(date +%s)} huit
+  huit=$(TZ=Europe/Paris date -d "$(TZ=Europe/Paris date -d "@$maintenant" +%F) 08:00" +%s)
+  if [ "$huit" -gt "$maintenant" ] && [ $((huit - maintenant)) -le 300 ]; then
+    echo "Attente de 08:01 : le prochain 8 h local tomberait pendant cet essai."
+    sleep $((huit + 60 - maintenant))
+  fi
+}
+apres_huit_heures
+
 # ---------------------------------------------------------------- V30
 controle V30 'soirée créée'
 # poster <adresse> <corps JSON> <fichier de réponse> : 200 exigé.

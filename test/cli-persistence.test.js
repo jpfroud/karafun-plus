@@ -271,6 +271,116 @@ test('DEMARRER : reconnaît sa propre file sur le port 3000 et refuse un autre p
   } finally { globalThis.fetch = originalFetch; }
 });
 
+// Plan du 8 novembre, A3 : pendant la réparation de la soirée en cours, la
+// file a pris son port mais ne répond pas avant la fin de startNight(). Une
+// connexion acceptée sans réponse en 2 s (TimeoutError) ne vaut « démarre
+// déjà » que si le fichier d'arrêt est celui d'une file vivante de ce port, à
+// starting: true ; vivante sans starting, elle tourne (passe des soirées
+// closes) : page du bar ; sinon, le port est à un autre programme. Le
+// fichier vient d'un dossier temporaire, jamais de data/ du dépôt.
+const timeoutError = () => new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+// Pid d'un processus fini (process.kill(pid, 0) lève ESRCH).
+const deadPid = () => childProcess.spawnSync(process.execPath, ['-e', '']).pid;
+
+test('A3 : DEMARRER, connexion acceptée sans réponse en 2 s (TimeoutError) : « démarre déjà » seulement avec le fichier d’arrêt d’une file vivante de ce port à starting ; sans starting, la file tourne ; sans fichier, illisible, d’un autre port ou d’un pid mort, port pris', async () => {
+  const { helperRunning } = loadStartEvening(() => {});
+  const originalFetch = globalThis.fetch;
+  const dir = freshDir('demarre-deja');
+  const runtimeFile = path.join(dir, 'runtime-3000.json');
+  const write = runtime => fs.writeFileSync(runtimeFile, typeof runtime === 'string' ? runtime : JSON.stringify(runtime));
+  const taken = /^Error: Le port 3000 est utilisé par un autre programme\.$/;
+  try {
+    globalThis.fetch = async () => { throw timeoutError(); };
+    await assert.rejects(helperRunning(3000, { runtimeFile }), taken, 'sans fichier');
+    write({ pid: process.pid, port: 3000, secret: FAKE_SECRET, starting: true });
+    assert.equal(await helperRunning(3000, { runtimeFile }), 'starting', 'fichier de ce processus, starting');
+    write({ pid: process.pid, port: 3000, secret: FAKE_SECRET });
+    assert.equal(await helperRunning(3000, { runtimeFile }), true, 'pid vivant sans starting : la file tourne');
+    write({ pid: deadPid(), port: 3000, secret: FAKE_SECRET, starting: true });
+    await assert.rejects(helperRunning(3000, { runtimeFile }), taken, 'pid mort');
+    write({ pid: process.pid, port: 3001, secret: FAKE_SECRET, starting: true });
+    await assert.rejects(helperRunning(3000, { runtimeFile }), taken, 'fichier d’un autre port');
+    write('{ pas du json');
+    await assert.rejects(helperRunning(3000, { runtimeFile }), taken, 'fichier illisible');
+    write({ pid: String(process.pid), port: 3000, secret: FAKE_SECRET, starting: true });
+    await assert.rejects(helperRunning(3000, { runtimeFile }), taken, 'pid qui n’est pas un nombre');
+    // Rien n'écoute (connexion refusée) : la file peut démarrer, sans lire le fichier.
+    write({ pid: process.pid, port: 3000, secret: FAKE_SECRET, starting: true });
+    globalThis.fetch = async () => { throw new TypeError('fetch failed'); };
+    assert.equal(await helperRunning(3000, { runtimeFile }), false);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+// Faux serveur qui accepte la connexion sans jamais répondre, comme une file
+// dont la boucle est prise par startNight() : sur 127.0.0.1 et, si la machine
+// l'a, sur [::1] au même port (localhost peut s'y résoudre d'abord).
+async function silentServer() {
+  const sockets = new Set();
+  const listen = host => new Promise((resolve, reject) => {
+    const server = require('node:net').createServer(socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+    server.once('error', reject);
+    server.listen(host === '127.0.0.1' ? 0 : listen.port, host, () => resolve(server));
+  });
+  const v4 = await listen('127.0.0.1');
+  listen.port = v4.address().port;
+  const servers = [v4];
+  try { servers.push(await listen('::1')); } catch (_) { /* pas d'IPv6 sur cette machine */ }
+  return { port: listen.port, close: async () => {
+    for (const socket of sockets) socket.destroy();
+    await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve))));
+  } };
+}
+
+const startingPreload = path.join(work, 'starting-preload.js');
+fs.writeFileSync(startingPreload, `'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const Module = require('node:module');
+// data/ de la copie redirigé vers le dossier d'essai (comme stopPreload).
+const realData = path.join(process.env.STOP_ROOT, 'data') + path.sep;
+const redirect = p => typeof p === 'string' && p.startsWith(realData) ? path.join(process.env.STOP_DATA, p.slice(realData.length)) : p;
+for (const name of ['existsSync', 'readFileSync']) {
+  const original = fs[name];
+  fs[name] = (file, ...rest) => original.call(fs, redirect(file), ...rest);
+}
+// Aucun second serveur : son chargement est noté, jamais fait.
+const load = Module._load;
+Module._load = function (request, parent) {
+  if (request === './server' && parent && /start-evening\\.js$/.test(parent.filename)) {
+    fs.appendFileSync(process.env.STOP_EVENTS, 'server\\n');
+    return {};
+  }
+  return load.apply(this, arguments);
+};
+`);
+
+test('A3 : DEMARRER face à une file qui a pris son port sans répondre : sans fichier d’arrêt, code 1 et port pris ; avec celui d’une file vivante à starting, « démarre déjà », code 0 ; aucun second serveur', async () => {
+  const silent = await silentServer();
+  try {
+    const run = async runtime => {
+      const data = freshDir('demarre-data');
+      const events = path.join(data, 'events.txt');
+      fs.writeFileSync(events, '');
+      if (runtime) fs.writeFileSync(path.join(data, `runtime-${silent.port}.json`), JSON.stringify(runtime));
+      const result = await runNode(['--require', startingPreload, path.join(root, 'start-evening.js'), '--port', String(silent.port)],
+        { STOP_ROOT: root, STOP_DATA: data, STOP_EVENTS: events });
+      result.servers = fs.readFileSync(events, 'utf8').split('\n').filter(Boolean).length;
+      return result;
+    };
+    // Les deux lancements en même temps : chacun attend les 2 s de helperRunning.
+    const [refused, starting] = await Promise.all([run(null), run({ pid: process.pid, port: silent.port, secret: FAKE_SECRET, starting: true })]);
+    let result = refused;
+    assert.equal(result.code, 1, result.stderr);
+    assert.equal(result.stderr, `Démarrage impossible : Le port ${silent.port} est utilisé par un autre programme.\n`);
+    assert.equal(result.servers, 0, 'aucun second serveur');
+    result = starting;
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(result.stdout.includes('La file karaoké démarre déjà : la page du bar s’ouvrira dans un instant.'), result.stdout);
+    assert.doesNotMatch(result.stdout, /La file karaoké démarre\. /, 'pas de démarrage');
+    assert.equal(result.servers, 0, 'aucun second serveur');
+  } finally { await silent.close(); }
+});
+
 const eveningPreload = path.join(work, 'evening-preload.js');
 fs.writeFileSync(eveningPreload, `'use strict';
 const fs = require('node:fs');

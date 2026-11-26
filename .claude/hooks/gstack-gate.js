@@ -53,7 +53,9 @@ const GITHUB_WRITES = new Set(['mcp__github__push_files', 'mcp__github__create_o
 // Délai de gstack-review-read, qui calcule l'empreinte du contenu.
 const REVIEW_READ_MS = 45000;
 
-const ROUTES = 'défaut signalé → investigate ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; ' +
+// gstack 1.98 a retiré investigate (GST-1717) : un défaut se corrige test
+// d'abord, puis build-check jusqu'au vert (verify, renommé par gstack 1.103).
+const ROUTES = 'défaut signalé → build-check (test ciblé d\'abord) ; fonctionnalité à préciser → spec (plan à challenger → plan-eng-review) ; ' +
   'parcours dans l\'application → qa ; sécurité → cso ; état du code → health ; documentation → document-release';
 
 function out(obj) { process.stdout.write(JSON.stringify(obj) + '\n'); }
@@ -116,13 +118,25 @@ function stateFile(event) {
   return path.join(projectDir(event), '.gstack', 'porte', `${id}.json`);
 }
 
-// Nom de compétence gstack (« investigate », « gstack:qa », « /review »…) ou ''.
+// Nom de compétence gstack (« build-check », « gstack:qa », « /review »…) ou ''.
+// Une compétence retirée de gstack n'est plus reconnue : son SKILL.md n'existe
+// plus (investigate depuis la 1.98), ou gstack la nomme dans sa liste
+// GSTACK_RETIRED_SKILLS alors que son dossier reste dans les sources (comme
+// plan-eng-review en 1.98, revenu en 1.99.5).
+function retiredSkills(dir) {
+  try {
+    const text = fs.readFileSync(path.join(dir, 'bin', 'gstack-install-registry.sh'), 'utf8');
+    const m = /^GSTACK_RETIRED_SKILLS="([^"]*)"/m.exec(text);
+    return new Set(m ? m[1].split(/\s+/).filter(Boolean) : []);
+  } catch { return new Set(); }
+}
+
 function gstackSkill(raw) {
   const given = String(raw || '').trim().replace(/^\//, '').split(/\s/)[0];
   const name = given.replace(/^gstack[:-](?=.)/, '');
   if (!name || !/^[a-z0-9][a-z0-9-]*$/.test(name) || ADMIN_SKILLS.has(name) || ADMIN_SKILLS.has(given)) return '';
   const dir = gstackDir();
-  if (!dir) return '';
+  if (!dir || retiredSkills(dir).has(name)) return '';
   const skillFile = name === 'gstack' ? path.join(dir, 'SKILL.md') : path.join(dir, name, 'SKILL.md');
   return fs.existsSync(skillFile) ? name : '';
 }

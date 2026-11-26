@@ -1,11 +1,16 @@
 'use strict';
-const { test } = require('node:test');
+const { test, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
-const { choosePort, serverEnv, sandboxCopy, launch } = require('./server-mode-startup.test');
+const { choosePort, serverEnv, sandboxCopy, launch, apresHuitHeures, dureeApresHuitHeures } = require('./server-mode-startup.test');
+
+// Premier geste du fichier (règles transversales) : aucune fin de soirée
+// pendant ses copies, lancées hors démo à l'heure réelle avec des tables.
+let debut = Date.now();
+before(async () => { await apresHuitHeures(); debut = Date.now(); });
 
 async function fixture(t, { enabled = true, pc = false, version = null } = {}) {
   const cwd = sandboxCopy();
@@ -468,4 +473,9 @@ test('les commandes et le retour OAuth Spotify doivent finir avant la mise à jo
   assert.equal(busy, true);
   assert.equal((await callback()).status, 503, 'un nouveau retour OAuth attend la fin de la maintenance');
   assert.equal(finishAuthCalls, 1, 'la maintenance ne consomme pas le state OAuth');
+});
+
+// Dernier essai du fichier : sa durée depuis apresHuitHeures().
+test('A7 : server-update-routes dure moins de 5 min après apresHuitHeures()', () => {
+  console.log(dureeApresHuitHeures(debut, 'server-update-routes'));
 });
