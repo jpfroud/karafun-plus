@@ -194,11 +194,13 @@ gh attestation verify oci://ghcr.io/jpfroud/karafun-plus:vX.Y.Z --repo jpfroud/k
   correctif que l'empreinte de l'image de base n'embarque pas encore, et que
   Trivy le refuse, l'étape finale du `Dockerfile` met à niveau ce seul paquet
   (`apt-get install --only-upgrade`). La construction prend alors la version du
-  jour de Debian, moins reproductible tant que la ligne reste. C'est le cas de
-  zlib1g depuis novembre 2026 (CVE-2026-76844 et CVE-2026-85091) : retirer la
-  ligne quand l'empreinte de `node:26-trixie-slim` contient
-  `1:1.3.dfsg+really1.3.1-1+deb13u1`. La construction de l'image échoue alors en
-  le disant : la PR d'empreinte de Dependabot qui l'apporte, qui fusionnerait
+  jour de Debian, moins reproductible tant que la ligne reste. C'est le cas,
+  depuis novembre 2026, de zlib1g (CVE-2026-76844 et CVE-2026-85091) et de
+  libzstd1 (CVE-2026-124851), chacun dans sa propre étape : retirer celle d'un
+  paquet quand l'empreinte de `node:26-trixie-slim` contient sa version corrigée,
+  `1:1.3.dfsg+really1.3.1-1+deb13u1` pour zlib1g, `1.5.7+dfsg-1+deb13u1` pour
+  libzstd1. La construction de l'image échoue alors en le disant : la PR
+  d'empreinte de Dependabot qui l'apporte, qui fusionnerait
   seule, attend ce retrait au lieu de garder la ligne sans qu'on le voie. Le
   retrait se fait sur la branche de cette PR même (une PR à part garderait
   l'ancienne empreinte, que Trivy refuserait), qui se fusionne ensuite à la main :
